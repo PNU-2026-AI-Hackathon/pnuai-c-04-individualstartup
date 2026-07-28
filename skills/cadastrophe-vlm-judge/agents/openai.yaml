@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cadastrophe VLM Judge"
+  short_description: "Judge rendered CAD artifacts."
+  default_prompt: "Use $cadastrophe-vlm-judge to visually judge this Cadastrophe artifact contract and return strict JSON."
