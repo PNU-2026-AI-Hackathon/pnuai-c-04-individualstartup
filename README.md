@@ -66,10 +66,3 @@ The desktop backend uses Codex by default. Set
 regression behavior. Packaged macOS app launches do not inherit your interactive
 shell PATH, so the desktop backend also checks common Homebrew/npm locations such as
 `/opt/homebrew/bin` and passes the expanded PATH to the Codex child process.
-
-## Design
-
-- [설계 요약](docs/design-overview.ko.md)
-- [Architecture](docs/architecture.md)
-- [Development plan](docs/development_plan.md)
-- [Progress log](docs/progress.md)
