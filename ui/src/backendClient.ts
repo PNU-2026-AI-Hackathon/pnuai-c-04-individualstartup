@@ -4,6 +4,8 @@ import type {
   CadBridgeEvent,
   CadMesh,
   CadParameter,
+  PersistRuntimeArtifactInput,
+  PersistRuntimeArtifactResult,
   CadSessionState,
   CreateAgentRunResult,
   CreateCadSessionResult,
@@ -39,6 +41,7 @@ export interface CadBackendClient {
   setActiveRevision(input: { sessionId: string; revisionId: string }): Promise<CadSessionState>;
   restoreRevision(input: { sessionId: string; revisionId: string }): Promise<RestoreRevisionResult>;
   renderPreview(input: { sessionId: string; revisionId?: string }): Promise<{ state: CadSessionState }>;
+  persistRuntimeArtifact(input: PersistRuntimeArtifactInput): Promise<PersistRuntimeArtifactResult>;
   updateParameters(input: {
     sessionId: string;
     values: Record<string, CadParameter["value"]>;
@@ -120,6 +123,10 @@ export class TauriCadBackendClient implements CadBackendClient {
 
   renderPreview(input: { sessionId: string; revisionId?: string }): Promise<{ state: CadSessionState }> {
     return invokeCommand("render_preview", { input });
+  }
+
+  persistRuntimeArtifact(input: PersistRuntimeArtifactInput): Promise<PersistRuntimeArtifactResult> {
+    return invokeCommand("persist_runtime_artifact", { input });
   }
 
   updateParameters(input: {

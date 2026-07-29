@@ -1,4 +1,4 @@
-export type CadRuntimeKind = "openscad-wasm" | "cadquery-local" | "freecad-local";
+export type CadRuntimeKind = "openscad-wasm";
 
 export type CadSourceLanguage =
   | "openscad"
@@ -97,6 +97,21 @@ export interface CadExportResult {
   artifact?: CadArtifact;
 }
 
+export interface PersistRuntimeArtifactInput {
+  sessionId: string;
+  revisionId: string;
+  kind: CadArtifactKind;
+  format: string;
+  contentsBase64: string;
+  diagnostics: CadDiagnostics;
+  metadata: Record<string, unknown>;
+}
+
+export interface PersistRuntimeArtifactResult {
+  artifact: CadArtifact;
+  state: CadSessionState;
+}
+
 export interface CadBuildInput {
   sessionId: string;
   revisionId: string;
@@ -174,6 +189,70 @@ export interface CadAgentRunEvent {
   metadata?: Record<string, unknown>;
 }
 
+export interface CadModelPlanComponent {
+  name: string;
+  purpose: string;
+  requiredFeatures?: string[];
+}
+
+export interface CadModelAspectRatio {
+  x: number;
+  y: number;
+  z: number;
+  tolerance: number;
+}
+
+export interface CadModelRuntimeConstraints {
+  runtime: CadRuntimeKind;
+  requiredFeatures?: string[];
+  forbiddenFeatures?: string[];
+  mainComponentAnnotation?: string;
+}
+
+export interface CadModelPlan {
+  schemaVersion: string;
+  summary: string;
+  mainComponent: CadModelPlanComponent;
+  supportingComponents: CadModelPlanComponent[];
+  expectedAspectRatio: CadModelAspectRatio;
+  sourceLanguage: CadSourceLanguage;
+  runtimeConstraints: CadModelRuntimeConstraints;
+}
+
+export interface CadWorkflowPlan {
+  runId: string;
+  revisionId?: string;
+  plan: CadModelPlan;
+  sourceLanguage: CadSourceLanguage;
+  createdAt: string;
+}
+
+export interface CadWorkflowOuterIteration {
+  id: string;
+  runId: string;
+  iteration: number;
+  revisionId?: string;
+  structuralReport: Record<string, unknown>;
+  vlmReport?: Record<string, unknown>;
+  failureReport?: Record<string, unknown>;
+  passed: boolean;
+  createdAt: string;
+}
+
+export interface CadWorkflowPendingVlm {
+  runId: string;
+  artifactId: string;
+  contract: Record<string, unknown>;
+  passThreshold: number;
+  createdAt: string;
+}
+
+export interface CadWorkflowState {
+  plans: CadWorkflowPlan[];
+  outerIterations: CadWorkflowOuterIteration[];
+  pendingVlm: CadWorkflowPendingVlm[];
+}
+
 export interface CadRevisionRunLink {
   runId: string;
   role: "input" | "output" | string;
@@ -224,6 +303,7 @@ export interface CadSessionState {
   conversation: CadConversationMessage[];
   agentRuns: CadAgentRun[];
   agentRunEvents: CadAgentRunEvent[];
+  workflow: CadWorkflowState;
 }
 
 export interface CadBridgeEvent {

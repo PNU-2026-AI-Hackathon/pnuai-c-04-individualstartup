@@ -1,0 +1,100 @@
+{
+  "artifactId": "artifact-structural-cube-stl",
+  "checks": [
+    {
+      "expectedAnnotation": "// @main_component unit_cube",
+      "mainComponent": "unit_cube",
+      "message": "Final source declares the Plan main component convention.",
+      "name": "main_component",
+      "passed": true,
+      "severity": "info"
+    },
+    {
+      "elapsedMs": 7,
+      "message": "Preview and export diagnostics are clean.",
+      "name": "runtime_diagnostics",
+      "ok": true,
+      "passed": true,
+      "severity": "info"
+    },
+    {
+      "actualBytes": 1423,
+      "actualSha256": "ab613b8a5bed047f8fb03a0678004aacb82096cd4404c941fce3adaf8a4328b0",
+      "expectedBytes": 1423,
+      "expectedSha256": "ab613b8a5bed047f8fb03a0678004aacb82096cd4404c941fce3adaf8a4328b0",
+      "message": "STL artifact exists and manifest hash/size match.",
+      "name": "artifact_manifest",
+      "passed": true,
+      "severity": "info",
+      "stlPath": "<fixture>/cube.stl"
+    },
+    {
+      "engine": "fallback-stl-parser",
+      "error": null,
+      "message": "STL mesh loaded.",
+      "name": "stl_load",
+      "passed": true,
+      "severity": "info"
+    },
+    {
+      "bbox": [1, 1, 1],
+      "bboxVolume": 1,
+      "message": "Mesh has positive vertices, triangles, and bounding box volume.",
+      "name": "mesh_non_empty",
+      "passed": true,
+      "severity": "info",
+      "triangles": 12,
+      "vertices": 8
+    },
+    {
+      "degenerateTrianglesRemoved": 0,
+      "message": "Duplicated/degenerate triangle cleanup leaves a valid mesh.",
+      "name": "mesh_cleanup",
+      "passed": true,
+      "rawTriangles": 12,
+      "severity": "info",
+      "trianglesAfterCleanup": 12,
+      "uniqueVerticesAfterCleanup": 8
+    },
+    {
+      "edgeManifoldClosed": true,
+      "edgeManifoldWithBoundary": true,
+      "hasVolume": true,
+      "isSelfIntersecting": false,
+      "isVertexManifold": true,
+      "message": "Solid/topology checks passed.",
+      "name": "topology",
+      "orientable": true,
+      "passed": true,
+      "severity": "info",
+      "topologyApproximate": true,
+      "volume": 1
+    },
+    {
+      "actual": {
+        "x": 1,
+        "y": 1,
+        "z": 1
+      },
+      "actualNormalized": [1, 1, 1],
+      "axisDeltas": [0, 0, 0],
+      "expected": {
+        "tolerance": 0.01,
+        "x": 1,
+        "y": 1,
+        "z": 1
+      },
+      "expectedNormalized": [1, 1, 1],
+      "maxAxisDelta": 0,
+      "message": "Bounding box aspect ratio is within tolerance.",
+      "name": "aspect_ratio",
+      "passed": true,
+      "severity": "info"
+    }
+  ],
+  "contractType": "cadastrophe.structural_report.v1",
+  "mainComponent": "unit_cube",
+  "passed": true,
+  "revisionId": "revision-structural-fixture-1",
+  "runId": "run-structural-fixture-1"
+}

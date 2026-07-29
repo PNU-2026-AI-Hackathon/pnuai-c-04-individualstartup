@@ -1,15 +1,15 @@
 use crate::protocol::*;
-use crate::runtime::{
-    extract_open_scad_parameters, ok_diagnostics, render_open_scad_preview, DEFAULT_SAMPLE_SOURCE,
-};
+use crate::runtime::{extract_open_scad_parameters, ok_diagnostics, DEFAULT_SAMPLE_SOURCE};
 #[cfg(test)]
 use crate::session_repository::InMemorySessionRepository;
 use crate::session_repository::{SessionRepository, SessionRepositorySnapshot};
 use crate::storage::{self, StorageLayout};
+use base64::Engine;
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
@@ -24,6 +24,9 @@ pub(crate) struct ServiceState {
     pub(crate) conversation: HashMap<String, Vec<CadConversationMessage>>,
     pub(crate) agent_runs: HashMap<String, Vec<CadAgentRun>>,
     pub(crate) agent_run_events: HashMap<String, Vec<CadAgentRunEvent>>,
+    pub(crate) workflow_plans: HashMap<String, CadWorkflowPlan>,
+    pub(crate) workflow_outer_iterations: HashMap<String, Vec<CadWorkflowOuterIteration>>,
+    pub(crate) workflow_pending_vlm: HashMap<String, CadWorkflowPendingVlm>,
     pub(crate) current_interactive_session_id: Option<String>,
 }
 
@@ -33,6 +36,9 @@ impl From<SessionRepositorySnapshot> for ServiceState {
         let mut conversation = HashMap::new();
         let mut agent_runs = HashMap::new();
         let mut agent_run_events = HashMap::new();
+        let workflow_plans = snapshot.workflow_plans;
+        let workflow_outer_iterations = snapshot.workflow_outer_iterations;
+        let workflow_pending_vlm = snapshot.workflow_pending_vlm;
         for session_id in snapshot.sessions.keys() {
             messages.insert(session_id.clone(), Vec::new());
             conversation.insert(
@@ -68,6 +74,9 @@ impl From<SessionRepositorySnapshot> for ServiceState {
             conversation,
             agent_runs,
             agent_run_events,
+            workflow_plans,
+            workflow_outer_iterations,
+            workflow_pending_vlm,
             current_interactive_session_id: snapshot.current_interactive_session_id,
         }
     }
@@ -96,6 +105,21 @@ impl SessionService {
         storage_layout: StorageLayout,
         repository: Arc<dyn SessionRepository>,
     ) -> Result<Self, String> {
+        Self::with_repository_options(storage_layout, repository, true)
+    }
+
+    pub(crate) fn with_repository_without_startup_verification(
+        storage_layout: StorageLayout,
+        repository: Arc<dyn SessionRepository>,
+    ) -> Result<Self, String> {
+        Self::with_repository_options(storage_layout, repository, false)
+    }
+
+    fn with_repository_options(
+        storage_layout: StorageLayout,
+        repository: Arc<dyn SessionRepository>,
+        verify_artifacts: bool,
+    ) -> Result<Self, String> {
         let (event_sender, _) = broadcast::channel(256);
         let snapshot = repository.load()?;
         let service = Self {
@@ -104,12 +128,18 @@ impl SessionService {
             repository,
             event_sender,
         };
-        service.verify_artifact_files_inner(None)?;
+        if verify_artifacts {
+            service.verify_artifact_files_inner(None)?;
+        }
         Ok(service)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<CadBridgeEvent> {
         self.event_sender.subscribe()
+    }
+
+    pub fn app_data_dir(&self) -> &Path {
+        self.storage_layout.app_data_dir()
     }
 
     pub fn create_session(
@@ -295,8 +325,20 @@ impl SessionService {
             state.sessions.remove(session_id);
             state.messages.remove(session_id);
             state.conversation.remove(session_id);
+            let run_ids: Vec<String> = state
+                .agent_runs
+                .get(session_id)
+                .into_iter()
+                .flatten()
+                .map(|run| run.id.clone())
+                .collect();
             state.agent_runs.remove(session_id);
             state.agent_run_events.remove(session_id);
+            for run_id in &run_ids {
+                state.workflow_plans.remove(run_id);
+                state.workflow_outer_iterations.remove(run_id);
+                state.workflow_pending_vlm.remove(run_id);
+            }
             let revision_ids: Vec<String> = state
                 .revisions
                 .values()
@@ -555,7 +597,7 @@ impl SessionService {
             );
         }
 
-        let (revision_id, mesh, diagnostics) = {
+        let (revision_id, mesh, diagnostics, preview_artifact, stl_artifact) = {
             let state = self.inner.lock().map_err(lock_error)?;
             let session = require_session(&state, &input.session_id)?;
             let revision_id = input
@@ -563,42 +605,55 @@ impl SessionService {
                 .clone()
                 .or_else(|| session.active_revision_id.clone())
                 .ok_or_else(|| "No active revision is available.".to_string())?;
-            let revision = require_revision(&state, &revision_id)?;
-            let (mesh, diagnostics) = match revision.source_language {
-                CadSourceLanguage::Openscad => {
-                    render_open_scad_preview(&revision.source, &revision.parameters)
-                }
-                _ => (
-                    None,
-                    CadDiagnostics {
-                        ok: false,
-                        elapsed_ms: 0,
-                        items: vec![CadDiagnostic {
-                            severity: "error".to_string(),
-                            message: "Rust preview currently supports OpenSCAD source only."
-                                .to_string(),
-                            line: None,
-                            column: None,
-                        }],
-                    },
-                ),
-            };
-            (revision_id, mesh, diagnostics)
-        };
-        let artifact = if let Some(mesh) = &mesh {
-            Some(self.write_artifact(
-                &revision_id,
-                CadArtifactKind::PreviewMesh,
-                "json",
-                &serde_json::to_string(mesh).map_err(|error| error.to_string())?,
-                Some(json!({
-                    "vertices": mesh.vertices.len() / 3,
-                    "triangles": mesh.indices.len() / 3,
-                    "sourceLanguage": "openscad"
-                })),
-            )?)
-        } else {
-            None
+            let revision = require_revision(&state, &revision_id)?.clone();
+            drop(state);
+            let rendered =
+                render_open_scad_wasm_node(&revision.source, self.storage_layout.app_data_dir())?;
+            let diagnostics = rendered.diagnostics.clone();
+            if !diagnostics.ok {
+                (revision_id, None, diagnostics, None, None)
+            } else {
+                let mesh = rendered.mesh.clone().ok_or_else(|| {
+                    "OpenSCAD WASM render did not return preview mesh.".to_string()
+                })?;
+                let metadata = Some(runtime_artifact_metadata(
+                    &revision.source,
+                    &revision.parameters,
+                    &rendered,
+                    "backend-preview",
+                )?);
+                let preview_artifact = self.write_artifact(
+                    &revision_id,
+                    CadArtifactKind::PreviewMesh,
+                    "json",
+                    &serde_json::to_string(&mesh).map_err(|error| error.to_string())?,
+                    metadata.clone(),
+                )?;
+                let stl_bytes = rendered
+                    .stl_base64
+                    .as_ref()
+                    .map(|contents| {
+                        base64::engine::general_purpose::STANDARD
+                            .decode(contents.as_bytes())
+                            .map_err(|error| error.to_string())
+                    })
+                    .transpose()?
+                    .ok_or_else(|| "OpenSCAD WASM render did not return STL bytes.".to_string())?;
+                let stl_artifact = self.write_artifact_bytes(
+                    &revision_id,
+                    CadArtifactKind::Stl,
+                    "stl",
+                    &stl_bytes,
+                    metadata,
+                )?;
+                (
+                    revision_id,
+                    Some(mesh),
+                    diagnostics,
+                    Some(preview_artifact),
+                    Some(stl_artifact),
+                )
+            }
         };
         let state_snapshot = {
             let mut state = self.inner.lock().map_err(lock_error)?;
@@ -607,7 +662,10 @@ impl SessionService {
             revision
                 .artifacts
                 .retain(|candidate| candidate.kind != CadArtifactKind::PreviewMesh);
-            if let Some(artifact) = artifact {
+            if let Some(artifact) = preview_artifact.clone() {
+                revision.artifacts.push(artifact);
+            }
+            if let Some(artifact) = stl_artifact.clone() {
                 revision.artifacts.push(artifact);
             }
             revision.artifact_count = revision.artifacts.len();
@@ -631,10 +689,96 @@ impl SessionService {
             CadPreviewResult {
                 diagnostics,
                 mesh,
-                artifacts: Vec::new(),
+                artifacts: preview_artifact.into_iter().chain(stl_artifact).collect(),
             },
             state_snapshot,
         ))
+    }
+
+    pub fn persist_runtime_artifact(
+        &self,
+        input: PersistRuntimeArtifactInput,
+    ) -> Result<PersistRuntimeArtifactResult, String> {
+        if input.kind != CadArtifactKind::PreviewMesh && input.kind != CadArtifactKind::Stl {
+            return Err(
+                "Runtime artifact persistence supports preview-mesh and stl only.".to_string(),
+            );
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(input.contents_base64.as_bytes())
+            .map_err(|error| format!("Runtime artifact contents are not valid base64: {error}"))?;
+        {
+            let state = self.inner.lock().map_err(lock_error)?;
+            validate_revision_session(&state, &input.session_id, &input.revision_id)?;
+        }
+        let artifact = self.write_artifact_bytes(
+            &input.revision_id,
+            input.kind.clone(),
+            &input.format,
+            &bytes,
+            Some(Value::Object(input.metadata)),
+        )?;
+        let snapshot = {
+            let mut state = self.inner.lock().map_err(lock_error)?;
+            let revision = require_revision_mut(&mut state, &input.revision_id)?;
+            if input.kind == CadArtifactKind::PreviewMesh {
+                revision
+                    .artifacts
+                    .retain(|candidate| candidate.kind != CadArtifactKind::PreviewMesh);
+            }
+            revision.artifacts.push(artifact.clone());
+            revision.artifact_count = revision.artifacts.len();
+            revision.diagnostics = input.diagnostics.clone();
+            let session = require_session_mut(&mut state, &input.session_id)?;
+            session.status = if input.diagnostics.ok {
+                CadSessionStatus::Idle
+            } else {
+                CadSessionStatus::Failed
+            };
+            session.updated_at = timestamp();
+            rebuild_revision_summaries(&mut state, &input.session_id);
+            self.persist_session_graph(&state, &input.session_id)?;
+            build_state(&state, &input.session_id)?
+        };
+        let event_type = match input.kind {
+            CadArtifactKind::PreviewMesh => CadBridgeEventType::PreviewRendered,
+            _ => CadBridgeEventType::ArtifactExported,
+        };
+        self.emit(event_type, &input.session_id, snapshot.clone());
+        Ok(PersistRuntimeArtifactResult {
+            artifact,
+            state: snapshot,
+        })
+    }
+
+    pub fn record_runtime_diagnostics(
+        &self,
+        session_id: &str,
+        revision_id: &str,
+        diagnostics: CadDiagnostics,
+    ) -> Result<CadSessionState, String> {
+        let snapshot = {
+            let mut state = self.inner.lock().map_err(lock_error)?;
+            validate_revision_session(&state, session_id, revision_id)?;
+            let revision = require_revision_mut(&mut state, revision_id)?;
+            revision.diagnostics = diagnostics.clone();
+            let session = require_session_mut(&mut state, session_id)?;
+            session.status = if diagnostics.ok {
+                CadSessionStatus::Idle
+            } else {
+                CadSessionStatus::Failed
+            };
+            session.updated_at = timestamp();
+            rebuild_revision_summaries(&mut state, session_id);
+            self.persist_session_graph(&state, session_id)?;
+            build_state(&state, session_id)?
+        };
+        self.emit(
+            CadBridgeEventType::PreviewRendered,
+            session_id,
+            snapshot.clone(),
+        );
+        Ok(snapshot)
     }
 
     pub fn update_parameters(
@@ -818,7 +962,12 @@ impl SessionService {
                         }),
                         None,
                     );
-                    self.repository.save_agent_run_event(&event)?;
+                    persist_agent_run_event(
+                        self.repository.as_ref(),
+                        &mut state,
+                        session_id,
+                        event,
+                    )?;
                 }
             }
             build_state(&state, session_id)?
@@ -911,7 +1060,7 @@ impl SessionService {
                 }),
                 None,
             );
-            self.repository.save_agent_run_event(&event)?;
+            persist_agent_run_event(self.repository.as_ref(), &mut state, session_id, event)?;
             let session = require_session_mut(&mut state, session_id)?;
             session.updated_at = timestamp();
             build_state(&state, session_id)?
@@ -958,7 +1107,7 @@ impl SessionService {
                 json!({ "outputRevisionId": output_revision_id }),
                 None,
             );
-            self.repository.save_agent_run_event(&event)?;
+            persist_agent_run_event(self.repository.as_ref(), &mut state, session_id, event)?;
             rebuild_revision_summaries(&mut state, session_id);
             build_state(&state, session_id)?
         };
@@ -1037,7 +1186,7 @@ impl SessionService {
                 Value::Object(payload),
                 None,
             );
-            self.repository.save_agent_run_event(&event)?;
+            persist_agent_run_event(self.repository.as_ref(), &mut state, session_id, event)?;
             let session = require_session_mut(&mut state, session_id)?;
             session.updated_at = now;
             build_state(&state, session_id)?
@@ -1089,7 +1238,7 @@ impl SessionService {
                 }),
                 None,
             );
-            self.repository.save_agent_run_event(&event)?;
+            persist_agent_run_event(self.repository.as_ref(), &mut state, session_id, event)?;
             build_state(&state, session_id)?
         };
         self.emit(
@@ -1098,6 +1247,141 @@ impl SessionService {
             snapshot.clone(),
         );
         Ok(snapshot)
+    }
+
+    pub fn save_workflow_plan(
+        &self,
+        session_id: &str,
+        plan: CadWorkflowPlan,
+    ) -> Result<CadWorkflowState, String> {
+        let workflow = {
+            let mut state = self.inner.lock().map_err(lock_error)?;
+            validate_workflow_run(&state, session_id, &plan.run_id)?;
+            if let Some(revision_id) = &plan.revision_id {
+                validate_revision_session(&state, session_id, revision_id)?;
+            }
+            if plan.plan.source_language != plan.source_language {
+                return Err(
+                    "Workflow plan source_language must match CadModelPlan source_language."
+                        .to_string(),
+                );
+            }
+            self.repository.save_workflow_plan(&plan)?;
+            state.workflow_plans.insert(plan.run_id.clone(), plan);
+            build_workflow_state(&state, session_id)?
+        };
+        Ok(workflow)
+    }
+
+    pub fn save_workflow_outer_iteration(
+        &self,
+        session_id: &str,
+        iteration: CadWorkflowOuterIteration,
+    ) -> Result<CadWorkflowState, String> {
+        let workflow = {
+            let mut state = self.inner.lock().map_err(lock_error)?;
+            validate_workflow_run(&state, session_id, &iteration.run_id)?;
+            if let Some(revision_id) = &iteration.revision_id {
+                validate_revision_session(&state, session_id, revision_id)?;
+            }
+            self.repository.save_workflow_outer_iteration(&iteration)?;
+            let iterations = state
+                .workflow_outer_iterations
+                .entry(iteration.run_id.clone())
+                .or_default();
+            if let Some(existing) = iterations
+                .iter_mut()
+                .find(|candidate| candidate.id == iteration.id)
+            {
+                *existing = iteration;
+            } else {
+                iterations.push(iteration);
+            }
+            iterations.sort_by(|left, right| {
+                left.iteration
+                    .cmp(&right.iteration)
+                    .then_with(|| left.created_at.cmp(&right.created_at))
+            });
+            build_workflow_state(&state, session_id)?
+        };
+        Ok(workflow)
+    }
+
+    pub fn save_workflow_pending_vlm(
+        &self,
+        session_id: &str,
+        pending_vlm: CadWorkflowPendingVlm,
+    ) -> Result<CadWorkflowState, String> {
+        let workflow = {
+            let mut state = self.inner.lock().map_err(lock_error)?;
+            validate_workflow_run(&state, session_id, &pending_vlm.run_id)?;
+            validate_artifact_session(&state, session_id, &pending_vlm.artifact_id)?;
+            self.repository.save_workflow_pending_vlm(&pending_vlm)?;
+            state
+                .workflow_pending_vlm
+                .insert(pending_vlm.run_id.clone(), pending_vlm);
+            build_workflow_state(&state, session_id)?
+        };
+        Ok(workflow)
+    }
+
+    pub fn clear_workflow_pending_vlm(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<CadWorkflowState, String> {
+        let workflow = {
+            let mut state = self.inner.lock().map_err(lock_error)?;
+            validate_workflow_run(&state, session_id, run_id)?;
+            self.repository.clear_workflow_pending_vlm(run_id)?;
+            state.workflow_pending_vlm.remove(run_id);
+            build_workflow_state(&state, session_id)?
+        };
+        Ok(workflow)
+    }
+
+    pub fn record_agent_tool_event(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        revision_id: Option<String>,
+        event_type: CadAgentRunEventType,
+        payload: Value,
+    ) -> Result<CadAgentRunEvent, String> {
+        let bridge_event_type = match event_type {
+            CadAgentRunEventType::AgentToolStarted => CadBridgeEventType::AgentToolStarted,
+            CadAgentRunEventType::AgentToolCompleted => CadBridgeEventType::AgentToolCompleted,
+            _ => {
+                return Err(
+                    "record_agent_tool_event only accepts agent.tool.started/completed."
+                        .to_string(),
+                )
+            }
+        };
+        let (event, snapshot) = {
+            let mut state = self.inner.lock().map_err(lock_error)?;
+            validate_workflow_run(&state, session_id, run_id)?;
+            if let Some(revision_id) = &revision_id {
+                validate_revision_session(&state, session_id, revision_id)?;
+            }
+            let event = append_agent_run_event(
+                &mut state,
+                session_id,
+                run_id,
+                revision_id,
+                event_type,
+                payload,
+                None,
+            );
+            let event =
+                persist_agent_run_event(self.repository.as_ref(), &mut state, session_id, event)?;
+            let session = require_session_mut(&mut state, session_id)?;
+            session.updated_at = timestamp();
+            let snapshot = build_state(&state, session_id)?;
+            (event, snapshot)
+        };
+        self.emit(bridge_event_type, session_id, snapshot);
+        Ok(event)
     }
 
     pub fn revision_prompt_context(
@@ -1124,6 +1408,12 @@ impl SessionService {
             Some(revision.source_language.clone()),
             Some(revision.source.clone()),
         ))
+    }
+
+    pub fn get_revision(&self, session_id: &str, revision_id: &str) -> Result<CadRevision, String> {
+        let state = self.inner.lock().map_err(lock_error)?;
+        validate_revision_session(&state, session_id, revision_id)?;
+        require_revision(&state, revision_id).cloned()
     }
 
     pub fn record_agent_failure(
@@ -1191,35 +1481,100 @@ impl SessionService {
         let (revision_id, format) = {
             let state = self.inner.lock().map_err(lock_error)?;
             let session = require_session(&state, &input.session_id)?;
-            (
-                input
-                    .revision_id
-                    .clone()
-                    .or_else(|| session.active_revision_id.clone())
-                    .ok_or_else(|| "No active revision is available.".to_string())?,
-                input.format.clone(),
-            )
+            let revision_id = input
+                .revision_id
+                .clone()
+                .or_else(|| session.active_revision_id.clone())
+                .ok_or_else(|| "No active revision is available.".to_string())?;
+            let revision = require_revision(&state, &revision_id)?;
+            if revision.session_id != input.session_id {
+                return Err(format!(
+                    "CAD revision {revision_id} does not belong to session {}.",
+                    input.session_id
+                ));
+            }
+            (revision_id, input.format.clone())
         };
-        let contents = if format == "metadata" {
-            serde_json::to_string_pretty(
+
+        let (diagnostics, artifact) = if format == "metadata" {
+            let contents = serde_json::to_string_pretty(
                 &json!({"revisionId": revision_id, "runtime": "openscad-wasm"}),
             )
-            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+            (
+                ok_diagnostics(1),
+                Some(self.write_artifact(
+                    &revision_id,
+                    CadArtifactKind::Metadata,
+                    &format,
+                    &contents,
+                    None,
+                )?),
+            )
         } else {
-            format!("solid cadastrophe-{revision_id}\nendsolid cadastrophe-{revision_id}\n")
+            let artifact = {
+                let state = self.inner.lock().map_err(lock_error)?;
+                require_revision(&state, &revision_id)?
+                    .artifacts
+                    .iter()
+                    .rev()
+                    .find(|artifact| {
+                        artifact.kind == CadArtifactKind::Stl && artifact.format == format
+                    })
+                    .cloned()
+            };
+            if artifact.is_some() {
+                (ok_diagnostics(0), artifact)
+            } else {
+                let revision = {
+                    let state = self.inner.lock().map_err(lock_error)?;
+                    require_revision(&state, &revision_id)?.clone()
+                };
+                let rendered =
+                    render_open_scad_wasm_node(&revision.source, self.storage_layout.app_data_dir())?;
+                if !rendered.diagnostics.ok {
+                    (rendered.diagnostics, None)
+                } else {
+                    let stl_base64 = rendered.stl_base64.as_ref().ok_or_else(|| {
+                        "OpenSCAD WASM render did not return STL bytes.".to_string()
+                    })?;
+                    let stl_bytes = base64::engine::general_purpose::STANDARD
+                        .decode(stl_base64.as_bytes())
+                        .map_err(|error| error.to_string())?;
+                    (
+                        rendered.diagnostics.clone(),
+                        Some(self.write_artifact_bytes(
+                            &revision_id,
+                            CadArtifactKind::Stl,
+                            &format,
+                            &stl_bytes,
+                            Some(runtime_artifact_metadata(
+                                &revision.source,
+                                &revision.parameters,
+                                &rendered,
+                                "backend-export",
+                            )?),
+                        )?),
+                    )
+                }
+            }
         };
-        let artifact_kind = if format == "metadata" {
-            CadArtifactKind::Metadata
-        } else {
-            CadArtifactKind::Stl
-        };
-        let artifact =
-            self.write_artifact(&revision_id, artifact_kind, &format, &contents, None)?;
         let snapshot = {
             let mut state = self.inner.lock().map_err(lock_error)?;
-            let revision = require_revision_mut(&mut state, &revision_id)?;
-            revision.artifacts.push(artifact.clone());
-            revision.artifact_count = revision.artifacts.len();
+            if let Some(artifact) = &artifact {
+                let revision = require_revision_mut(&mut state, &revision_id)?;
+                if !revision
+                    .artifacts
+                    .iter()
+                    .any(|candidate| candidate.id == artifact.id)
+                {
+                    revision.artifacts.push(artifact.clone());
+                }
+                revision.artifact_count = revision.artifacts.len();
+            }
+            if let Some(revision) = state.revisions.get_mut(&revision_id) {
+                revision.diagnostics = diagnostics.clone();
+            }
             rebuild_revision_summaries(&mut state, &input.session_id);
             self.persist_session_graph(&state, &input.session_id)?;
             build_state(&state, &input.session_id)?
@@ -1231,8 +1586,8 @@ impl SessionService {
         );
         Ok((
             CadExportResult {
-                diagnostics: ok_diagnostics(1),
-                artifact: Some(artifact),
+                diagnostics,
+                artifact,
             },
             snapshot,
         ))
@@ -1378,12 +1733,148 @@ impl SessionService {
         build_state(&state, session_id)
     }
 
+    pub fn refresh_session_from_repository(
+        &self,
+        session_id: &str,
+    ) -> Result<CadSessionState, String> {
+        let snapshot_state = ServiceState::from(self.repository.load()?);
+        let mut refreshed_session = snapshot_state
+            .sessions
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| format!("CAD session not found: {session_id}"))?;
+        let refreshed_run_ids = snapshot_state
+            .agent_runs
+            .get(session_id)
+            .into_iter()
+            .flatten()
+            .map(|run| run.id.clone())
+            .collect::<HashSet<_>>();
+        let refreshed_revision_ids = snapshot_state
+            .revisions
+            .values()
+            .filter(|revision| revision.session_id == session_id)
+            .map(|revision| revision.id.clone())
+            .collect::<HashSet<_>>();
+        let snapshot = {
+            let mut state = self.inner.lock().map_err(lock_error)?;
+            if let Some(existing_session) = state.sessions.get(session_id) {
+                refreshed_session.connected_ui_clients = existing_session.connected_ui_clients;
+            }
+            let previous_revision_ids = state
+                .revisions
+                .values()
+                .filter(|revision| revision.session_id == session_id)
+                .map(|revision| revision.id.clone())
+                .collect::<HashSet<_>>();
+            let previous_run_ids = state
+                .agent_runs
+                .get(session_id)
+                .into_iter()
+                .flatten()
+                .map(|run| run.id.clone())
+                .collect::<HashSet<_>>();
+            state
+                .sessions
+                .insert(session_id.to_string(), refreshed_session);
+            state
+                .revisions
+                .retain(|revision_id, _| !previous_revision_ids.contains(revision_id));
+            state.revisions.extend(
+                snapshot_state
+                    .revisions
+                    .iter()
+                    .filter(|(_, revision)| revision.session_id == session_id)
+                    .map(|(revision_id, revision)| (revision_id.clone(), revision.clone())),
+            );
+            state
+                .artifacts
+                .retain(|_, artifact| !previous_revision_ids.contains(&artifact.revision_id));
+            state.artifacts.extend(
+                snapshot_state
+                    .artifacts
+                    .iter()
+                    .filter(|(_, artifact)| refreshed_revision_ids.contains(&artifact.revision_id))
+                    .map(|(artifact_id, artifact)| (artifact_id.clone(), artifact.clone())),
+            );
+            state.messages.entry(session_id.to_string()).or_default();
+            state.conversation.insert(
+                session_id.to_string(),
+                snapshot_state
+                    .conversation
+                    .get(session_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            state.agent_runs.insert(
+                session_id.to_string(),
+                snapshot_state
+                    .agent_runs
+                    .get(session_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            state.agent_run_events.insert(
+                session_id.to_string(),
+                snapshot_state
+                    .agent_run_events
+                    .get(session_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            for run_id in previous_run_ids.difference(&refreshed_run_ids) {
+                state.workflow_plans.remove(run_id);
+                state.workflow_outer_iterations.remove(run_id);
+                state.workflow_pending_vlm.remove(run_id);
+            }
+            for run_id in &refreshed_run_ids {
+                state.workflow_plans.remove(run_id);
+                state.workflow_outer_iterations.remove(run_id);
+                state.workflow_pending_vlm.remove(run_id);
+            }
+            for (run_id, plan) in snapshot_state.workflow_plans {
+                if refreshed_run_ids.contains(&run_id) {
+                    state.workflow_plans.insert(run_id, plan);
+                }
+            }
+            for (run_id, iterations) in snapshot_state.workflow_outer_iterations {
+                if refreshed_run_ids.contains(&run_id) {
+                    state.workflow_outer_iterations.insert(run_id, iterations);
+                }
+            }
+            for (run_id, pending_vlm) in snapshot_state.workflow_pending_vlm {
+                if refreshed_run_ids.contains(&run_id) {
+                    state.workflow_pending_vlm.insert(run_id, pending_vlm);
+                }
+            }
+            rebuild_revision_summaries(&mut state, session_id);
+            build_state(&state, session_id)?
+        };
+        self.emit(
+            CadBridgeEventType::AgentRunUpdated,
+            session_id,
+            snapshot.clone(),
+        );
+        Ok(snapshot)
+    }
+
     fn write_artifact(
         &self,
         revision_id: &str,
         kind: CadArtifactKind,
         format: &str,
         contents: &str,
+        metadata: Option<Value>,
+    ) -> Result<CadArtifact, String> {
+        self.write_artifact_bytes(revision_id, kind, format, contents.as_bytes(), metadata)
+    }
+
+    fn write_artifact_bytes(
+        &self,
+        revision_id: &str,
+        kind: CadArtifactKind,
+        format: &str,
+        contents_bytes: &[u8],
         metadata: Option<Value>,
     ) -> Result<CadArtifact, String> {
         let id = uuid();
@@ -1403,7 +1894,6 @@ impl SessionService {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
-        let contents_bytes = contents.as_bytes();
         fs::write(&path, contents_bytes).map_err(|error| error.to_string())?;
         let sha256 = storage::sha256_hex(contents_bytes);
         let mut metadata_map = metadata.map(metadata_from_value).unwrap_or_default();
@@ -1778,6 +2268,28 @@ fn append_agent_run_event(
     event
 }
 
+fn persist_agent_run_event(
+    repository: &dyn SessionRepository,
+    state: &mut ServiceState,
+    session_id: &str,
+    event: CadAgentRunEvent,
+) -> Result<CadAgentRunEvent, String> {
+    let saved = repository.save_agent_run_event(&event)?;
+    if saved.sequence != event.sequence {
+        if let Some(events) = state.agent_run_events.get_mut(session_id) {
+            if let Some(existing) = events.iter_mut().find(|candidate| candidate.id == saved.id) {
+                *existing = saved.clone();
+            }
+            events.sort_by(|left, right| {
+                left.run_id
+                    .cmp(&right.run_id)
+                    .then_with(|| left.sequence.cmp(&right.sequence))
+            });
+        }
+    }
+    Ok(saved)
+}
+
 fn rebuild_revision_summaries(state: &mut ServiceState, session_id: &str) {
     let mut summaries: Vec<CadRevisionSummary> = state
         .revisions
@@ -1827,6 +2339,53 @@ fn build_state(state: &ServiceState, session_id: &str) -> Result<CadSessionState
             .get(session_id)
             .cloned()
             .unwrap_or_default(),
+        workflow: build_workflow_state(state, session_id)?,
+    })
+}
+
+fn build_workflow_state(
+    state: &ServiceState,
+    session_id: &str,
+) -> Result<CadWorkflowState, String> {
+    require_session(state, session_id)?;
+    let run_ids = state
+        .agent_runs
+        .get(session_id)
+        .into_iter()
+        .flatten()
+        .map(|run| run.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let mut plans = run_ids
+        .iter()
+        .filter_map(|run_id| state.workflow_plans.get(*run_id).cloned())
+        .collect::<Vec<_>>();
+    plans.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+    let mut outer_iterations = run_ids
+        .iter()
+        .flat_map(|run_id| {
+            state
+                .workflow_outer_iterations
+                .get(*run_id)
+                .into_iter()
+                .flatten()
+                .cloned()
+        })
+        .collect::<Vec<_>>();
+    outer_iterations.sort_by(|left, right| {
+        left.run_id
+            .cmp(&right.run_id)
+            .then_with(|| left.iteration.cmp(&right.iteration))
+            .then_with(|| left.created_at.cmp(&right.created_at))
+    });
+    let mut pending_vlm = run_ids
+        .iter()
+        .filter_map(|run_id| state.workflow_pending_vlm.get(*run_id).cloned())
+        .collect::<Vec<_>>();
+    pending_vlm.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+    Ok(CadWorkflowState {
+        plans,
+        outer_iterations,
+        pending_vlm,
     })
 }
 
@@ -1941,6 +2500,81 @@ fn source_hash(source: &str) -> String {
     storage::sha256_hex(source.as_bytes())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenscadWasmNodeOutput {
+    diagnostics: CadDiagnostics,
+    #[serde(default)]
+    mesh: Option<CadMesh>,
+    #[serde(default)]
+    stl_base64: Option<String>,
+    #[serde(default)]
+    stl_sha256: Option<String>,
+    #[serde(default)]
+    stl_bytes: Option<u64>,
+}
+
+fn render_open_scad_wasm_node(
+    source: &str,
+    app_data_dir: &Path,
+) -> Result<OpenscadWasmNodeOutput, String> {
+    fs::create_dir_all(app_data_dir).map_err(|error| error.to_string())?;
+    let source_path = app_data_dir.join(format!("openscad-render-{}.scad", Uuid::new_v4()));
+    fs::write(&source_path, source).map_err(|error| error.to_string())?;
+    let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| "Could not resolve repository root for OpenSCAD WASM helper.".to_string())?
+        .join("scripts")
+        .join("openscad-render.mjs");
+    let output = Command::new("node")
+        .arg(&script_path)
+        .arg(&source_path)
+        .output()
+        .map_err(|error| {
+            format!(
+                "Failed to execute OpenSCAD WASM helper {}: {error}",
+                script_path.display()
+            )
+        })?;
+    let _ = fs::remove_file(&source_path);
+    if !output.status.success() {
+        return Err(format!(
+            "OpenSCAD WASM helper exited with status {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    serde_json::from_slice(&output.stdout).map_err(|error| {
+        format!(
+            "OpenSCAD WASM helper returned invalid JSON: {error}; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    })
+}
+
+fn runtime_artifact_metadata(
+    source: &str,
+    parameters: &[CadParameter],
+    rendered: &OpenscadWasmNodeOutput,
+    phase: &str,
+) -> Result<Value, String> {
+    Ok(json!({
+        "runtime": "openscad-wasm",
+        "sourceLanguage": "openscad",
+        "sourceHash": source_hash(source),
+        "parameterHash": storage::sha256_hex(
+            serde_json::to_string(parameters)
+                .map_err(|error| error.to_string())?
+                .as_bytes()
+        ),
+        "stlSha256": rendered.stl_sha256,
+        "stlBytes": rendered.stl_bytes,
+        "renderDurationMs": rendered.diagnostics.elapsed_ms,
+        "diagnosticsSource": "openscad-wasm",
+        "phase": phase
+    }))
+}
+
 fn require_session<'a>(
     state: &'a ServiceState,
     session_id: &str,
@@ -1991,6 +2625,48 @@ fn require_agent_run_mut<'a>(
         .get_mut(session_id)
         .and_then(|runs| runs.iter_mut().find(|run| run.id == run_id))
         .ok_or_else(|| format!("Agent run not found: {run_id}"))
+}
+
+fn validate_workflow_run(
+    state: &ServiceState,
+    session_id: &str,
+    run_id: &str,
+) -> Result<(), String> {
+    require_session(state, session_id)?;
+    state
+        .agent_runs
+        .get(session_id)
+        .into_iter()
+        .flatten()
+        .find(|run| run.id == run_id)
+        .map(|_| ())
+        .ok_or_else(|| format!("Agent run not found: {run_id}"))
+}
+
+fn validate_revision_session(
+    state: &ServiceState,
+    session_id: &str,
+    revision_id: &str,
+) -> Result<(), String> {
+    let revision = require_revision(state, revision_id)?;
+    if revision.session_id != session_id {
+        return Err(format!(
+            "CAD revision {revision_id} does not belong to session {session_id}."
+        ));
+    }
+    Ok(())
+}
+
+fn validate_artifact_session(
+    state: &ServiceState,
+    session_id: &str,
+    artifact_id: &str,
+) -> Result<(), String> {
+    let artifact = state
+        .artifacts
+        .get(artifact_id)
+        .ok_or_else(|| format!("CAD artifact not found: {artifact_id}"))?;
+    validate_revision_session(state, session_id, &artifact.revision_id)
 }
 
 fn json_to_parameter_value(value: Value) -> CadParameterValue {
@@ -2152,6 +2828,82 @@ mod tests {
             .artifacts
             .iter()
             .any(|artifact| artifact.kind == CadArtifactKind::PreviewMesh));
+    }
+
+    #[test]
+    fn openscad_wasm_preview_and_export_share_boolean_stl_output_hash() {
+        let service =
+            SessionService::new(std::env::temp_dir().join(format!("cadastrophe-test-{}", uuid())));
+        let created = service
+            .create_session(CreateCadSessionInput::default())
+            .unwrap();
+        let updated = service
+            .update_model_source(UpdateModelSourceInput {
+                session_id: created.session_id.clone(),
+                source_language: CadSourceLanguage::Openscad,
+                source: r#"
+$fn = 24;
+difference() {
+  union() {
+    cube([12, 8, 4], center=true);
+    rotate([0, 0, 30]) translate([0, 0, 3]) cylinder(h=4, r=3, center=true);
+  }
+  translate([0, 0, -4]) cylinder(h=12, r=1.5, center=true);
+}
+"#
+                .to_string(),
+                parent_revision_id: created.state.session.active_revision_id.clone(),
+                parameters: None,
+            })
+            .unwrap();
+
+        let (preview, state) = service
+            .render_preview(RenderPreviewInput {
+                session_id: created.session_id.clone(),
+                revision_id: Some(updated.revision_id.clone()),
+            })
+            .unwrap();
+        assert!(preview.diagnostics.ok);
+        let preview_stl_hash = state
+            .active_revision
+            .as_ref()
+            .unwrap()
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == CadArtifactKind::PreviewMesh)
+            .and_then(|artifact| artifact.metadata.as_ref())
+            .and_then(|metadata| metadata.get("stlSha256"))
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_string();
+
+        let (export, exported_state) = service
+            .export_artifact(ExportArtifactInput {
+                session_id: created.session_id,
+                revision_id: Some(updated.revision_id),
+                format: "stl".to_string(),
+            })
+            .unwrap();
+        assert!(export.diagnostics.ok);
+        let export_stl_hash = export
+            .artifact
+            .as_ref()
+            .and_then(|artifact| artifact.metadata.as_ref())
+            .and_then(|metadata| metadata.get("stlSha256"))
+            .and_then(Value::as_str)
+            .unwrap();
+        assert_eq!(preview_stl_hash, export_stl_hash);
+        assert_eq!(
+            exported_state
+                .active_revision
+                .as_ref()
+                .unwrap()
+                .artifacts
+                .iter()
+                .filter(|artifact| artifact.kind == CadArtifactKind::Stl)
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -2869,6 +3621,350 @@ mod tests {
                 .and_then(Value::as_str),
             Some("generate_source")
         );
+    }
+
+    #[test]
+    fn sqlite_repository_restores_workflow_state_after_restart() {
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cadastrophe-workflow-repo-test-{}", uuid()));
+        let layout = StorageLayout::from_app_data_dir(app_data_dir);
+        storage::initialize_storage(&layout).unwrap();
+
+        let service = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout.clone())),
+        )
+        .unwrap();
+        let created = service
+            .create_session(CreateCadSessionInput::default())
+            .unwrap();
+        let root_revision_id = created.state.session.active_revision_id.clone().unwrap();
+        let updated = service
+            .update_model_source(UpdateModelSourceInput {
+                session_id: created.session_id.clone(),
+                source_language: CadSourceLanguage::Openscad,
+                source: "// @main_component wall_bracket\ncube([30, 10, 20]);".to_string(),
+                parent_revision_id: Some(root_revision_id),
+                parameters: None,
+            })
+            .unwrap();
+        let (run, _) = service
+            .create_agent_run(
+                &created.session_id,
+                "Create a workflow state fixture.".to_string(),
+                Some(updated.revision_id.clone()),
+                Some("fake".to_string()),
+                None,
+            )
+            .unwrap();
+        let plan: CadModelPlan = serde_json::from_str(include_str!(
+            "../../fixtures/contracts/cad_model_plan.v1.json"
+        ))
+        .unwrap();
+        let workflow_plan = CadWorkflowPlan {
+            run_id: run.id.clone(),
+            revision_id: Some(updated.revision_id.clone()),
+            source_language: plan.source_language.clone(),
+            plan,
+            created_at: "2026-07-29T00:00:00.000Z".to_string(),
+        };
+        service
+            .save_workflow_plan(&created.session_id, workflow_plan)
+            .unwrap();
+        service
+            .save_workflow_outer_iteration(
+                &created.session_id,
+                CadWorkflowOuterIteration {
+                    id: "workflow-outer-test-1".to_string(),
+                    run_id: run.id.clone(),
+                    iteration: 1,
+                    revision_id: Some(updated.revision_id.clone()),
+                    structural_report: serde_json::from_str(include_str!(
+                        "../../fixtures/contracts/structural_report.v1.json"
+                    ))
+                    .unwrap(),
+                    vlm_report: Some(
+                        serde_json::from_str(include_str!(
+                            "../../fixtures/contracts/vlm_judge_report.v1.json"
+                        ))
+                        .unwrap(),
+                    ),
+                    failure_report: Some(json!({
+                        "contractType": "cadastrophe.failure_report.v1",
+                        "reason": "missing_support_tab",
+                        "nextAction": "outer_loop_refine_source"
+                    })),
+                    passed: false,
+                    created_at: "2026-07-29T00:00:01.000Z".to_string(),
+                },
+            )
+            .unwrap();
+        let artifact = service
+            .persist_runtime_artifact(PersistRuntimeArtifactInput {
+                session_id: created.session_id.clone(),
+                revision_id: updated.revision_id.clone(),
+                kind: CadArtifactKind::Stl,
+                format: "stl".to_string(),
+                contents_base64: {
+                    use base64::Engine;
+                    base64::engine::general_purpose::STANDARD
+                        .encode(b"solid workflow_fixture\nendsolid workflow_fixture\n")
+                },
+                diagnostics: ok_diagnostics(1),
+                metadata: metadata_from_value(json!({
+                    "runtime": "openscad-wasm",
+                    "sourceLanguage": "openscad"
+                })),
+            })
+            .unwrap()
+            .artifact;
+        service
+            .save_workflow_pending_vlm(
+                &created.session_id,
+                CadWorkflowPendingVlm {
+                    run_id: run.id.clone(),
+                    artifact_id: artifact.id.clone(),
+                    contract: serde_json::from_str(include_str!(
+                        "../../fixtures/contracts/vlm_judge_contract.v1.json"
+                    ))
+                    .unwrap(),
+                    pass_threshold: 0.8,
+                    created_at: "2026-07-29T00:00:02.000Z".to_string(),
+                },
+            )
+            .unwrap();
+
+        let reloaded = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout)),
+        )
+        .unwrap();
+        let state = reloaded.get_session_state(&created.session_id).unwrap();
+
+        assert_eq!(state.workflow.plans.len(), 1);
+        assert_eq!(state.workflow.plans[0].run_id, run.id);
+        assert_eq!(
+            state.workflow.plans[0].revision_id.as_deref(),
+            Some(updated.revision_id.as_str())
+        );
+        assert_eq!(
+            state.workflow.plans[0].plan.main_component.name,
+            "wall_bracket"
+        );
+        assert_eq!(state.workflow.outer_iterations.len(), 1);
+        assert_eq!(state.workflow.outer_iterations[0].iteration, 1);
+        assert!(!state.workflow.outer_iterations[0].passed);
+        assert_eq!(
+            state.workflow.outer_iterations[0]
+                .failure_report
+                .as_ref()
+                .and_then(|report| report.get("contractType"))
+                .and_then(Value::as_str),
+            Some("cadastrophe.failure_report.v1")
+        );
+        assert_eq!(state.workflow.pending_vlm.len(), 1);
+        assert_eq!(state.workflow.pending_vlm[0].artifact_id, artifact.id);
+        assert_eq!(state.workflow.pending_vlm[0].pass_threshold, 0.8);
+    }
+
+    #[test]
+    fn sqlite_repository_assigns_agent_event_sequence_from_database() {
+        let app_data_dir = std::env::temp_dir().join(format!(
+            "cadastrophe-run-event-sequence-race-test-{}",
+            uuid()
+        ));
+        let layout = StorageLayout::from_app_data_dir(app_data_dir);
+        storage::initialize_storage(&layout).unwrap();
+
+        let app_service = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout.clone())),
+        )
+        .unwrap();
+        let created = app_service
+            .create_session(CreateCadSessionInput::default())
+            .unwrap();
+        let input_revision_id = created.state.session.active_revision_id.clone();
+        let (run, _) = app_service
+            .create_agent_run(
+                &created.session_id,
+                "Create a stale writer race fixture.".to_string(),
+                input_revision_id,
+                Some("codex".to_string()),
+                None,
+            )
+            .unwrap();
+
+        let stale_cli_service = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout.clone())),
+        )
+        .unwrap();
+        app_service
+            .update_agent_run(
+                &created.session_id,
+                &run.id,
+                None,
+                Some(Some("cadastrophe-plan-commit".to_string())),
+                None,
+                Some(CadBridgeEventType::AgentToolStarted),
+                Some(json!({"tool": "cadastrophe-plan-commit"})),
+            )
+            .unwrap();
+        let cli_event = stale_cli_service
+            .record_agent_tool_event(
+                &created.session_id,
+                &run.id,
+                None,
+                CadAgentRunEventType::AgentToolStarted,
+                json!({"command": "cadastrophe-plan-commit", "status": "started"}),
+            )
+            .unwrap();
+
+        let reloaded = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout)),
+        )
+        .unwrap();
+        let events = reloaded
+            .get_session_state(&created.session_id)
+            .unwrap()
+            .agent_run_events
+            .into_iter()
+            .filter(|event| event.run_id == run.id)
+            .collect::<Vec<_>>();
+        let sequences = events
+            .iter()
+            .map(|event| event.sequence)
+            .collect::<Vec<_>>();
+        assert_eq!(sequences, vec![1, 2, 3]);
+        assert_eq!(cli_event.sequence, 3);
+    }
+
+    #[test]
+    fn refresh_session_from_repository_merges_external_workflow_state() {
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cadastrophe-workflow-refresh-test-{}", uuid()));
+        let layout = StorageLayout::from_app_data_dir(app_data_dir);
+        storage::initialize_storage(&layout).unwrap();
+
+        let app_service = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout.clone())),
+        )
+        .unwrap();
+        let created = app_service
+            .create_session(CreateCadSessionInput::default())
+            .unwrap();
+        let (run, _) = app_service
+            .create_agent_run(
+                &created.session_id,
+                "Create a workflow refresh fixture.".to_string(),
+                created.state.session.active_revision_id.clone(),
+                Some("codex".to_string()),
+                None,
+            )
+            .unwrap();
+        let external_cli_service = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout)),
+        )
+        .unwrap();
+        let plan: CadModelPlan = serde_json::from_str(include_str!(
+            "../../fixtures/contracts/cad_model_plan.v1.json"
+        ))
+        .unwrap();
+        external_cli_service
+            .save_workflow_plan(
+                &created.session_id,
+                CadWorkflowPlan {
+                    run_id: run.id.clone(),
+                    revision_id: created.state.session.active_revision_id.clone(),
+                    source_language: plan.source_language.clone(),
+                    plan,
+                    created_at: "2026-07-29T00:00:00.000Z".to_string(),
+                },
+            )
+            .unwrap();
+
+        assert!(app_service
+            .get_session_state(&created.session_id)
+            .unwrap()
+            .workflow
+            .plans
+            .is_empty());
+
+        let refreshed = app_service
+            .refresh_session_from_repository(&created.session_id)
+            .unwrap();
+        assert_eq!(refreshed.workflow.plans.len(), 1);
+        assert_eq!(refreshed.workflow.plans[0].run_id, run.id);
+        assert_eq!(
+            refreshed.workflow.plans[0].plan.main_component.name,
+            "wall_bracket"
+        );
+    }
+
+    #[test]
+    fn workflow_service_rejects_cross_session_and_missing_references() {
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cadastrophe-workflow-integrity-test-{}", uuid()));
+        let layout = StorageLayout::from_app_data_dir(app_data_dir);
+        storage::initialize_storage(&layout).unwrap();
+
+        let service = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout)),
+        )
+        .unwrap();
+        let first = service
+            .create_session(CreateCadSessionInput::default())
+            .unwrap();
+        let second = service
+            .create_session(CreateCadSessionInput::default())
+            .unwrap();
+        let first_revision_id = first.state.session.active_revision_id.clone().unwrap();
+        let second_revision_id = second.state.session.active_revision_id.clone().unwrap();
+        let (run, _) = service
+            .create_agent_run(
+                &first.session_id,
+                "Validate workflow references.".to_string(),
+                Some(first_revision_id),
+                Some("fake".to_string()),
+                None,
+            )
+            .unwrap();
+        let plan: CadModelPlan = serde_json::from_str(include_str!(
+            "../../fixtures/contracts/cad_model_plan.v1.json"
+        ))
+        .unwrap();
+        let error = service
+            .save_workflow_plan(
+                &first.session_id,
+                CadWorkflowPlan {
+                    run_id: run.id.clone(),
+                    revision_id: Some(second_revision_id),
+                    source_language: plan.source_language.clone(),
+                    plan,
+                    created_at: "2026-07-29T00:00:00.000Z".to_string(),
+                },
+            )
+            .expect_err("cross-session revision should be rejected");
+        assert!(error.contains("does not belong to session"));
+
+        let error = service
+            .save_workflow_pending_vlm(
+                &first.session_id,
+                CadWorkflowPendingVlm {
+                    run_id: run.id,
+                    artifact_id: "missing-artifact".to_string(),
+                    contract: json!({"contractType": "cadastrophe.vlm_judge.v1"}),
+                    pass_threshold: 0.8,
+                    created_at: "2026-07-29T00:00:02.000Z".to_string(),
+                },
+            )
+            .expect_err("missing artifact should be rejected");
+        assert!(error.contains("CAD artifact not found"));
     }
 
     #[test]

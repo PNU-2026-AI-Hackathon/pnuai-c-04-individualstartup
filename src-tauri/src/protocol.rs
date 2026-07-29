@@ -259,6 +259,95 @@ pub struct CadAgentRunEvent {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct CadModelPlanComponent {
+    pub name: String,
+    pub purpose: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_features: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CadModelAspectRatio {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub tolerance: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CadModelRuntimeConstraints {
+    pub runtime: CadRuntimeKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_features: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forbidden_features: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub main_component_annotation: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CadModelPlan {
+    pub schema_version: String,
+    pub summary: String,
+    pub main_component: CadModelPlanComponent,
+    #[serde(default)]
+    pub supporting_components: Vec<CadModelPlanComponent>,
+    pub expected_aspect_ratio: CadModelAspectRatio,
+    pub source_language: CadSourceLanguage,
+    pub runtime_constraints: CadModelRuntimeConstraints,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CadWorkflowPlan {
+    pub run_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision_id: Option<String>,
+    pub plan: CadModelPlan,
+    pub source_language: CadSourceLanguage,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CadWorkflowOuterIteration {
+    pub id: String,
+    pub run_id: String,
+    pub iteration: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision_id: Option<String>,
+    pub structural_report: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vlm_report: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_report: Option<Value>,
+    pub passed: bool,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CadWorkflowPendingVlm {
+    pub run_id: String,
+    pub artifact_id: String,
+    pub contract: Value,
+    pub pass_threshold: f64,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CadWorkflowState {
+    pub plans: Vec<CadWorkflowPlan>,
+    pub outer_iterations: Vec<CadWorkflowOuterIteration>,
+    pub pending_vlm: Vec<CadWorkflowPendingVlm>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct CadRevisionRunLink {
     pub run_id: String,
     pub role: String,
@@ -337,6 +426,7 @@ pub struct CadSessionState {
     pub conversation: Vec<CadConversationMessage>,
     pub agent_runs: Vec<CadAgentRun>,
     pub agent_run_events: Vec<CadAgentRunEvent>,
+    pub workflow: CadWorkflowState,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -536,6 +626,26 @@ pub struct RenderPreviewInput {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct PersistRuntimeArtifactInput {
+    pub session_id: String,
+    pub revision_id: String,
+    pub kind: CadArtifactKind,
+    pub format: String,
+    pub contents_base64: String,
+    pub diagnostics: CadDiagnostics,
+    #[serde(default)]
+    pub metadata: Metadata,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistRuntimeArtifactResult {
+    pub artifact: CadArtifact,
+    pub state: CadSessionState,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct PostUserMessageInput {
     pub session_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -633,4 +743,78 @@ pub struct CleanupOrphanArtifactsResult {
     pub checked_file_count: usize,
     pub orphan_paths: Vec<String>,
     pub deleted_paths: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cad_model_plan_fixture_matches_rust_schema() {
+        let plan: CadModelPlan = serde_json::from_str(include_str!(
+            "../../fixtures/contracts/cad_model_plan.v1.json"
+        ))
+        .unwrap();
+
+        assert_eq!(plan.schema_version, "cad_model_plan.v1");
+        assert_eq!(plan.main_component.name, "wall_bracket");
+        assert_eq!(plan.source_language, CadSourceLanguage::Openscad);
+        assert_eq!(
+            plan.runtime_constraints.runtime,
+            CadRuntimeKind::OpenscadWasm
+        );
+        assert!(plan.expected_aspect_ratio.tolerance > 0.0);
+    }
+
+    #[test]
+    fn workflow_state_fixture_matches_rust_schema() {
+        let workflow: CadWorkflowState = serde_json::from_str(include_str!(
+            "../../fixtures/contracts/workflow_state.v1.json"
+        ))
+        .unwrap();
+
+        assert_eq!(workflow.plans.len(), 1);
+        assert_eq!(workflow.outer_iterations.len(), 1);
+        assert_eq!(workflow.pending_vlm.len(), 1);
+        assert_eq!(workflow.plans[0].plan.schema_version, "cad_model_plan.v1");
+        assert_eq!(
+            workflow.outer_iterations[0]
+                .failure_report
+                .as_ref()
+                .and_then(|report| report.get("contractType"))
+                .and_then(Value::as_str),
+            Some("cadastrophe.failure_report.v1")
+        );
+        assert_eq!(
+            workflow.pending_vlm[0]
+                .contract
+                .get("contractType")
+                .and_then(Value::as_str),
+            Some("cadastrophe.vlm_judge.v1")
+        );
+    }
+
+    #[test]
+    fn report_contract_fixtures_keep_expected_discriminators() {
+        for (fixture, contract_type) in [
+            (
+                include_str!("../../fixtures/contracts/structural_report.v1.json"),
+                "cadastrophe.structural_report.v1",
+            ),
+            (
+                include_str!("../../fixtures/contracts/vlm_judge_contract.v1.json"),
+                "cadastrophe.vlm_judge.v1",
+            ),
+            (
+                include_str!("../../fixtures/contracts/vlm_judge_report.v1.json"),
+                "cadastrophe.vlm_judge_report.v1",
+            ),
+        ] {
+            let value: Value = serde_json::from_str(fixture).unwrap();
+            assert_eq!(
+                value.get("contractType").and_then(Value::as_str),
+                Some(contract_type)
+            );
+        }
+    }
 }

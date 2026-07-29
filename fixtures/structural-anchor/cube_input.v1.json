@@ -1,0 +1,25 @@
+{
+  "runId": "run-structural-fixture-1",
+  "revisionId": "revision-structural-fixture-1",
+  "artifactId": "artifact-structural-cube-stl",
+  "planPath": "cube_plan.v1.json",
+  "stlPath": "cube.stl",
+  "artifactManifest": {
+    "id": "artifact-structural-cube-stl",
+    "revisionId": "revision-structural-fixture-1",
+    "kind": "stl",
+    "format": "stl",
+    "uri": "artifacts/session-fixture/revision-structural-fixture-1/artifact-structural-cube-stl.stl",
+    "bytes": 1423,
+    "sha256": "ab613b8a5bed047f8fb03a0678004aacb82096cd4404c941fce3adaf8a4328b0",
+    "metadata": {
+      "mainComponent": "unit_cube"
+    }
+  },
+  "runtimeDiagnostics": {
+    "ok": true,
+    "elapsedMs": 7,
+    "items": []
+  },
+  "sourceText": "// @main_component unit_cube\ncube([1, 1, 1]);"
+}

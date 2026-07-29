@@ -1,7 +1,7 @@
 use crate::protocol::*;
 use crate::session_service::ServiceState;
 use crate::storage::{self, StorageLayout};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -16,6 +16,9 @@ pub(crate) struct SessionRepositorySnapshot {
     pub conversation: HashMap<String, Vec<CadConversationMessage>>,
     pub agent_runs: HashMap<String, Vec<CadAgentRun>>,
     pub agent_run_events: HashMap<String, Vec<CadAgentRunEvent>>,
+    pub workflow_plans: HashMap<String, CadWorkflowPlan>,
+    pub workflow_outer_iterations: HashMap<String, Vec<CadWorkflowOuterIteration>>,
+    pub workflow_pending_vlm: HashMap<String, CadWorkflowPendingVlm>,
     pub current_interactive_session_id: Option<String>,
 }
 
@@ -36,7 +39,20 @@ pub(crate) trait SessionRepository: Send + Sync {
         message: &CadConversationMessage,
     ) -> SessionRepositoryResult<()>;
     fn save_agent_run(&self, run: &CadAgentRun) -> SessionRepositoryResult<()>;
-    fn save_agent_run_event(&self, event: &CadAgentRunEvent) -> SessionRepositoryResult<()>;
+    fn save_agent_run_event(
+        &self,
+        event: &CadAgentRunEvent,
+    ) -> SessionRepositoryResult<CadAgentRunEvent>;
+    fn save_workflow_plan(&self, plan: &CadWorkflowPlan) -> SessionRepositoryResult<()>;
+    fn save_workflow_outer_iteration(
+        &self,
+        iteration: &CadWorkflowOuterIteration,
+    ) -> SessionRepositoryResult<()>;
+    fn save_workflow_pending_vlm(
+        &self,
+        pending_vlm: &CadWorkflowPendingVlm,
+    ) -> SessionRepositoryResult<()>;
+    fn clear_workflow_pending_vlm(&self, run_id: &str) -> SessionRepositoryResult<()>;
     fn load_artifact_manifest(
         &self,
         artifact_id: &str,
@@ -90,7 +106,32 @@ impl SessionRepository for InMemorySessionRepository {
         Ok(())
     }
 
-    fn save_agent_run_event(&self, _event: &CadAgentRunEvent) -> SessionRepositoryResult<()> {
+    fn save_agent_run_event(
+        &self,
+        event: &CadAgentRunEvent,
+    ) -> SessionRepositoryResult<CadAgentRunEvent> {
+        Ok(event.clone())
+    }
+
+    fn save_workflow_plan(&self, _plan: &CadWorkflowPlan) -> SessionRepositoryResult<()> {
+        Ok(())
+    }
+
+    fn save_workflow_outer_iteration(
+        &self,
+        _iteration: &CadWorkflowOuterIteration,
+    ) -> SessionRepositoryResult<()> {
+        Ok(())
+    }
+
+    fn save_workflow_pending_vlm(
+        &self,
+        _pending_vlm: &CadWorkflowPendingVlm,
+    ) -> SessionRepositoryResult<()> {
+        Ok(())
+    }
+
+    fn clear_workflow_pending_vlm(&self, _run_id: &str) -> SessionRepositoryResult<()> {
         Ok(())
     }
 
@@ -151,6 +192,9 @@ impl SessionRepository for SqliteSessionRepository {
         let conversation = load_conversation_messages(&connection)?;
         let agent_runs = load_agent_runs(&connection)?;
         let agent_run_events = load_agent_run_events(&connection)?;
+        let workflow_plans = load_workflow_plans(&connection)?;
+        let workflow_outer_iterations = load_workflow_outer_iterations(&connection)?;
+        let workflow_pending_vlm = load_workflow_pending_vlm(&connection)?;
         attach_artifacts_to_revisions(&mut revisions, &artifacts);
         for session_id in sessions.keys().cloned().collect::<Vec<_>>() {
             rebuild_loaded_revision_summaries(&mut sessions, &revisions, &agent_runs, &session_id);
@@ -163,6 +207,9 @@ impl SessionRepository for SqliteSessionRepository {
             conversation,
             agent_runs,
             agent_run_events,
+            workflow_plans,
+            workflow_outer_iterations,
+            workflow_pending_vlm,
             current_interactive_session_id,
         })
     }
@@ -291,9 +338,44 @@ impl SessionRepository for SqliteSessionRepository {
         save_agent_run(&connection, run)
     }
 
-    fn save_agent_run_event(&self, event: &CadAgentRunEvent) -> SessionRepositoryResult<()> {
+    fn save_agent_run_event(
+        &self,
+        event: &CadAgentRunEvent,
+    ) -> SessionRepositoryResult<CadAgentRunEvent> {
+        let mut connection = self.connection()?;
+        save_agent_run_event(&mut connection, event)
+    }
+
+    fn save_workflow_plan(&self, plan: &CadWorkflowPlan) -> SessionRepositoryResult<()> {
         let connection = self.connection()?;
-        save_agent_run_event(&connection, event)
+        save_workflow_plan(&connection, plan)
+    }
+
+    fn save_workflow_outer_iteration(
+        &self,
+        iteration: &CadWorkflowOuterIteration,
+    ) -> SessionRepositoryResult<()> {
+        let connection = self.connection()?;
+        save_workflow_outer_iteration(&connection, iteration)
+    }
+
+    fn save_workflow_pending_vlm(
+        &self,
+        pending_vlm: &CadWorkflowPendingVlm,
+    ) -> SessionRepositoryResult<()> {
+        let connection = self.connection()?;
+        save_workflow_pending_vlm(&connection, pending_vlm)
+    }
+
+    fn clear_workflow_pending_vlm(&self, run_id: &str) -> SessionRepositoryResult<()> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "DELETE FROM workflow_pending_vlm WHERE run_id = ?1",
+                params![run_id],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
     }
 
     fn load_artifact_manifest(
@@ -669,6 +751,139 @@ fn load_agent_run_events(
     Ok(events)
 }
 
+fn load_workflow_plans(
+    connection: &Connection,
+) -> SessionRepositoryResult<HashMap<String, CadWorkflowPlan>> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT workflow_plans.run_id, workflow_plans.revision_id,
+                   workflow_plans.plan_json, workflow_plans.source_language,
+                   workflow_plans.created_at
+            FROM workflow_plans
+            INNER JOIN agent_runs ON agent_runs.id = workflow_plans.run_id
+            INNER JOIN sessions ON sessions.id = agent_runs.session_id
+            WHERE sessions.deleted_at IS NULL
+            ORDER BY workflow_plans.created_at ASC
+            "#,
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            let plan_json: String = row.get(2)?;
+            let source_language: String = row.get(3)?;
+            Ok(CadWorkflowPlan {
+                run_id: row.get(0)?,
+                revision_id: row.get(1)?,
+                plan: serde_json::from_str(&plan_json)
+                    .map_err(|error| to_rusqlite_error(error.to_string()))?,
+                source_language: from_db_text(&source_language).map_err(to_rusqlite_error)?,
+                created_at: row.get(4)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    let mut plans = HashMap::new();
+    for row in rows {
+        let plan = row.map_err(|error| error.to_string())?;
+        plans.insert(plan.run_id.clone(), plan);
+    }
+    Ok(plans)
+}
+
+fn load_workflow_outer_iterations(
+    connection: &Connection,
+) -> SessionRepositoryResult<HashMap<String, Vec<CadWorkflowOuterIteration>>> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT workflow_outer_iterations.id, workflow_outer_iterations.run_id,
+                   workflow_outer_iterations.iteration,
+                   workflow_outer_iterations.revision_id,
+                   workflow_outer_iterations.structural_report_json,
+                   workflow_outer_iterations.vlm_report_json,
+                   workflow_outer_iterations.failure_report_json,
+                   workflow_outer_iterations.passed,
+                   workflow_outer_iterations.created_at
+            FROM workflow_outer_iterations
+            INNER JOIN agent_runs ON agent_runs.id = workflow_outer_iterations.run_id
+            INNER JOIN sessions ON sessions.id = agent_runs.session_id
+            WHERE sessions.deleted_at IS NULL
+            ORDER BY workflow_outer_iterations.run_id ASC,
+                     workflow_outer_iterations.iteration ASC,
+                     workflow_outer_iterations.created_at ASC
+            "#,
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            let structural_report_json: String = row.get(4)?;
+            let vlm_report_json: Option<String> = row.get(5)?;
+            let failure_report_json: Option<String> = row.get(6)?;
+            Ok(CadWorkflowOuterIteration {
+                id: row.get(0)?,
+                run_id: row.get(1)?,
+                iteration: row.get::<_, i64>(2)?.max(0) as u64,
+                revision_id: row.get(3)?,
+                structural_report: serde_json::from_str(&structural_report_json)
+                    .map_err(|error| to_rusqlite_error(error.to_string()))?,
+                vlm_report: optional_json_value(vlm_report_json).map_err(to_rusqlite_error)?,
+                failure_report: optional_json_value(failure_report_json)
+                    .map_err(to_rusqlite_error)?,
+                passed: row.get::<_, i64>(7)? != 0,
+                created_at: row.get(8)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    let mut iterations: HashMap<String, Vec<CadWorkflowOuterIteration>> = HashMap::new();
+    for row in rows {
+        let iteration = row.map_err(|error| error.to_string())?;
+        iterations
+            .entry(iteration.run_id.clone())
+            .or_default()
+            .push(iteration);
+    }
+    Ok(iterations)
+}
+
+fn load_workflow_pending_vlm(
+    connection: &Connection,
+) -> SessionRepositoryResult<HashMap<String, CadWorkflowPendingVlm>> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT workflow_pending_vlm.run_id, workflow_pending_vlm.artifact_id,
+                   workflow_pending_vlm.contract_json,
+                   workflow_pending_vlm.pass_threshold,
+                   workflow_pending_vlm.created_at
+            FROM workflow_pending_vlm
+            INNER JOIN agent_runs ON agent_runs.id = workflow_pending_vlm.run_id
+            INNER JOIN sessions ON sessions.id = agent_runs.session_id
+            WHERE sessions.deleted_at IS NULL
+            ORDER BY workflow_pending_vlm.created_at ASC
+            "#,
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            let contract_json: String = row.get(2)?;
+            Ok(CadWorkflowPendingVlm {
+                run_id: row.get(0)?,
+                artifact_id: row.get(1)?,
+                contract: serde_json::from_str(&contract_json)
+                    .map_err(|error| to_rusqlite_error(error.to_string()))?,
+                pass_threshold: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    let mut pending = HashMap::new();
+    for row in rows {
+        let pending_vlm = row.map_err(|error| error.to_string())?;
+        pending.insert(pending_vlm.run_id.clone(), pending_vlm);
+    }
+    Ok(pending)
+}
+
 fn attach_artifacts_to_revisions(
     revisions: &mut HashMap<String, CadRevision>,
     artifacts: &HashMap<String, CadArtifact>,
@@ -819,28 +1034,148 @@ fn save_agent_run(connection: &Connection, run: &CadAgentRun) -> SessionReposito
 }
 
 fn save_agent_run_event(
-    connection: &Connection,
+    connection: &mut Connection,
     event: &CadAgentRunEvent,
-) -> SessionRepositoryResult<()> {
-    connection
+) -> SessionRepositoryResult<CadAgentRunEvent> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    if let Some(sequence) = transaction
+        .query_row(
+            "SELECT sequence FROM agent_run_events WHERE id = ?1",
+            params![event.id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+    {
+        let mut saved = event.clone();
+        saved.sequence = sequence.max(0) as u64;
+        transaction.commit().map_err(|error| error.to_string())?;
+        return Ok(saved);
+    }
+    let sequence = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM agent_run_events WHERE run_id = ?1",
+            params![event.run_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let mut saved = event.clone();
+    saved.sequence = sequence.max(1) as u64;
+    transaction
         .execute(
             r#"
             INSERT INTO agent_run_events (
               id, session_id, run_id, revision_id, event_type, sequence,
               created_at, payload_json, metadata_json
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-            ON CONFLICT(id) DO NOTHING
             "#,
             params![
-                event.id,
-                event.session_id,
-                event.run_id,
-                event.revision_id,
-                to_db_text(&event.event_type)?,
-                event.sequence as i64,
-                event.created_at,
-                serde_json::to_string(&event.payload).map_err(|error| error.to_string())?,
-                optional_metadata_json(event.metadata.as_ref())?,
+                saved.id,
+                saved.session_id,
+                saved.run_id,
+                saved.revision_id,
+                to_db_text(&saved.event_type)?,
+                saved.sequence as i64,
+                saved.created_at,
+                serde_json::to_string(&saved.payload).map_err(|error| error.to_string())?,
+                optional_metadata_json(saved.metadata.as_ref())?,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(saved)
+}
+
+fn save_workflow_plan(
+    connection: &Connection,
+    plan: &CadWorkflowPlan,
+) -> SessionRepositoryResult<()> {
+    connection
+        .execute(
+            r#"
+            INSERT INTO workflow_plans (
+              run_id, revision_id, plan_json, source_language, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(run_id) DO UPDATE SET
+              revision_id = excluded.revision_id,
+              plan_json = excluded.plan_json,
+              source_language = excluded.source_language,
+              created_at = excluded.created_at
+            "#,
+            params![
+                plan.run_id,
+                plan.revision_id,
+                serde_json::to_string(&plan.plan).map_err(|error| error.to_string())?,
+                to_db_text(&plan.source_language)?,
+                plan.created_at,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn save_workflow_outer_iteration(
+    connection: &Connection,
+    iteration: &CadWorkflowOuterIteration,
+) -> SessionRepositoryResult<()> {
+    connection
+        .execute(
+            r#"
+            INSERT INTO workflow_outer_iterations (
+              id, run_id, iteration, revision_id, structural_report_json,
+              vlm_report_json, failure_report_json, passed, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            ON CONFLICT(id) DO UPDATE SET
+              run_id = excluded.run_id,
+              iteration = excluded.iteration,
+              revision_id = excluded.revision_id,
+              structural_report_json = excluded.structural_report_json,
+              vlm_report_json = excluded.vlm_report_json,
+              failure_report_json = excluded.failure_report_json,
+              passed = excluded.passed,
+              created_at = excluded.created_at
+            "#,
+            params![
+                iteration.id,
+                iteration.run_id,
+                iteration.iteration as i64,
+                iteration.revision_id,
+                serde_json::to_string(&iteration.structural_report)
+                    .map_err(|error| error.to_string())?,
+                optional_json_value_text(iteration.vlm_report.as_ref())?,
+                optional_json_value_text(iteration.failure_report.as_ref())?,
+                i64::from(iteration.passed),
+                iteration.created_at,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn save_workflow_pending_vlm(
+    connection: &Connection,
+    pending_vlm: &CadWorkflowPendingVlm,
+) -> SessionRepositoryResult<()> {
+    connection
+        .execute(
+            r#"
+            INSERT INTO workflow_pending_vlm (
+              run_id, artifact_id, contract_json, pass_threshold, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(run_id) DO UPDATE SET
+              artifact_id = excluded.artifact_id,
+              contract_json = excluded.contract_json,
+              pass_threshold = excluded.pass_threshold,
+              created_at = excluded.created_at
+            "#,
+            params![
+                pending_vlm.run_id,
+                pending_vlm.artifact_id,
+                serde_json::to_string(&pending_vlm.contract).map_err(|error| error.to_string())?,
+                pending_vlm.pass_threshold,
+                pending_vlm.created_at,
             ],
         )
         .map_err(|error| error.to_string())?;
@@ -876,6 +1211,18 @@ fn optional_metadata(metadata_json: Option<String>) -> SessionRepositoryResult<O
 fn optional_metadata_json(metadata: Option<&Metadata>) -> SessionRepositoryResult<Option<String>> {
     metadata
         .map(|metadata| serde_json::to_string(metadata).map_err(|error| error.to_string()))
+        .transpose()
+}
+
+fn optional_json_value(value: Option<String>) -> SessionRepositoryResult<Option<Value>> {
+    value
+        .map(|json| serde_json::from_str(&json).map_err(|error| error.to_string()))
+        .transpose()
+}
+
+fn optional_json_value_text(value: Option<&Value>) -> SessionRepositoryResult<Option<String>> {
+    value
+        .map(|value| serde_json::to_string(value).map_err(|error| error.to_string()))
         .transpose()
 }
 

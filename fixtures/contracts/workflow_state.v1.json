@@ -1,0 +1,72 @@
+{
+  "plans": [
+    {
+      "runId": "run-fixture-1",
+      "revisionId": "revision-fixture-1",
+      "plan": {
+        "schemaVersion": "cad_model_plan.v1",
+        "summary": "Parametric wall bracket with a back plate, two screw holes, and a forward support tab.",
+        "mainComponent": {
+          "name": "wall_bracket",
+          "purpose": "single printable bracket body",
+          "requiredFeatures": ["back_plate", "screw_holes", "support_tab"]
+        },
+        "supportingComponents": [],
+        "expectedAspectRatio": {
+          "x": 3.0,
+          "y": 1.0,
+          "z": 2.0,
+          "tolerance": 0.25
+        },
+        "sourceLanguage": "openscad",
+        "runtimeConstraints": {
+          "runtime": "openscad-wasm",
+          "requiredFeatures": ["difference", "union", "cylinder", "cube"],
+          "forbiddenFeatures": ["external_file_include"],
+          "mainComponentAnnotation": "// @main_component wall_bracket"
+        }
+      },
+      "sourceLanguage": "openscad",
+      "createdAt": "2026-07-29T00:00:00.000Z"
+    }
+  ],
+  "outerIterations": [
+    {
+      "id": "workflow-outer-fixture-1",
+      "runId": "run-fixture-1",
+      "iteration": 1,
+      "revisionId": "revision-fixture-1",
+      "structuralReport": {
+        "contractType": "cadastrophe.structural_report.v1",
+        "passed": true,
+        "checks": []
+      },
+      "vlmReport": {
+        "contractType": "cadastrophe.vlm_judge_report.v1",
+        "score": 0.72,
+        "passed": false
+      },
+      "failureReport": {
+        "contractType": "cadastrophe.failure_report.v1",
+        "reason": "missing_support_tab",
+        "nextAction": "outer_loop_refine_source"
+      },
+      "passed": false,
+      "createdAt": "2026-07-29T00:00:01.000Z"
+    }
+  ],
+  "pendingVlm": [
+    {
+      "runId": "run-fixture-1",
+      "artifactId": "artifact-fixture-stl",
+      "contract": {
+        "contractType": "cadastrophe.vlm_judge.v1",
+        "runId": "run-fixture-1",
+        "artifactId": "artifact-fixture-stl",
+        "passThreshold": 0.8
+      },
+      "passThreshold": 0.8,
+      "createdAt": "2026-07-29T00:00:02.000Z"
+    }
+  ]
+}

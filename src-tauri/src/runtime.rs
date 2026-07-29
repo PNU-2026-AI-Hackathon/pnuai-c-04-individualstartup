@@ -1,5 +1,9 @@
-use crate::protocol::{CadDiagnostic, CadDiagnostics, CadMesh, CadParameter, CadParameterValue};
+#[cfg(test)]
+use crate::protocol::{CadDiagnostic, CadMesh};
+use crate::protocol::{CadDiagnostics, CadParameter, CadParameterValue};
+#[cfg(test)]
 use regex::Regex;
+#[cfg(test)]
 use std::collections::HashMap;
 
 pub const DEFAULT_SAMPLE_SOURCE: &str = r#"width = 32; // @param min=8 max=80 step=1 label=Width
@@ -52,6 +56,7 @@ pub fn extract_open_scad_parameters(source: &str) -> Vec<CadParameter> {
         .collect()
 }
 
+#[cfg(test)]
 pub fn render_open_scad_preview(
     source: &str,
     parameters: &[CadParameter],
@@ -108,6 +113,7 @@ fn parameter_type(literal: &str) -> &'static str {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 struct Primitive {
     kind: PrimitiveKind,
@@ -117,6 +123,7 @@ struct Primitive {
     height: Option<f64>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 enum PrimitiveKind {
     Cube,
@@ -124,11 +131,13 @@ enum PrimitiveKind {
     Cylinder,
 }
 
+#[cfg(test)]
 struct ParsedOpenScad {
     primitives: Vec<Primitive>,
     diagnostics: Vec<CadDiagnostic>,
 }
 
+#[cfg(test)]
 fn parse_open_scad(source: &str, parameters: &[CadParameter]) -> ParsedOpenScad {
     let mut diagnostics = Vec::new();
     let env = build_environment(source, parameters);
@@ -191,6 +200,7 @@ fn parse_open_scad(source: &str, parameters: &[CadParameter]) -> ParsedOpenScad 
     }
 }
 
+#[cfg(test)]
 fn parse_primitive(
     kind: &str,
     args_source: &str,
@@ -253,6 +263,7 @@ fn parse_primitive(
     }
 }
 
+#[cfg(test)]
 fn strip_line_comments(source: &str) -> String {
     source
         .lines()
@@ -261,6 +272,7 @@ fn strip_line_comments(source: &str) -> String {
         .join("\n")
 }
 
+#[cfg(test)]
 fn build_environment(source: &str, parameters: &[CadParameter]) -> HashMap<String, f64> {
     let mut env = HashMap::new();
     let assignment_pattern = Regex::new(r#"(?m)^\s*([A-Za-z_]\w*)\s*=\s*([-+]?\d*\.?\d+)\s*;"#)
@@ -280,12 +292,14 @@ fn build_environment(source: &str, parameters: &[CadParameter]) -> HashMap<Strin
     env
 }
 
+#[cfg(test)]
 fn find_vector(source: &str) -> Option<&str> {
     let start = source.find('[')?;
     let end = source[start..].find(']')?;
     Some(&source[start..=start + end])
 }
 
+#[cfg(test)]
 fn parse_vector(source: &str, env: &HashMap<String, f64>) -> Option<[f64; 3]> {
     let parts = source
         .trim()
@@ -304,6 +318,7 @@ fn parse_vector(source: &str, env: &HashMap<String, f64>) -> Option<[f64; 3]> {
     ])
 }
 
+#[cfg(test)]
 fn split_top_level(source: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut start = 0;
@@ -326,6 +341,7 @@ fn split_top_level(source: &str) -> Vec<&str> {
     parts.into_iter().filter(|part| !part.is_empty()).collect()
 }
 
+#[cfg(test)]
 fn value_for_named_or_positional<'a>(
     args: &'a [&'a str],
     name: &str,
@@ -344,6 +360,7 @@ fn value_for_named_or_positional<'a>(
         })
 }
 
+#[cfg(test)]
 fn parse_number_expression(expression: &str, env: &HashMap<String, f64>) -> Option<f64> {
     let mut parser = ExpressionParser {
         input: expression.as_bytes(),
@@ -355,12 +372,14 @@ fn parse_number_expression(expression: &str, env: &HashMap<String, f64>) -> Opti
     (parser.index == parser.input.len() && value.is_finite()).then_some(value)
 }
 
+#[cfg(test)]
 struct ExpressionParser<'a> {
     input: &'a [u8],
     index: usize,
     env: &'a HashMap<String, f64>,
 }
 
+#[cfg(test)]
 impl ExpressionParser<'_> {
     fn parse_expression(&mut self) -> Option<f64> {
         let mut value = self.parse_term()?;
@@ -464,6 +483,7 @@ impl ExpressionParser<'_> {
     }
 }
 
+#[cfg(test)]
 fn build_combined_mesh(primitives: &[Primitive]) -> CadMesh {
     let mut combined = CadMesh {
         vertices: Vec::new(),
@@ -481,11 +501,13 @@ fn build_combined_mesh(primitives: &[Primitive]) -> CadMesh {
     combined
 }
 
+#[cfg(test)]
 fn build_cube_mesh(primitive: &Primitive) -> CadMesh {
     let [width, depth, height] = primitive.size.unwrap_or([1.0, 1.0, 1.0]);
     cuboid_mesh(width, depth, height, primitive.translate)
 }
 
+#[cfg(test)]
 fn cuboid_mesh(width: f64, depth: f64, height: f64, translate: [f64; 3]) -> CadMesh {
     let x = width / 2.0;
     let y = depth / 2.0;
@@ -532,6 +554,7 @@ fn cuboid_mesh(width: f64, depth: f64, height: f64, translate: [f64; 3]) -> CadM
     }
 }
 
+#[cfg(test)]
 fn build_sphere_mesh(primitive: &Primitive) -> CadMesh {
     let radius = primitive.radius.unwrap_or(1.0);
     let [tx, ty, tz] = primitive.translate;
@@ -574,6 +597,7 @@ fn build_sphere_mesh(primitive: &Primitive) -> CadMesh {
     mesh
 }
 
+#[cfg(test)]
 fn build_cylinder_mesh(primitive: &Primitive) -> CadMesh {
     let radius = primitive.radius.unwrap_or(1.0);
     let height = primitive.height.unwrap_or(1.0);
@@ -626,6 +650,7 @@ fn build_cylinder_mesh(primitive: &Primitive) -> CadMesh {
     mesh
 }
 
+#[cfg(test)]
 fn push_vertex(mesh: &mut CadMesh, vertex: [f64; 3], normal: [f64; 3]) -> u32 {
     let index = (mesh.vertices.len() / 3) as u32;
     mesh.vertices.extend(vertex);
@@ -633,6 +658,7 @@ fn push_vertex(mesh: &mut CadMesh, vertex: [f64; 3], normal: [f64; 3]) -> u32 {
     index
 }
 
+#[cfg(test)]
 fn append_mesh(target: &mut CadMesh, source: &CadMesh) {
     let offset = (target.vertices.len() / 3) as u32;
     target.vertices.extend(&source.vertices);

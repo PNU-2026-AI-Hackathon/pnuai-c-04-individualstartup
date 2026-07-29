@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "cad_model_plan.v1",
+  "summary": "Unit cube fixture for deterministic structural anchor checks.",
+  "mainComponent": {
+    "name": "unit_cube",
+    "purpose": "single closed cube body",
+    "requiredFeatures": ["six_faces"]
+  },
+  "supportingComponents": [],
+  "expectedAspectRatio": {
+    "x": 1.0,
+    "y": 1.0,
+    "z": 1.0,
+    "tolerance": 0.01
+  },
+  "sourceLanguage": "openscad",
+  "runtimeConstraints": {
+    "runtime": "openscad-wasm",
+    "requiredFeatures": ["cube"],
+    "forbiddenFeatures": [],
+    "mainComponentAnnotation": "// @main_component unit_cube"
+  }
+}

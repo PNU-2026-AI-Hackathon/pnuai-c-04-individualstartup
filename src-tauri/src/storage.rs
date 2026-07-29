@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 
 pub const DATABASE_FILE_NAME: &str = "cadastrophe.sqlite3";
 pub const ARTIFACT_DIR_NAME: &str = "artifacts";
-pub const SCHEMA_VERSION: i64 = 1;
+#[cfg(test)]
+pub const SCHEMA_VERSION: i64 = 2;
 
 pub type StorageResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -151,10 +152,11 @@ struct Migration {
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: SCHEMA_VERSION,
-    name: "milestone_2_1_initial_persistence_schema",
-    sql: r#"
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "milestone_2_1_initial_persistence_schema",
+        sql: r#"
       CREATE TABLE sessions (
         id TEXT PRIMARY KEY,
         title TEXT,
@@ -269,7 +271,57 @@ const MIGRATIONS: &[Migration] = &[Migration {
       CREATE INDEX idx_agent_run_events_run_sequence
         ON agent_run_events(run_id, sequence);
     "#,
-}];
+    },
+    Migration {
+        version: 2,
+        name: "milestone_3_0_workflow_state_spine",
+        sql: r#"
+      CREATE TABLE workflow_plans (
+        run_id TEXT PRIMARY KEY,
+        revision_id TEXT,
+        plan_json TEXT NOT NULL,
+        source_language TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE,
+        FOREIGN KEY(revision_id) REFERENCES revisions(id) ON DELETE SET NULL
+      );
+
+      CREATE TABLE workflow_outer_iterations (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        iteration INTEGER NOT NULL,
+        revision_id TEXT,
+        structural_report_json TEXT NOT NULL,
+        vlm_report_json TEXT,
+        failure_report_json TEXT,
+        passed INTEGER NOT NULL CHECK(passed IN (0, 1)),
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE,
+        FOREIGN KEY(revision_id) REFERENCES revisions(id) ON DELETE SET NULL,
+        UNIQUE(run_id, iteration)
+      );
+
+      CREATE TABLE workflow_pending_vlm (
+        run_id TEXT PRIMARY KEY,
+        artifact_id TEXT NOT NULL,
+        contract_json TEXT NOT NULL,
+        pass_threshold REAL NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE,
+        FOREIGN KEY(artifact_id) REFERENCES artifacts(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX idx_workflow_plans_revision
+        ON workflow_plans(revision_id);
+      CREATE INDEX idx_workflow_outer_iterations_run_iteration
+        ON workflow_outer_iterations(run_id, iteration);
+      CREATE INDEX idx_workflow_outer_iterations_revision
+        ON workflow_outer_iterations(revision_id);
+      CREATE INDEX idx_workflow_pending_vlm_artifact
+        ON workflow_pending_vlm(artifact_id);
+    "#,
+    },
+];
 
 #[cfg(test)]
 mod tests {
@@ -311,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_runner_creates_milestone_2_1_schema_once() {
+    fn migration_runner_creates_schema_once() {
         let app_data_dir =
             std::env::temp_dir().join(format!("cadastrophe-storage-test-{}", uuid::Uuid::new_v4()));
         let layout = StorageLayout::from_app_data_dir(app_data_dir);
@@ -328,6 +380,9 @@ mod tests {
             "conversation_messages",
             "agent_runs",
             "agent_run_events",
+            "workflow_plans",
+            "workflow_outer_iterations",
+            "workflow_pending_vlm",
         ] {
             let exists: bool = connection
                 .query_row(
@@ -359,22 +414,185 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(migration_count, 1);
-        let (version, name): (i64, String) = connection
-            .query_row(
-                "SELECT version, name FROM schema_migrations ORDER BY version",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
+        assert_eq!(migration_count, 2);
+        let migrations = connection
+            .prepare("SELECT version, name FROM schema_migrations ORDER BY version")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(version, SCHEMA_VERSION);
-        assert_eq!(name, "milestone_2_1_initial_persistence_schema");
+        assert_eq!(
+            migrations,
+            vec![
+                (1, "milestone_2_1_initial_persistence_schema".to_string()),
+                (2, "milestone_3_0_workflow_state_spine".to_string())
+            ]
+        );
 
         let applied_versions = applied_schema_versions(&connection);
-        assert_eq!(applied_versions, vec![SCHEMA_VERSION]);
+        assert_eq!(applied_versions, vec![1, SCHEMA_VERSION]);
         let mut connection = Connection::open(layout.database_path()).unwrap();
         run_migrations(&mut connection).unwrap();
         assert_eq!(applied_schema_versions(&connection), applied_versions);
+    }
+
+    #[test]
+    fn milestone_3_workflow_migration_upgrades_version_1_database_idempotently() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE schema_migrations (
+                  version INTEGER PRIMARY KEY,
+                  name TEXT NOT NULL,
+                  applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                );
+                "#,
+            )
+            .unwrap();
+        connection.execute_batch(MIGRATIONS[0].sql).unwrap();
+        connection
+            .execute(
+                "INSERT INTO schema_migrations (version, name) VALUES (?1, ?2)",
+                params![MIGRATIONS[0].version, MIGRATIONS[0].name],
+            )
+            .unwrap();
+
+        run_migrations(&mut connection).unwrap();
+        run_migrations(&mut connection).unwrap();
+
+        assert_eq!(applied_schema_versions(&connection), vec![1, 2]);
+        for (table, expected_columns) in [
+            (
+                "workflow_plans",
+                vec![
+                    "run_id",
+                    "revision_id",
+                    "plan_json",
+                    "source_language",
+                    "created_at",
+                ],
+            ),
+            (
+                "workflow_outer_iterations",
+                vec![
+                    "id",
+                    "run_id",
+                    "iteration",
+                    "revision_id",
+                    "structural_report_json",
+                    "vlm_report_json",
+                    "failure_report_json",
+                    "passed",
+                    "created_at",
+                ],
+            ),
+            (
+                "workflow_pending_vlm",
+                vec![
+                    "run_id",
+                    "artifact_id",
+                    "contract_json",
+                    "pass_threshold",
+                    "created_at",
+                ],
+            ),
+        ] {
+            let columns = table_columns(&connection, table);
+            for expected_column in expected_columns {
+                assert!(
+                    columns.iter().any(|column| column == expected_column),
+                    "missing {table}.{expected_column}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn workflow_tables_enforce_foreign_keys_and_integrity() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        run_migrations(&mut connection).unwrap();
+
+        let invalid_plan = connection.execute(
+            r#"
+            INSERT INTO workflow_plans (
+              run_id, revision_id, plan_json, source_language, created_at
+            ) VALUES ('missing-run', NULL, '{}', 'openscad', '2026-07-29T00:00:00.000Z')
+            "#,
+            [],
+        );
+        assert!(invalid_plan.is_err(), "workflow_plans.run_id must exist");
+
+        connection
+            .execute(
+                r#"
+                INSERT INTO sessions (
+                  id, selected_runtime, status, created_at, updated_at
+                ) VALUES ('session-1', 'openscad-wasm', 'idle',
+                  '2026-07-29T00:00:00.000Z', '2026-07-29T00:00:00.000Z')
+                "#,
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                r#"
+                INSERT INTO agent_runs (
+                  id, session_id, status, prompt, created_at, updated_at
+                ) VALUES ('run-1', 'session-1', 'queued', 'prompt',
+                  '2026-07-29T00:00:00.000Z', '2026-07-29T00:00:00.000Z')
+                "#,
+                [],
+            )
+            .unwrap();
+
+        let invalid_revision = connection.execute(
+            r#"
+            INSERT INTO workflow_outer_iterations (
+              id, run_id, iteration, revision_id, structural_report_json, passed, created_at
+            ) VALUES ('outer-1', 'run-1', 1, 'missing-revision', '{}', 0,
+              '2026-07-29T00:00:00.000Z')
+            "#,
+            [],
+        );
+        assert!(
+            invalid_revision.is_err(),
+            "workflow_outer_iterations.revision_id must exist"
+        );
+
+        let invalid_passed = connection.execute(
+            r#"
+            INSERT INTO workflow_outer_iterations (
+              id, run_id, iteration, structural_report_json, passed, created_at
+            ) VALUES ('outer-1', 'run-1', 1, '{}', 2,
+              '2026-07-29T00:00:00.000Z')
+            "#,
+            [],
+        );
+        assert!(
+            invalid_passed.is_err(),
+            "workflow_outer_iterations.passed must be boolean-backed"
+        );
+
+        let invalid_pending = connection.execute(
+            r#"
+            INSERT INTO workflow_pending_vlm (
+              run_id, artifact_id, contract_json, pass_threshold, created_at
+            ) VALUES ('run-1', 'missing-artifact', '{}', 0.8,
+              '2026-07-29T00:00:00.000Z')
+            "#,
+            [],
+        );
+        assert!(
+            invalid_pending.is_err(),
+            "workflow_pending_vlm.artifact_id must exist"
+        );
     }
 
     fn table_columns(connection: &Connection, table: &str) -> Vec<String> {

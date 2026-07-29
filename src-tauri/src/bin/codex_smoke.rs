@@ -1,7 +1,6 @@
 use cadastrophe_lib::agent_adapter::{AgentAdapter, AgentAdapterEvent, AgentAdapterRunInput};
 use cadastrophe_lib::codex_agent_adapter::CodexAgentAdapter;
 use cadastrophe_lib::codex_process_client::{CodexProcessClient, CodexProcessConfig};
-use cadastrophe_lib::protocol::CadSourceLanguage;
 use std::time::Duration;
 
 #[tokio::main]
@@ -30,30 +29,21 @@ async fn run_smoke(client: &CodexProcessClient, prompt: String) -> Result<(), St
         .run(AgentAdapterRunInput {
             session_id: "codex-smoke-session".to_string(),
             run_id: uuid::Uuid::new_v4().to_string(),
+            app_data_dir: std::env::temp_dir().join("cadastrophe-codex-smoke"),
             prompt,
             revision_id: None,
             revision_source_language: None,
             revision_source: None,
+            latest_workflow_failure_report: None,
+            event_sink: None,
         })
         .await?;
-    let source = events.iter().find_map(|event| match event {
-        AgentAdapterEvent::SourceUpdated {
-            source_language,
-            source,
-        } if *source_language == CadSourceLanguage::Openscad => Some(source),
+    let Some(message) = events.iter().find_map(|event| match event {
+        AgentAdapterEvent::MessageCreated { content, .. } => Some(content),
         _ => None,
-    });
-    let source =
-        source.ok_or_else(|| "Codex adapter did not produce OpenSCAD source.".to_string())?;
-    if source.trim().is_empty() {
-        return Err("Codex adapter produced empty OpenSCAD source.".to_string());
-    }
-    println!("Codex adapter produced OpenSCAD source:\n{source}");
-    if !events
-        .iter()
-        .any(|event| matches!(event, AgentAdapterEvent::MessageCreated { .. }))
-    {
+    }) else {
         return Err("Codex adapter did not produce an assistant message.".to_string());
-    }
+    };
+    println!("Codex adapter workflow turn completed:\n{message}");
     Ok(())
 }

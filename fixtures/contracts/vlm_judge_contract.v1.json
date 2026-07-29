@@ -1,0 +1,38 @@
+{
+  "contractType": "cadastrophe.vlm_judge.v1",
+  "sessionId": "session-fixture-1",
+  "runId": "run-fixture-1",
+  "revisionId": "revision-fixture-1",
+  "artifactId": "artifact-fixture-stl",
+  "passThreshold": 0.8,
+  "prompt": "Judge whether the rendered bracket satisfies the plan.",
+  "plan": {
+    "schemaVersion": "cad_model_plan.v1",
+    "summary": "Parametric wall bracket with a back plate, two screw holes, and a forward support tab.",
+    "mainComponent": {
+      "name": "wall_bracket",
+      "purpose": "single printable bracket body",
+      "requiredFeatures": ["back_plate", "screw_holes", "support_tab"]
+    },
+    "supportingComponents": [],
+    "expectedAspectRatio": {
+      "x": 3.0,
+      "y": 1.0,
+      "z": 2.0,
+      "tolerance": 0.25
+    },
+    "sourceLanguage": "openscad",
+    "runtimeConstraints": {
+      "runtime": "openscad-wasm",
+      "requiredFeatures": ["difference", "union", "cylinder", "cube"],
+      "forbiddenFeatures": ["external_file_include"],
+      "mainComponentAnnotation": "// @main_component wall_bracket"
+    }
+  },
+  "artifact": {
+    "format": "stl",
+    "relativePath": "artifacts/session-fixture-1/revision-fixture-1/artifact-fixture-stl.stl",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "bytes": 128
+  }
+}

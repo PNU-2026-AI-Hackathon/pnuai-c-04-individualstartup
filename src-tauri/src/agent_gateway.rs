@@ -138,14 +138,29 @@ async fn execute_run(
     )?;
     let (revision_id, revision_source_language, revision_source) =
         service.revision_prompt_context(&run.session_id, run.input_revision_id.as_deref())?;
+    let latest_workflow_failure_report =
+        latest_workflow_failure_report(&service.get_session_state(&run.session_id)?, &run.id);
+    let event_service = Arc::clone(&service);
+    let event_run = run.clone();
+    let event_active_runs = Arc::clone(&active_runs);
+    let event_sink: crate::agent_adapter::AgentAdapterEventSink =
+        Arc::new(move |event: AgentAdapterEvent| {
+            if !is_active(&event_active_runs, &event_run.id) {
+                return Ok(());
+            }
+            apply_adapter_event(&event_service, &event_run, event)
+        });
     let events = adapter
         .run(crate::agent_adapter::AgentAdapterRunInput {
             session_id: run.session_id.clone(),
             run_id: run.id.clone(),
+            app_data_dir: service.app_data_dir().to_path_buf(),
             prompt: run.prompt.clone(),
             revision_id,
             revision_source_language,
             revision_source,
+            latest_workflow_failure_report,
+            event_sink: Some(event_sink),
         })
         .await;
 
@@ -245,6 +260,7 @@ fn apply_adapter_event(
             )?;
         }
         AgentAdapterEvent::ToolCompleted { name } => {
+            let tool_name = name.clone();
             service.update_agent_run(
                 &run.session_id,
                 &run.id,
@@ -252,7 +268,35 @@ fn apply_adapter_event(
                 Some(None),
                 None,
                 Some(CadBridgeEventType::AgentToolCompleted),
-                Some(serde_json::json!({"tool": name})),
+                Some(serde_json::json!({"tool": tool_name})),
+            )?;
+            if is_cadastrophe_cli_command(&name) {
+                service.refresh_session_from_repository(&run.session_id)?;
+            }
+        }
+        AgentAdapterEvent::Progress {
+            label,
+            message,
+            metadata,
+        } => {
+            let mut payload = serde_json::Map::from_iter([(
+                "progressLabel".to_string(),
+                serde_json::Value::String(label.clone()),
+            )]);
+            if let Some(message) = message {
+                payload.insert("message".to_string(), serde_json::Value::String(message));
+            }
+            if let Some(metadata) = metadata {
+                payload.insert("metadata".to_string(), serde_json::Value::Object(metadata));
+            }
+            service.update_agent_run(
+                &run.session_id,
+                &run.id,
+                None,
+                Some(Some(label)),
+                None,
+                Some(CadBridgeEventType::AgentRunUpdated),
+                Some(serde_json::Value::Object(payload)),
             )?;
         }
         AgentAdapterEvent::SourceUpdated {
@@ -286,4 +330,39 @@ fn is_active(active_runs: &Arc<Mutex<HashSet<String>>>, run_id: &str) -> bool {
         .lock()
         .map(|active| active.contains(run_id))
         .unwrap_or(false)
+}
+
+fn is_cadastrophe_cli_command(name: &str) -> bool {
+    [
+        "cadastrophe-session-current",
+        "cadastrophe-session-state",
+        "cadastrophe-plan-commit",
+        "cadastrophe-source-apply",
+        "cadastrophe-preview-render",
+        "cadastrophe-artifact-export",
+        "cadastrophe-evaluate-structural",
+        "cadastrophe-finalize",
+        "cadastrophe-vlm-submit",
+    ]
+    .iter()
+    .any(|command| name.contains(command))
+}
+
+fn latest_workflow_failure_report(
+    state: &CadSessionState,
+    current_run_id: &str,
+) -> Option<serde_json::Value> {
+    state
+        .workflow
+        .outer_iterations
+        .iter()
+        .filter(|iteration| iteration.run_id != current_run_id)
+        .filter_map(|iteration| {
+            iteration
+                .failure_report
+                .as_ref()
+                .map(|report| (iteration.created_at.as_str(), report))
+        })
+        .max_by(|left, right| left.0.cmp(right.0))
+        .map(|(_, report)| report.clone())
 }

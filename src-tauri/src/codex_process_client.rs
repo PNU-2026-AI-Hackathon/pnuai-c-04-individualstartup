@@ -249,6 +249,11 @@ fn child_path_env() -> String {
     let mut paths: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|value| std::env::split_paths(&value).collect())
         .unwrap_or_default();
+    for path in cadastrophe_binary_path_entries() {
+        if !paths.iter().any(|existing| existing == &path) {
+            paths.push(path);
+        }
+    }
     for fallback in fallback_path_entries() {
         let path = PathBuf::from(fallback);
         if !paths.iter().any(|existing| existing == &path) {
@@ -259,6 +264,33 @@ fn child_path_env() -> String {
         .unwrap_or_else(|_| std::ffi::OsString::from(fallback_path_entries().join(":")))
         .to_string_lossy()
         .to_string()
+}
+
+fn cadastrophe_binary_path_entries() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(parent) = current_exe.parent() {
+            paths.push(parent.to_path_buf());
+            if parent.file_name().is_some_and(|name| name == "deps") {
+                if let Some(debug_dir) = parent.parent() {
+                    paths.push(debug_dir.to_path_buf());
+                }
+            }
+        }
+    }
+    if let Ok(current_dir) = std::env::current_dir() {
+        paths.push(current_dir.join("src-tauri").join("target").join("debug"));
+        paths.push(current_dir.join("target").join("debug"));
+    }
+    paths
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .fold(Vec::new(), |mut unique, path| {
+            if !unique.iter().any(|existing| existing == &path) {
+                unique.push(path);
+            }
+            unique
+        })
 }
 
 fn fallback_path_entries() -> Vec<&'static str> {
@@ -322,6 +354,26 @@ mod tests {
         let path = child_path_env();
         assert!(path.contains("/opt/homebrew/bin"));
         assert!(path.contains("/usr/local/bin"));
+    }
+
+    #[test]
+    fn child_path_env_includes_cadastrophe_debug_binary_directory() {
+        let path = child_path_env();
+        let current_exe = std::env::current_exe().unwrap();
+        let debug_dir = current_exe
+            .parent()
+            .and_then(|parent| {
+                if parent.file_name().is_some_and(|name| name == "deps") {
+                    parent.parent()
+                } else {
+                    Some(parent)
+                }
+            })
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
+        assert!(path.contains(&debug_dir));
     }
 
     #[tokio::test]

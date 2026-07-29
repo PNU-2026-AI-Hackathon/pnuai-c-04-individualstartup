@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { CadBackendClient } from "../ui/src/backendClient";
 import type {
+  CadArtifact,
   CadBridgeEvent,
   CadSessionListItem,
   CadSessionState,
@@ -85,6 +86,8 @@ function assertSessionResultShape(result: CreateCadSessionResult) {
   assert.equal(result.state.activeRevision?.sourceLanguage, "openscad");
   assert.equal(typeof result.state.session.revisions[0]?.sourceHash, "string");
   assert.ok(Array.isArray(result.state.session.revisions[0]?.runLinks));
+  assert.equal(result.state.workflow.plans[0]?.plan.mainComponent.name, "contract_bracket");
+  assert.equal(result.state.workflow.pendingVlm[0]?.contract.contractType, "cadastrophe.vlm_judge.v1");
 }
 
 function assertCurrentSessionShape(result: CurrentCadSessionResult) {
@@ -235,6 +238,11 @@ class MockCadBackendClient implements CadBackendClient {
 
   async renderPreview(): Promise<{ state: CadSessionState }> {
     return { state: this.requireState() };
+  }
+
+  async persistRuntimeArtifact(): Promise<{ artifact: CadArtifact; state: CadSessionState }> {
+    const state = this.requireState();
+    return { artifact: state.activeRevision!.artifacts[0], state };
   }
 
   async updateParameters(): Promise<CadSessionState> {
@@ -420,7 +428,64 @@ function sampleState(title: string): CadSessionState {
     messages: [],
     conversation: [],
     agentRuns: [],
-    agentRunEvents: []
+    agentRunEvents: [],
+    workflow: {
+      plans: [
+        {
+          runId: "workflow-run-1",
+          revisionId: "revision-1",
+          sourceLanguage: "openscad",
+          createdAt: now,
+          plan: {
+            schemaVersion: "cad_model_plan.v1",
+            summary: "Contract fixture bracket.",
+            mainComponent: {
+              name: "contract_bracket",
+              purpose: "Exercise frontend workflow protocol."
+            },
+            supportingComponents: [],
+            expectedAspectRatio: { x: 2, y: 1, z: 1, tolerance: 0.25 },
+            sourceLanguage: "openscad",
+            runtimeConstraints: {
+              runtime: "openscad-wasm",
+              mainComponentAnnotation: "contract_bracket"
+            }
+          }
+        }
+      ],
+      outerIterations: [
+        {
+          id: "workflow-outer-1",
+          runId: "workflow-run-1",
+          iteration: 1,
+          revisionId: "revision-1",
+          structuralReport: {
+            contractType: "cadastrophe.structural_report.v1",
+            passed: false
+          },
+          failureReport: {
+            contractType: "cadastrophe.failure_report.v1",
+            reason: "structural_anchor_failed",
+            summary: "Fixture structural failure."
+          },
+          passed: false,
+          createdAt: now
+        }
+      ],
+      pendingVlm: [
+        {
+          runId: "workflow-run-1",
+          artifactId: "artifact-1",
+          contract: {
+            contractType: "cadastrophe.vlm_judge.v1",
+            runId: "workflow-run-1",
+            artifactId: "artifact-1"
+          },
+          passThreshold: 0.8,
+          createdAt: now
+        }
+      ]
+    }
   };
 }
 

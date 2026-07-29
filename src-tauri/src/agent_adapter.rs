@@ -1,13 +1,58 @@
 use crate::protocol::{CadConversationRole, CadSourceLanguage};
+use std::path::PathBuf;
+use std::sync::Arc;
 
-#[derive(Clone, Debug)]
+pub type AgentAdapterEventSink = Arc<dyn Fn(AgentAdapterEvent) -> Result<(), String> + Send + Sync>;
+
+#[derive(Clone)]
 pub struct AgentAdapterRunInput {
     pub session_id: String,
     pub run_id: String,
+    pub app_data_dir: PathBuf,
     pub prompt: String,
     pub revision_id: Option<String>,
     pub revision_source_language: Option<CadSourceLanguage>,
     pub revision_source: Option<String>,
+    pub latest_workflow_failure_report: Option<serde_json::Value>,
+    pub event_sink: Option<AgentAdapterEventSink>,
+}
+
+impl std::fmt::Debug for AgentAdapterRunInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentAdapterRunInput")
+            .field("session_id", &self.session_id)
+            .field("run_id", &self.run_id)
+            .field("app_data_dir", &self.app_data_dir)
+            .field("prompt", &self.prompt)
+            .field("revision_id", &self.revision_id)
+            .field("revision_source_language", &self.revision_source_language)
+            .field("revision_source", &self.revision_source)
+            .field(
+                "latest_workflow_failure_report",
+                &self.latest_workflow_failure_report,
+            )
+            .field(
+                "event_sink",
+                &self.event_sink.as_ref().map(|_| "<event sink>"),
+            )
+            .finish()
+    }
+}
+
+impl AgentAdapterRunInput {
+    pub fn emit_event(
+        &self,
+        fallback_events: &mut Vec<AgentAdapterEvent>,
+        event: AgentAdapterEvent,
+    ) -> Result<(), String> {
+        if let Some(event_sink) = &self.event_sink {
+            event_sink(event)
+        } else {
+            fallback_events.push(event);
+            Ok(())
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -27,6 +72,11 @@ pub enum AgentAdapterEvent {
     },
     ToolCompleted {
         name: String,
+    },
+    Progress {
+        label: String,
+        message: Option<String>,
+        metadata: Option<serde_json::Map<String, serde_json::Value>>,
     },
     SourceUpdated {
         source_language: crate::protocol::CadSourceLanguage,

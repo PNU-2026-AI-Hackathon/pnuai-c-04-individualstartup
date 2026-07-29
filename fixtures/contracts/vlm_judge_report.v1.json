@@ -1,0 +1,18 @@
+{
+  "contractType": "cadastrophe.vlm_judge_report.v1",
+  "runId": "run-fixture-1",
+  "artifactId": "artifact-fixture-stl",
+  "score": 0.72,
+  "passed": false,
+  "findings": [
+    {
+      "severity": "error",
+      "message": "The support tab is not visible in the rendered artifact."
+    }
+  ],
+  "failureReport": {
+    "contractType": "cadastrophe.failure_report.v1",
+    "reason": "missing_support_tab",
+    "nextAction": "outer_loop_refine_source"
+  }
+}

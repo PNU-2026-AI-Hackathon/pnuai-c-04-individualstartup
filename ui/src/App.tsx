@@ -31,9 +31,13 @@ import type {
   CadConversationMessage,
   CadMesh,
   CadParameter,
+  CadRevision,
   CadRevisionSummary,
   CadSessionListItem,
   CadSessionState,
+  CadWorkflowOuterIteration,
+  CadWorkflowPendingVlm,
+  CadWorkflowState,
   VerifyArtifactFilesResult
 } from "./protocol";
 import { createCadBackendClient, type ConnectionStatus } from "./backendClient";
@@ -45,6 +49,7 @@ import {
   workspaceViewFromUrl,
   type WorkspaceView
 } from "./navigation";
+import { renderOpenScadInWorker, type OpenscadRenderResult, type OpenscadRuntimeState } from "./runtime/openscadRuntime";
 
 export function App() {
   const backend = useMemo(() => createCadBackendClient(), []);
@@ -57,6 +62,7 @@ export function App() {
   const latestSessionIdRef = useRef<string | undefined>(undefined);
   const latestSessionUpdatedAtRef = useRef<string | undefined>(undefined);
   const [mesh, setMesh] = useState<CadMesh | null>(null);
+  const [runtimeState, setRuntimeState] = useState<OpenscadRuntimeState>("idle");
   const [agentPrompt, setAgentPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -67,8 +73,15 @@ export function App() {
   );
   const [sessionSearch, setSessionSearch] = useState("");
   const [sessionList, setSessionList] = useState<CadSessionListItem[]>([]);
+  const locallyDeletedSessionIdsRef = useRef<Set<string>>(new Set());
   const [sessionSearchFields, setSessionSearchFields] = useState<string[]>([]);
   const [integrityResult, setIntegrityResult] = useState<VerifyArtifactFilesResult | null>(null);
+  const previewCacheRef = useRef<
+    | (OpenscadRenderResult & {
+        revisionId: string;
+      })
+    | null
+  >(null);
 
   const sessionId = useMemo(() => sessionIdFromUrl(window.location.href, window.location.href), []);
   const activeRevision = state?.activeRevision;
@@ -182,7 +195,7 @@ export function App() {
       .listSessions({ includeArchived: true, query: sessionSearch })
       .then((result) => {
         if (cancelled) return;
-        setSessionList(result.sessions);
+        setSessionList(filterLocallyDeletedSessions(result.sessions));
         setSessionSearchFields(result.searchFields);
       })
       .catch((caught) => setError(errorMessage(caught)));
@@ -209,8 +222,20 @@ export function App() {
     if (!state || sessionArchived) return;
     await runBusy(async () => {
       await resyncIfDisconnected();
-      const result = await backend.renderPreview({ sessionId: state.session.id });
-      applySessionSnapshot(result.state);
+      const revision = await ensureCurrentSourceRevision();
+      const rendered = await renderOpenScadInWorker(revision.source, revision.parameters, setRuntimeState);
+      previewCacheRef.current = { ...rendered, revisionId: revision.id };
+      setMesh(rendered.mesh);
+      const persisted = await backend.persistRuntimeArtifact({
+        sessionId: state.session.id,
+        revisionId: revision.id,
+        kind: "preview-mesh",
+        format: "json",
+        contentsBase64: base64EncodeUtf8(JSON.stringify(rendered.mesh)),
+        diagnostics: rendered.diagnostics,
+        metadata: runtimeMetadata(rendered, "preview")
+      });
+      applySessionSnapshot(persisted.state);
     });
   }
 
@@ -254,9 +279,60 @@ export function App() {
     if (!state || sessionArchived) return;
     await runBusy(async () => {
       await resyncIfDisconnected();
+      if (format === "stl") {
+        const revision = await ensureCurrentSourceRevision(revisionId);
+        const rendered = await cachedOrRenderedStl(revision);
+        const persisted = await backend.persistRuntimeArtifact({
+          sessionId: state.session.id,
+          revisionId: revision.id,
+          kind: "stl",
+          format,
+          contentsBase64: base64EncodeBytes(rendered.stlBytes),
+          diagnostics: rendered.diagnostics,
+          metadata: runtimeMetadata(rendered, "export")
+        });
+        applySessionSnapshot(persisted.state);
+        return;
+      }
       const result = await backend.exportArtifact({ sessionId: state.session.id, revisionId, format });
       applySessionSnapshot(result.state);
     });
+  }
+
+  async function ensureCurrentSourceRevision(revisionId = state?.session.activeRevisionId): Promise<CadRevision> {
+    if (!state) throw new Error("No active session is loaded.");
+    if (sourceDirty && revisionId === state.session.activeRevisionId) {
+      const result = await backend.updateModelSource({
+        sessionId: state.session.id,
+        sourceLanguage: "openscad",
+        source,
+        parentRevisionId: state.session.activeRevisionId
+      });
+      applySessionSnapshot(result.state, { forceSource: true });
+      const revision = result.state.activeRevision;
+      if (!revision) throw new Error("Saved source revision is not available.");
+      return revision;
+    }
+    const revision =
+      revisionId === state.activeRevision?.id
+        ? state.activeRevision
+        : state.session.revisions.find((candidate) => candidate.id === revisionId) && state.activeRevision?.id === revisionId
+          ? state.activeRevision
+          : undefined;
+    if (!revision) throw new Error("The requested revision is not active. Activate it before rendering.");
+    return revision;
+  }
+
+  async function cachedOrRenderedStl(revision: CadRevision) {
+    const parameterHash = await sha256Hex(JSON.stringify(parameterValues(revision.parameters)));
+    const cache = previewCacheRef.current;
+    if (cache?.revisionId === revision.id && cache.sourceHash === revision.sourceHash && cache.parameterHash === parameterHash) {
+      return cache;
+    }
+    const rendered = await renderOpenScadInWorker(revision.source, revision.parameters, setRuntimeState);
+    previewCacheRef.current = { ...rendered, revisionId: revision.id };
+    setMesh(rendered.mesh);
+    return rendered;
   }
 
   async function openArtifact(artifactId: string) {
@@ -319,8 +395,9 @@ export function App() {
 
   async function refreshSessionList(query = sessionSearch) {
     const result = await backend.listSessions({ includeArchived: true, query });
-    setSessionList(result.sessions);
+    setSessionList(filterLocallyDeletedSessions(result.sessions));
     setSessionSearchFields(result.searchFields);
+    return result;
   }
 
   async function openSession(sessionId: string) {
@@ -374,11 +451,17 @@ export function App() {
 
   async function deleteSession(sessionId: string) {
     if (!window.confirm("Delete this session and its local management data?")) return;
+    locallyDeletedSessionIdsRef.current.add(sessionId);
+    setSessionList((sessions) => sessions.filter((session) => session.id !== sessionId));
     await runBusy(async () => {
-      const deleted = await backend.deleteSession(sessionId);
+      const deleted = await backend.deleteSession(sessionId).catch(async (caught) => {
+        locallyDeletedSessionIdsRef.current.delete(sessionId);
+        await refreshSessionList().catch(() => undefined);
+        throw caught;
+      });
       setOpenedArtifactPath(null);
+      await refreshSessionList();
       if (state?.session.id !== sessionId) {
-        await refreshSessionList();
         return;
       }
       const nextSessionId =
@@ -387,14 +470,21 @@ export function App() {
       if (nextSessionId) {
         const nextState = await loadSession(nextSessionId, { forceSource: true });
         await backend.markSessionViewed(nextSessionId);
-        navigateTo("workspace", nextState.session.id);
+        navigateTo(view, nextState.session.id);
         return;
       }
       const created = await backend.createSession({ title: "Cadastrophe review" });
       applySessionSnapshot(created.state, { forceSource: true });
       await backend.markSessionViewed(created.sessionId);
-      navigateTo("workspace", created.sessionId);
+      await refreshSessionList();
+      navigateTo(view, created.sessionId);
     });
+  }
+
+  function filterLocallyDeletedSessions(sessions: CadSessionListItem[]) {
+    const deletedSessionIds = locallyDeletedSessionIdsRef.current;
+    if (deletedSessionIds.size === 0) return sessions;
+    return sessions.filter((session) => !deletedSessionIds.has(session.id));
   }
 
   function navigateTo(nextView: WorkspaceView, targetSessionId = state?.session.id) {
@@ -497,6 +587,7 @@ export function App() {
           <div className="preview-pane">
             <div className="pane-toolbar">
               <h2>Preview</h2>
+              <span className={`runtime-state runtime-state-${runtimeState}`}>{runtimeState}</span>
               <button onClick={renderPreview} disabled={busy || sessionArchived} title="Render preview">
                 <Play size={16} /> Render
               </button>
@@ -525,6 +616,8 @@ export function App() {
             <AgentWorkspace
               conversation={state.conversation}
               runs={state.agentRuns}
+              events={state.agentRunEvents}
+              workflow={state.workflow}
               prompt={agentPrompt}
               busy={busy}
               readOnly={sessionArchived}
@@ -586,6 +679,7 @@ export function App() {
           conversation={state.conversation}
           runs={state.agentRuns}
           events={state.agentRunEvents}
+          workflow={state.workflow}
         />
       ) : null}
     </main>
@@ -905,11 +999,13 @@ function IntegrityResult({ result }: { result: VerifyArtifactFilesResult }) {
 function SessionLogs({
   conversation,
   runs,
-  events
+  events,
+  workflow
 }: {
   conversation: CadConversationMessage[];
   runs: CadAgentRun[];
   events: CadAgentRunEvent[];
+  workflow: CadWorkflowState;
 }) {
   return (
     <section className="management-view log-browser" data-testid="log-browser">
@@ -925,7 +1021,7 @@ function SessionLogs({
           ))}
         </ol>
       </div>
-      <RunLogViewer runs={runs} events={events} conversation={conversation} />
+      <RunLogViewer runs={runs} events={events} conversation={conversation} workflow={workflow} />
     </section>
   );
 }
@@ -933,6 +1029,8 @@ function SessionLogs({
 function AgentWorkspace(props: {
   conversation: CadConversationMessage[];
   runs: CadAgentRun[];
+  events: CadAgentRunEvent[];
+  workflow: CadWorkflowState;
   prompt: string;
   busy: boolean;
   readOnly: boolean;
@@ -945,6 +1043,14 @@ function AgentWorkspace(props: {
   const latestRun = props.runs.at(-1);
   const conversation = buildAgentConversation(props.conversation);
   const promptDisabled = props.busy || props.readOnly || Boolean(props.activeRun);
+  const latestRunEvents = latestRun
+    ? props.events
+        .filter((event) => event.runId === latestRun.id)
+        .sort((left, right) => left.sequence - right.sequence)
+    : [];
+  const latestWorkflow = latestRun
+    ? workflowRunView(latestRun, latestRunEvents, props.workflow)
+    : undefined;
   return (
     <section className="panel agent-workspace">
       <div className="panel-heading">
@@ -955,10 +1061,11 @@ function AgentWorkspace(props: {
           {props.activeRun.activeStep.replaceAll("_", " ")}
         </div>
       ) : null}
-      {latestRun ? (
-        <div className={`conversation-run-summary run-status-${latestRun.status}`}>
-          RUN {latestRun.status.replaceAll("_", " ").toUpperCase()}
-        </div>
+      {latestRun && latestWorkflow ? (
+        <WorkflowRunSummary run={latestRun} view={latestWorkflow} compact />
+      ) : null}
+      {latestRun && latestWorkflow ? (
+        <AgentRunProgressDetails run={latestRun} events={latestRunEvents} view={latestWorkflow} />
       ) : null}
       <ol className="conversation" data-testid="conversation-timeline">
         {conversation.map((message) => (
@@ -1010,6 +1117,59 @@ function AgentWorkspace(props: {
   );
 }
 
+function AgentRunProgressDetails({
+  run,
+  events,
+  view
+}: {
+  run: CadAgentRun;
+  events: CadAgentRunEvent[];
+  view: WorkflowRunView;
+}) {
+  const recentEvents = events.slice(-10).reverse();
+  const activeLabel = run.activeStep ?? view.latestCommand ?? view.stage;
+  return (
+    <details
+      className="agent-progress-details"
+      data-testid="agent-progress-details"
+      open={isActiveRunStatus(run.status) || run.status === "failed"}
+    >
+      <summary>
+        <span>Progress details</span>
+        <small>{activeLabel.replaceAll("_", " ")}</small>
+      </summary>
+      <div className="agent-progress-meta">
+        <div>
+          <dt>status</dt>
+          <dd>{run.status.replaceAll("_", " ")}</dd>
+        </div>
+        <div>
+          <dt>stage</dt>
+          <dd>{view.stage}</dd>
+        </div>
+        <div>
+          <dt>events</dt>
+          <dd>{events.length}</dd>
+        </div>
+      </div>
+      {run.error ? <p className="agent-progress-error">{run.error}</p> : null}
+      {recentEvents.length ? (
+        <ol>
+          {recentEvents.map((event) => (
+            <li className={`event-${event.type.replaceAll(".", "-")}`} key={event.id}>
+              <span>{event.sequence}. {event.type}</span>
+              <small>{new Date(event.createdAt).toLocaleTimeString()}</small>
+              <EventPayloadSummary event={event} />
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="agent-progress-empty">No progress events yet.</p>
+      )}
+    </details>
+  );
+}
+
 function buildAgentConversation(conversation: CadConversationMessage[]) {
   return conversation
     .filter((message) => message.role === "user" || message.role === "assistant")
@@ -1023,11 +1183,13 @@ function isActiveRunStatus(status: CadAgentRun["status"]): boolean {
 function RunLogViewer({
   runs,
   events,
-  conversation
+  conversation,
+  workflow
 }: {
   runs: CadAgentRun[];
   events: CadAgentRunEvent[];
   conversation: CadConversationMessage[];
+  workflow: CadWorkflowState;
 }) {
   const eventsByRun = new Map<string, CadAgentRunEvent[]>();
   for (const event of events) {
@@ -1051,6 +1213,7 @@ function RunLogViewer({
         const runMessages = [...(messagesByRun.get(run.id) ?? [])].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
         const failureEvents = runEvents.filter((event) => event.type === "agent.run.failed" || event.type === "agent.run.cancelled");
         const retryEvents = runEvents.filter((event) => event.payload.retryOfRunId);
+        const workflowView = workflowRunView(run, runEvents, workflow);
         return (
           <details key={run.id} open={isActiveRunStatus(run.status) || run.status === "failed"}>
             <summary>
@@ -1103,6 +1266,7 @@ function RunLogViewer({
                 </div>
               ) : null}
             </dl>
+            <WorkflowRunSummary run={run} view={workflowView} />
             <div className="run-diagnostics">
               <strong>{failureEvents.length ? "Failure diagnostics" : "Run diagnostics"}</strong>
               <span>{runEvents.length} events, {runMessages.length} messages</span>
@@ -1127,6 +1291,7 @@ function RunLogViewer({
                 <li className={`event-${event.type.replaceAll(".", "-")}`} key={event.id}>
                   <span>{event.sequence}. {event.type}</span>
                   <small>{new Date(event.createdAt).toLocaleTimeString()}</small>
+                  <EventPayloadSummary event={event} />
                   {Object.keys(event.payload).length ? <code>{formatPayload(event.payload)}</code> : null}
                   {event.metadata && Object.keys(event.metadata).length ? <code>{formatPayload(event.metadata)}</code> : null}
                 </li>
@@ -1137,6 +1302,220 @@ function RunLogViewer({
       }) : <p>No runs yet.</p>}
     </section>
   );
+}
+
+interface WorkflowRunView {
+  stage: string;
+  finalizationStatus: string;
+  plan?: CadWorkflowState["plans"][number];
+  iterations: CadWorkflowOuterIteration[];
+  pendingVlm?: CadWorkflowPendingVlm;
+  latestFailure?: Record<string, unknown>;
+  latestCommand?: string;
+  latestNextAction?: string;
+}
+
+function WorkflowRunSummary({
+  run,
+  view,
+  compact = false
+}: {
+  run: CadAgentRun;
+  view: WorkflowRunView;
+  compact?: boolean;
+}) {
+  return (
+    <div className={compact ? "workflow-summary compact" : "workflow-summary"} data-testid="workflow-summary">
+      <div className="workflow-summary-grid">
+        <div>
+          <dt>workflow</dt>
+          <dd>{view.stage}</dd>
+        </div>
+        <div>
+          <dt>finalization</dt>
+          <dd>{view.finalizationStatus}</dd>
+        </div>
+        <div>
+          <dt>plan</dt>
+          <dd>{view.plan ? view.plan.plan.mainComponent.name : "not committed"}</dd>
+        </div>
+        <div>
+          <dt>outer loop</dt>
+          <dd>{view.iterations.length ? `${view.iterations.length} iteration${view.iterations.length === 1 ? "" : "s"}` : "none"}</dd>
+        </div>
+      </div>
+      {view.pendingVlm ? (
+        <div className="workflow-callout workflow-pending">
+          <strong>Pending VLM</strong>
+          <span>artifact {shortId(view.pendingVlm.artifactId)} - threshold {view.pendingVlm.passThreshold}</span>
+          {contractType(view.pendingVlm.contract) ? <code>{contractType(view.pendingVlm.contract)}</code> : null}
+        </div>
+      ) : null}
+      {view.latestFailure ? (
+        <div className="workflow-callout workflow-failure">
+          <strong>{failureTitle(view.latestFailure)}</strong>
+          <span>{failureSummary(view.latestFailure)}</span>
+          {!compact ? <code>{formatPayload(view.latestFailure)}</code> : null}
+        </div>
+      ) : null}
+      {view.latestCommand || view.latestNextAction ? (
+        <div className="workflow-last-command">
+          {view.latestCommand ? <span>{view.latestCommand}</span> : null}
+          {view.latestNextAction ? <small>next {view.latestNextAction.replaceAll("_", " ")}</small> : null}
+        </div>
+      ) : run.status === "queued" ? (
+        <div className="workflow-last-command">
+          <span>waiting for plan commit</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function EventPayloadSummary({ event }: { event: CadAgentRunEvent }) {
+  const command = stringField(event.payload, "command") ?? stringField(event.payload, "tool");
+  const status = stringField(event.payload, "status");
+  const progress = stringField(event.payload, "progressLabel");
+  const message = stringField(event.payload, "message");
+  const nextAction = stringField(event.payload, "nextAction") ?? stringField(event.payload, "next_action");
+  const contract = stringField(event.payload, "contractType") ?? stringField(event.payload, "contract_type");
+  const failure = recordField(event.payload, "failureReport") ?? recordField(event.payload, "failure_report");
+  const diagnostics = recordField(event.payload, "diagnostics");
+  const error = recordField(event.payload, "error");
+  if (!command && !status && !progress && !message && !nextAction && !contract && !failure && !diagnostics && !error) {
+    return null;
+  }
+  return (
+    <div className="event-readable">
+      {command ? <strong>{command}</strong> : null}
+      {progress && !command ? <strong>{progress}</strong> : null}
+      {status ? <span>{status}</span> : null}
+      {message ? <span>{message}</span> : null}
+      {nextAction ? <span>next {nextAction.replaceAll("_", " ")}</span> : null}
+      {contract ? <span>{contract}</span> : null}
+      {diagnostics ? <span>{diagnosticsSummary(diagnostics)}</span> : null}
+      {failure ? <span>{failureSummary(failure)}</span> : null}
+      {error ? <span>{failureSummary(error)}</span> : null}
+    </div>
+  );
+}
+
+function workflowRunView(
+  run: CadAgentRun,
+  events: CadAgentRunEvent[],
+  workflow: CadWorkflowState
+): WorkflowRunView {
+  const plan = workflow.plans.find((item) => item.runId === run.id);
+  const iterations = workflow.outerIterations
+    .filter((item) => item.runId === run.id)
+    .sort((left, right) => left.iteration - right.iteration);
+  const pendingVlm = workflow.pendingVlm.find((item) => item.runId === run.id);
+  const latestFailure = [...iterations].reverse().find((iteration) => iteration.failureReport)?.failureReport;
+  const latestCompletedCommand = [...events]
+    .reverse()
+    .find((event) => event.type === "agent.tool.completed" && (event.payload.command || event.payload.tool));
+  const latestCommand = latestCompletedCommand
+    ? stringField(latestCompletedCommand.payload, "command") ?? stringField(latestCompletedCommand.payload, "tool")
+    : undefined;
+  const latestNextAction = latestCompletedCommand
+    ? stringField(latestCompletedCommand.payload, "nextAction") ?? stringField(latestCompletedCommand.payload, "next_action")
+    : undefined;
+  return {
+    stage: workflowStage(run, events, Boolean(plan), iterations, pendingVlm, latestFailure),
+    finalizationStatus: finalizationStatus(run, events, iterations, pendingVlm, latestFailure),
+    plan,
+    iterations,
+    pendingVlm,
+    latestFailure,
+    latestCommand,
+    latestNextAction
+  };
+}
+
+function workflowStage(
+  run: CadAgentRun,
+  events: CadAgentRunEvent[],
+  hasPlan: boolean,
+  iterations: CadWorkflowOuterIteration[],
+  pendingVlm?: CadWorkflowPendingVlm,
+  latestFailure?: Record<string, unknown>
+): string {
+  if (pendingVlm) return "VLM pending";
+  if (iterations.some((iteration) => iteration.passed)) return "VLM accepted";
+  if (latestFailure) return failureReason(latestFailure).includes("vlm") ? "VLM repair" : "Structural repair";
+  if (hasCompletedCommand(events, "cadastrophe-finalize")) return "Finalized";
+  if (hasCompletedCommand(events, "cadastrophe-preview-render")) return "Preview rendered";
+  if (hasCompletedCommand(events, "cadastrophe-source-apply")) return "Source applied";
+  if (hasPlan) return "Plan committed";
+  if (isActiveRunStatus(run.status)) return "Planning";
+  return "Plan required";
+}
+
+function finalizationStatus(
+  run: CadAgentRun,
+  events: CadAgentRunEvent[],
+  iterations: CadWorkflowOuterIteration[],
+  pendingVlm?: CadWorkflowPendingVlm,
+  latestFailure?: Record<string, unknown>
+): string {
+  if (iterations.some((iteration) => iteration.passed)) return "passed";
+  if (pendingVlm) return "waiting for VLM";
+  if (latestFailure) return "failed";
+  if (hasCompletedCommand(events, "cadastrophe-finalize")) return "structural passed";
+  if (run.status === "completed") return "completed";
+  if (run.status === "failed" || run.status === "cancelled") return run.status;
+  return "not finalized";
+}
+
+function hasCompletedCommand(events: CadAgentRunEvent[], command: string): boolean {
+  return events.some((event) => {
+    if (event.type !== "agent.tool.completed") return false;
+    const payloadCommand = stringField(event.payload, "command") ?? stringField(event.payload, "tool");
+    return payloadCommand?.startsWith(command) ?? false;
+  });
+}
+
+function failureTitle(report: Record<string, unknown>): string {
+  const reason = failureReason(report);
+  return reason.includes("vlm") ? "VLM failure report" : "Structural failure report";
+}
+
+function failureReason(report: Record<string, unknown>): string {
+  return stringField(report, "reason") ?? stringField(report, "code") ?? "";
+}
+
+function failureSummary(report: Record<string, unknown>): string {
+  return stringField(report, "summary")
+    ?? stringField(report, "message")
+    ?? stringField(report, "reason")
+    ?? contractType(report)
+    ?? "report recorded";
+}
+
+function diagnosticsSummary(value: Record<string, unknown>): string {
+  const ok = value.ok;
+  const items = Array.isArray(value.items) ? value.items.length : undefined;
+  if (typeof ok === "boolean" && typeof items === "number") {
+    return `diagnostics ${ok ? "ok" : "failed"} (${items})`;
+  }
+  if (typeof ok === "boolean") return `diagnostics ${ok ? "ok" : "failed"}`;
+  return "diagnostics recorded";
+}
+
+function contractType(value: Record<string, unknown>): string | undefined {
+  return stringField(value, "contractType") ?? stringField(value, "contract_type");
+}
+
+function stringField(value: Record<string, unknown>, key: string): string | undefined {
+  const field = value[key];
+  return typeof field === "string" && field.trim() ? field : undefined;
+}
+
+function recordField(value: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
+  const field = value[key];
+  return field && typeof field === "object" && !Array.isArray(field)
+    ? field as Record<string, unknown>
+    : undefined;
 }
 
 function shortId(value?: string): string {
@@ -1501,6 +1880,43 @@ function formatBytes(value?: number): string {
 
 function replaceUrl(uiUrl: string): void {
   window.history.replaceState({}, "", toHistoryPath(uiUrl, window.location.href));
+}
+
+function runtimeMetadata(rendered: OpenscadRenderResult, phase: "preview" | "export"): Record<string, unknown> {
+  return {
+    runtime: "openscad-wasm",
+    sourceLanguage: "openscad",
+    sourceHash: rendered.sourceHash,
+    parameterHash: rendered.parameterHash,
+    stlSha256: rendered.stlSha256,
+    stlBytes: rendered.stlBytes.byteLength,
+    renderDurationMs: rendered.diagnostics.elapsedMs,
+    diagnosticsSource: "openscad-wasm",
+    phase
+  };
+}
+
+function parameterValues(parameters: CadParameter[]) {
+  return Object.fromEntries(parameters.map((parameter) => [parameter.name, parameter.value]).sort());
+}
+
+async function sha256Hex(input: string | Uint8Array) {
+  const bytes = typeof input === "string" ? new TextEncoder().encode(input) : new Uint8Array(input);
+  const digest = await crypto.subtle.digest("SHA-256", bytes.buffer as ArrayBuffer);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function base64EncodeUtf8(value: string) {
+  return base64EncodeBytes(new TextEncoder().encode(value));
+}
+
+function base64EncodeBytes(bytes: Uint8Array) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
 }
 
 function errorMessage(error: unknown): string {

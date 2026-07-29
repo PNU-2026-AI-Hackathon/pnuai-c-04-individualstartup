@@ -1,5 +1,6 @@
 pub mod agent_adapter;
 mod agent_gateway;
+pub mod cli;
 pub mod codex_agent_adapter;
 pub mod codex_process_client;
 mod fake_agent_adapter;
@@ -153,6 +154,14 @@ fn render_preview(
 ) -> Result<serde_json::Value, String> {
     let (result, state) = state.service.render_preview(input)?;
     Ok(serde_json::json!({ "result": result, "state": state }))
+}
+
+#[tauri::command]
+fn persist_runtime_artifact(
+    input: PersistRuntimeArtifactInput,
+    state: State<'_, AppState>,
+) -> Result<PersistRuntimeArtifactResult, String> {
+    state.service.persist_runtime_artifact(input)
 }
 
 #[tauri::command]
@@ -317,6 +326,7 @@ pub fn run() {
             set_active_revision,
             restore_revision,
             render_preview,
+            persist_runtime_artifact,
             update_parameters,
             post_user_message,
             create_agent_run,
@@ -491,8 +501,12 @@ mod tests {
             })
             .unwrap();
 
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let state = service.get_session_state(&created.session_id).unwrap();
+        let state = wait_for_run_status(
+            &service,
+            &created.session_id,
+            &started.run.id,
+            CadAgentRunStatus::Completed,
+        );
         let run = state
             .agent_runs
             .iter()
@@ -518,8 +532,13 @@ mod tests {
                 retry_of_run_id: None,
             })
             .unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let state = service.get_session_state(&created.session_id).unwrap();
+        let state = wait_for_run_status_async(
+            &service,
+            &created.session_id,
+            &started.run.id,
+            CadAgentRunStatus::Completed,
+        )
+        .await;
         let completed = state
             .agent_runs
             .iter()
@@ -594,6 +613,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gateway_persists_adapter_progress_before_completion() {
+        let service = Arc::new(SessionService::new(
+            std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
+        ));
+        let gateway = AgentGateway::new(Arc::clone(&service), Arc::new(StreamingProgressAdapter));
+        let created = service
+            .create_session(CreateCadSessionInput::default())
+            .unwrap();
+        let started = gateway
+            .start_run(CreateAgentRunInput {
+                session_id: created.session_id.clone(),
+                prompt: "stream progress".to_string(),
+                revision_id: created.state.session.active_revision_id.clone(),
+                retry_of_run_id: None,
+            })
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let in_progress = service.get_session_state(&created.session_id).unwrap();
+        let run = in_progress
+            .agent_runs
+            .iter()
+            .find(|run| run.id == started.run.id)
+            .unwrap();
+        assert_eq!(run.status, CadAgentRunStatus::Running);
+        assert_eq!(run.active_step.as_deref(), Some("Planning geometry"));
+        assert!(in_progress.agent_run_events.iter().any(|event| {
+            event.run_id == started.run.id
+                && event.event_type == CadAgentRunEventType::AgentRunUpdated
+                && event.payload.get("progressLabel").and_then(Value::as_str)
+                    == Some("Planning geometry")
+        }));
+
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        let completed = service.get_session_state(&created.session_id).unwrap();
+        assert_eq!(
+            completed
+                .agent_runs
+                .iter()
+                .find(|run| run.id == started.run.id)
+                .unwrap()
+                .status,
+            CadAgentRunStatus::Completed
+        );
+    }
+
+    #[tokio::test]
     async fn fake_gateway_cancel_marks_running_run_cancelled() {
         let service = Arc::new(SessionService::new(
             std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
@@ -626,6 +692,120 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gateway_includes_latest_workflow_failure_report_in_retry_input() {
+        let service = Arc::new(SessionService::new(
+            std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
+        ));
+        let captured_failure = Arc::new(Mutex::new(None));
+        let gateway = AgentGateway::new(
+            Arc::clone(&service),
+            Arc::new(CapturingFailureAdapter {
+                captured_failure: Arc::clone(&captured_failure),
+            }),
+        );
+        let created = service
+            .create_session(CreateCadSessionInput::default())
+            .unwrap();
+        let (failed_source_run, _) = service
+            .create_agent_run(
+                &created.session_id,
+                "failed source".to_string(),
+                created.state.session.active_revision_id.clone(),
+                Some("test".to_string()),
+                None,
+            )
+            .unwrap();
+        service
+            .save_workflow_outer_iteration(
+                &created.session_id,
+                CadWorkflowOuterIteration {
+                    id: "workflow-outer-failed-source".to_string(),
+                    run_id: failed_source_run.id.clone(),
+                    iteration: 1,
+                    revision_id: created.state.session.active_revision_id.clone(),
+                    structural_report: serde_json::json!({
+                        "contractType": "cadastrophe.structural_report.v1",
+                        "passed": false
+                    }),
+                    vlm_report: None,
+                    failure_report: Some(serde_json::json!({
+                        "contractType": "cadastrophe.failure_report.v1",
+                        "reason": "missing_support_tab",
+                        "nextAction": "outer_loop_refine_source"
+                    })),
+                    passed: false,
+                    created_at: "2026-07-29T00:00:00.000Z".to_string(),
+                },
+            )
+            .unwrap();
+
+        gateway
+            .start_run(CreateAgentRunInput {
+                session_id: created.session_id.clone(),
+                prompt: "retry with previous failure".to_string(),
+                revision_id: created.state.session.active_revision_id.clone(),
+                retry_of_run_id: Some(failed_source_run.id),
+            })
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let captured = captured_failure
+            .lock()
+            .expect("captured failure lock")
+            .clone()
+            .expect("retry failure report should be passed to adapter");
+        assert_eq!(
+            captured.get("reason").and_then(Value::as_str),
+            Some("missing_support_tab")
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_refreshes_workflow_state_after_cadastrophe_cli_completion() {
+        let app_data_dir = std::env::temp_dir().join(format!(
+            "cadastrophe-gateway-workflow-refresh-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let layout = storage::StorageLayout::from_app_data_dir(app_data_dir);
+        storage::initialize_storage(&layout).unwrap();
+        let service = Arc::new(
+            SessionService::with_repository(
+                layout.clone(),
+                Arc::new(session_repository::SqliteSessionRepository::new(layout)),
+            )
+            .unwrap(),
+        );
+        let gateway = AgentGateway::new(Arc::clone(&service), Arc::new(ExternalWorkflowAdapter));
+        let created = service
+            .create_session(CreateCadSessionInput::default())
+            .unwrap();
+
+        let started = gateway
+            .start_run(CreateAgentRunInput {
+                session_id: created.session_id.clone(),
+                prompt: "commit workflow externally".to_string(),
+                revision_id: created.state.session.active_revision_id.clone(),
+                retry_of_run_id: None,
+            })
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let state = service.get_session_state(&created.session_id).unwrap();
+        let run = state
+            .agent_runs
+            .iter()
+            .find(|run| run.id == started.run.id)
+            .unwrap();
+        assert_eq!(run.status, CadAgentRunStatus::Completed);
+        assert_eq!(state.workflow.plans.len(), 1);
+        assert_eq!(state.workflow.plans[0].run_id, started.run.id);
+        assert_eq!(
+            state.workflow.plans[0].plan.main_component.name,
+            "wall_bracket"
+        );
+    }
+
+    #[tokio::test]
     async fn gateway_serializes_runs_per_session() {
         let service = Arc::new(SessionService::new(
             std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
@@ -651,7 +831,7 @@ mod tests {
             })
             .unwrap();
 
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         let state = service.get_session_state(&created.session_id).unwrap();
         assert_eq!(
             state
@@ -681,6 +861,54 @@ mod tests {
 
     struct OutOfOrderAdapter;
 
+    fn wait_for_run_status(
+        service: &SessionService,
+        session_id: &str,
+        run_id: &str,
+        status: CadAgentRunStatus,
+    ) -> CadSessionState {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let state = service.get_session_state(session_id).unwrap();
+            if state
+                .agent_runs
+                .iter()
+                .find(|run| run.id == run_id)
+                .is_some_and(|run| run.status == status)
+            {
+                return state;
+            }
+            if std::time::Instant::now() > deadline {
+                return state;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+
+    async fn wait_for_run_status_async(
+        service: &SessionService,
+        session_id: &str,
+        run_id: &str,
+        status: CadAgentRunStatus,
+    ) -> CadSessionState {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let state = service.get_session_state(session_id).unwrap();
+            if state
+                .agent_runs
+                .iter()
+                .find(|run| run.id == run_id)
+                .is_some_and(|run| run.status == status)
+            {
+                return state;
+            }
+            if std::time::Instant::now() > deadline {
+                return state;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
     #[async_trait::async_trait]
     impl AgentAdapter for OutOfOrderAdapter {
         async fn run(&self, input: AgentAdapterRunInput) -> Result<Vec<AgentAdapterEvent>, String> {
@@ -691,6 +919,79 @@ mod tests {
                 source_language: CadSourceLanguage::Openscad,
                 source: format!("// {}\ncube([1, 1, 1]);", input.prompt),
             }])
+        }
+    }
+
+    struct StreamingProgressAdapter;
+
+    #[async_trait::async_trait]
+    impl AgentAdapter for StreamingProgressAdapter {
+        async fn run(&self, input: AgentAdapterRunInput) -> Result<Vec<AgentAdapterEvent>, String> {
+            if let Some(event_sink) = &input.event_sink {
+                event_sink(AgentAdapterEvent::Progress {
+                    label: "Planning geometry".to_string(),
+                    message: Some("test progress event".to_string()),
+                    metadata: None,
+                })?;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            Ok(vec![AgentAdapterEvent::MessageCreated {
+                role: CadConversationRole::Assistant,
+                content: "Streaming progress completed.".to_string(),
+                metadata: None,
+            }])
+        }
+    }
+
+    struct CapturingFailureAdapter {
+        captured_failure: Arc<Mutex<Option<Value>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl AgentAdapter for CapturingFailureAdapter {
+        async fn run(&self, input: AgentAdapterRunInput) -> Result<Vec<AgentAdapterEvent>, String> {
+            *self.captured_failure.lock().expect("captured failure lock") =
+                input.latest_workflow_failure_report;
+            Ok(vec![AgentAdapterEvent::MessageCreated {
+                role: CadConversationRole::Assistant,
+                content: "Captured retry failure context.".to_string(),
+                metadata: None,
+            }])
+        }
+    }
+
+    struct ExternalWorkflowAdapter;
+
+    #[async_trait::async_trait]
+    impl AgentAdapter for ExternalWorkflowAdapter {
+        async fn run(&self, input: AgentAdapterRunInput) -> Result<Vec<AgentAdapterEvent>, String> {
+            let layout = storage::StorageLayout::from_app_data_dir(input.app_data_dir.clone());
+            let service = SessionService::with_repository(
+                layout.clone(),
+                Arc::new(session_repository::SqliteSessionRepository::new(layout)),
+            )?;
+            let plan: CadModelPlan = serde_json::from_str(include_str!(
+                "../../fixtures/contracts/cad_model_plan.v1.json"
+            ))
+            .map_err(|error| error.to_string())?;
+            service.save_workflow_plan(
+                &input.session_id,
+                CadWorkflowPlan {
+                    run_id: input.run_id.clone(),
+                    revision_id: input.revision_id.clone(),
+                    source_language: plan.source_language.clone(),
+                    plan,
+                    created_at: "2026-07-29T00:00:00.000Z".to_string(),
+                },
+            )?;
+            Ok(vec![
+                AgentAdapterEvent::ToolStarted {
+                    name: "cadastrophe-plan-commit".to_string(),
+                },
+                AgentAdapterEvent::ToolCompleted {
+                    name: "cadastrophe-plan-commit".to_string(),
+                },
+            ])
         }
     }
 }
