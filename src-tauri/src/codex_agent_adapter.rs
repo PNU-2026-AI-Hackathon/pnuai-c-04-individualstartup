@@ -27,6 +27,10 @@ impl CodexAgentAdapter {
 
 #[async_trait::async_trait]
 impl AgentAdapter for CodexAgentAdapter {
+    fn external_agent(&self) -> &'static str {
+        "codex"
+    }
+
     async fn run(&self, input: AgentAdapterRunInput) -> Result<Vec<AgentAdapterEvent>, String> {
         self.client.initialize().await?;
         let mut notifications = self.client.subscribe_notifications();
@@ -69,9 +73,16 @@ impl AgentAdapter for CodexAgentAdapter {
             .ok_or_else(|| "Codex turn/start response did not include turn.id.".to_string())?
             .to_string();
 
-        let mut events = vec![AgentAdapterEvent::ToolStarted {
-            name: "codex_turn".to_string(),
-        }];
+        let mut events = vec![
+            AgentAdapterEvent::RunMetadata {
+                external_agent: Some("codex".to_string()),
+                external_thread_id: Some(thread_id.to_string()),
+                external_turn_id: Some(turn_id.clone()),
+            },
+            AgentAdapterEvent::ToolStarted {
+                name: "codex_turn".to_string(),
+            },
+        ];
         let mut collector = CodexEventCollector::default();
         let capture = timeout(self.turn_timeout, async {
             while let Ok(notification) = notifications.recv().await {
@@ -339,11 +350,27 @@ Cadastrophe context:
 - sessionId: {session_id}
 - runId: {run_id}
 - activeRevisionId: {revision_id}
+- activeRevisionSourceLanguage: {source_language}
+- activeRevisionSource:
+```openscad
+{source}
+```
 "#,
         prompt = input.prompt,
         session_id = input.session_id,
         run_id = input.run_id,
-        revision_id = input.revision_id.as_deref().unwrap_or("")
+        revision_id = input.revision_id.as_deref().unwrap_or(""),
+        source_language = input
+            .revision_source_language
+            .as_ref()
+            .map(|language| match language {
+                CadSourceLanguage::Openscad => "openscad",
+                CadSourceLanguage::Cadquery => "cadquery",
+                CadSourceLanguage::FreecadPython => "freecad-python",
+                CadSourceLanguage::CadastropheIr => "cadastrophe-ir",
+            })
+            .unwrap_or(""),
+        source = input.revision_source.as_deref().unwrap_or("")
     )
 }
 

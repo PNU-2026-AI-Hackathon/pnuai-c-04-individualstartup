@@ -78,6 +78,8 @@ pub enum CadAgentRunEventType {
     AgentRunCompleted,
     #[serde(rename = "agent.run.failed")]
     AgentRunFailed,
+    #[serde(rename = "agent.run.cancelled")]
+    AgentRunCancelled,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -143,6 +145,10 @@ pub struct CadArtifact {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes: Option<u64>,
     pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub missing_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Metadata>,
 }
@@ -210,6 +216,10 @@ pub struct CadConversationMessage {
 pub struct CadAgentRun {
     pub id: String,
     pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_revision_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_revision_id: Option<String>,
     pub status: CadAgentRunStatus,
     pub prompt: String,
     pub created_at: String,
@@ -222,16 +232,54 @@ pub struct CadAgentRun {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_step: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_thread_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_turn_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CadAgentRunEvent {
+    pub id: String,
+    pub session_id: String,
+    pub run_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision_id: Option<String>,
+    #[serde(rename = "type")]
+    pub event_type: CadAgentRunEventType,
+    pub sequence: u64,
+    pub created_at: String,
+    pub payload: Metadata,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Metadata>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CadRevisionRunLink {
+    pub run_id: String,
+    pub role: String,
+    pub status: CadAgentRunStatus,
+    pub updated_at: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CadRevisionSummary {
     pub id: String,
+    pub source_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_revision_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restored_from_revision_id: Option<String>,
     pub source_language: CadSourceLanguage,
     pub created_at: String,
     pub diagnostics: CadDiagnostics,
     pub artifact_count: usize,
+    pub run_links: Vec<CadRevisionRunLink>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -241,6 +289,9 @@ pub struct CadRevision {
     pub session_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_revision_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restored_from_revision_id: Option<String>,
+    pub source_hash: String,
     pub source_language: CadSourceLanguage,
     pub source: String,
     pub parameters: Vec<CadParameter>,
@@ -249,6 +300,7 @@ pub struct CadRevision {
     pub artifact_count: usize,
     pub artifacts: Vec<CadArtifact>,
     pub user_events: Vec<CadUserEvent>,
+    pub run_links: Vec<CadRevisionRunLink>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -266,6 +318,12 @@ pub struct CadSession {
     pub active_revision_id: Option<String>,
     pub selected_runtime: CadRuntimeKind,
     pub status: CadSessionStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recovery_diagnostics: Vec<CadDiagnostic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
     pub revisions: Vec<CadRevisionSummary>,
 }
 
@@ -278,6 +336,7 @@ pub struct CadSessionState {
     pub messages: Vec<CadUserMessage>,
     pub conversation: Vec<CadConversationMessage>,
     pub agent_runs: Vec<CadAgentRun>,
+    pub agent_run_events: Vec<CadAgentRunEvent>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -288,12 +347,20 @@ pub enum CadBridgeEventType {
     SessionUpdated,
     #[serde(rename = "revision.created")]
     RevisionCreated,
+    #[serde(rename = "revision.activated")]
+    RevisionActivated,
+    #[serde(rename = "revision.restored")]
+    RevisionRestored,
     #[serde(rename = "preview.rendered")]
     PreviewRendered,
     #[serde(rename = "message.created")]
     MessageCreated,
     #[serde(rename = "artifact.exported")]
     ArtifactExported,
+    #[serde(rename = "artifact.deleted")]
+    ArtifactDeleted,
+    #[serde(rename = "artifact.verified")]
+    ArtifactVerified,
     #[serde(rename = "agent.run.created")]
     AgentRunCreated,
     #[serde(rename = "agent.run.updated")]
@@ -349,6 +416,76 @@ pub struct CurrentCadSessionResult {
     pub state: Option<CadSessionState>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ListCadSessionsInput {
+    #[serde(default)]
+    pub include_archived: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CadSessionListItem {
+    pub id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_viewed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_revision_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_revision: Option<CadRevisionSummary>,
+    pub selected_runtime: CadRuntimeKind,
+    pub status: CadSessionStatus,
+    pub archived: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
+    pub revision_count: usize,
+    pub artifact_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ListCadSessionsResult {
+    pub sessions: Vec<CadSessionListItem>,
+    pub search_fields: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameCadSessionInput {
+    pub session_id: String,
+    pub title: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveCadSessionInput {
+    pub session_id: String,
+    #[serde(default)]
+    pub archived: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateCadSessionInput {
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteCadSessionResult {
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_session_id: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateModelSourceInput {
@@ -364,6 +501,27 @@ pub struct UpdateModelSourceInput {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateModelSourceResult {
+    pub revision_id: String,
+    pub state: CadSessionState,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetActiveRevisionInput {
+    pub session_id: String,
+    pub revision_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreRevisionInput {
+    pub session_id: String,
+    pub revision_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreRevisionResult {
     pub revision_id: String,
     pub state: CadSessionState,
 }
@@ -392,6 +550,8 @@ pub struct CreateAgentRunInput {
     pub prompt: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_of_run_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -409,4 +569,68 @@ pub struct ExportArtifactInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision_id: Option<String>,
     pub format: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteArtifactInput {
+    pub session_id: String,
+    pub artifact_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteArtifactResult {
+    pub artifact_id: String,
+    pub state: CadSessionState,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenArtifactResult {
+    pub artifact: CadArtifact,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyArtifactFilesInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyArtifactFilesResult {
+    pub checked_count: usize,
+    pub missing_artifact_ids: Vec<String>,
+    pub hash_mismatch_artifact_ids: Vec<String>,
+    pub size_mismatch_artifact_ids: Vec<String>,
+    pub corrupt_metadata_artifact_ids: Vec<String>,
+    pub invalid_path_artifact_ids: Vec<String>,
+    pub orphan_paths: Vec<String>,
+    pub diagnostics: Vec<CadDiagnostic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<CadSessionState>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupOrphanArtifactsInput {
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+impl Default for CleanupOrphanArtifactsInput {
+    fn default() -> Self {
+        Self { dry_run: true }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupOrphanArtifactsResult {
+    pub checked_file_count: usize,
+    pub orphan_paths: Vec<String>,
+    pub deleted_paths: Vec<String>,
 }

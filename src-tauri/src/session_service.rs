@@ -2,40 +2,110 @@ use crate::protocol::*;
 use crate::runtime::{
     extract_open_scad_parameters, ok_diagnostics, render_open_scad_preview, DEFAULT_SAMPLE_SOURCE,
 };
+#[cfg(test)]
+use crate::session_repository::InMemorySessionRepository;
+use crate::session_repository::{SessionRepository, SessionRepositorySnapshot};
+use crate::storage::{self, StorageLayout};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
 #[derive(Default)]
-struct ServiceState {
-    sessions: HashMap<String, CadSession>,
-    revisions: HashMap<String, CadRevision>,
-    artifacts: HashMap<String, CadArtifact>,
-    messages: HashMap<String, Vec<CadUserMessage>>,
-    conversation: HashMap<String, Vec<CadConversationMessage>>,
-    agent_runs: HashMap<String, Vec<CadAgentRun>>,
-    current_interactive_session_id: Option<String>,
+pub(crate) struct ServiceState {
+    pub(crate) sessions: HashMap<String, CadSession>,
+    pub(crate) revisions: HashMap<String, CadRevision>,
+    pub(crate) artifacts: HashMap<String, CadArtifact>,
+    pub(crate) messages: HashMap<String, Vec<CadUserMessage>>,
+    pub(crate) conversation: HashMap<String, Vec<CadConversationMessage>>,
+    pub(crate) agent_runs: HashMap<String, Vec<CadAgentRun>>,
+    pub(crate) agent_run_events: HashMap<String, Vec<CadAgentRunEvent>>,
+    pub(crate) current_interactive_session_id: Option<String>,
+}
+
+impl From<SessionRepositorySnapshot> for ServiceState {
+    fn from(snapshot: SessionRepositorySnapshot) -> Self {
+        let mut messages = HashMap::new();
+        let mut conversation = HashMap::new();
+        let mut agent_runs = HashMap::new();
+        let mut agent_run_events = HashMap::new();
+        for session_id in snapshot.sessions.keys() {
+            messages.insert(session_id.clone(), Vec::new());
+            conversation.insert(
+                session_id.clone(),
+                snapshot
+                    .conversation
+                    .get(session_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            agent_runs.insert(
+                session_id.clone(),
+                snapshot
+                    .agent_runs
+                    .get(session_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            agent_run_events.insert(
+                session_id.clone(),
+                snapshot
+                    .agent_run_events
+                    .get(session_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+        }
+        Self {
+            sessions: snapshot.sessions,
+            revisions: snapshot.revisions,
+            artifacts: snapshot.artifacts,
+            messages,
+            conversation,
+            agent_runs,
+            agent_run_events,
+            current_interactive_session_id: snapshot.current_interactive_session_id,
+        }
+    }
 }
 
 pub struct SessionService {
     inner: Mutex<ServiceState>,
-    artifact_root: PathBuf,
+    storage_layout: StorageLayout,
+    repository: Arc<dyn SessionRepository>,
     event_sender: broadcast::Sender<CadBridgeEvent>,
 }
 
 impl SessionService {
+    #[cfg(test)]
     pub fn new(artifact_root: PathBuf) -> Self {
+        Self::with_storage_layout(StorageLayout::from_artifact_root(artifact_root))
+    }
+
+    #[cfg(test)]
+    pub fn with_storage_layout(storage_layout: StorageLayout) -> Self {
+        Self::with_repository(storage_layout, Arc::new(InMemorySessionRepository))
+            .expect("in-memory session repository cannot fail")
+    }
+
+    pub(crate) fn with_repository(
+        storage_layout: StorageLayout,
+        repository: Arc<dyn SessionRepository>,
+    ) -> Result<Self, String> {
         let (event_sender, _) = broadcast::channel(256);
-        Self {
-            inner: Mutex::new(ServiceState::default()),
-            artifact_root,
+        let snapshot = repository.load()?;
+        let service = Self {
+            inner: Mutex::new(ServiceState::from(snapshot)),
+            storage_layout,
+            repository,
             event_sender,
-        }
+        };
+        service.verify_artifact_files_inner(None)?;
+        Ok(service)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<CadBridgeEvent> {
@@ -64,6 +134,9 @@ impl SessionService {
                 .selected_runtime
                 .unwrap_or(CadRuntimeKind::OpenscadWasm),
             status: CadSessionStatus::Idle,
+            recovery_diagnostics: Vec::new(),
+            archived_at: None,
+            deleted_at: None,
             revisions: Vec::new(),
         };
         {
@@ -72,6 +145,9 @@ impl SessionService {
             state.messages.insert(session_id.clone(), Vec::new());
             state.conversation.insert(session_id.clone(), Vec::new());
             state.agent_runs.insert(session_id.clone(), Vec::new());
+            state
+                .agent_run_events
+                .insert(session_id.clone(), Vec::new());
         }
         self.update_model_source(UpdateModelSourceInput {
             session_id: session_id.clone(),
@@ -116,9 +192,213 @@ impl SessionService {
             let session = state.sessions.get_mut(session_id).expect("session checked");
             session.last_viewed_at = Some(now.clone());
             session.updated_at = now;
-            state.current_interactive_session_id = Some(session_id.to_string());
+            if session.archived_at.is_none() {
+                state.current_interactive_session_id = Some(session_id.to_string());
+            }
+            self.persist_session_graph(&state, session_id)?;
         }
         self.get_session_state(session_id)
+    }
+
+    #[cfg(test)]
+    pub fn list_sessions(&self, include_archived: bool) -> Result<Vec<CadSessionListItem>, String> {
+        self.list_sessions_for_input(ListCadSessionsInput {
+            include_archived,
+            query: None,
+        })
+        .map(|result| result.sessions)
+    }
+
+    pub fn list_sessions_for_input(
+        &self,
+        input: ListCadSessionsInput,
+    ) -> Result<ListCadSessionsResult, String> {
+        let state = self.inner.lock().map_err(lock_error)?;
+        let query = normalized_query(input.query.as_deref());
+        let mut sessions: Vec<CadSessionListItem> = state
+            .sessions
+            .values()
+            .filter(|session| session.deleted_at.is_none())
+            .filter(|session| input.include_archived || session.archived_at.is_none())
+            .filter(|session| {
+                query
+                    .as_deref()
+                    .is_none_or(|query| session_matches_search(&state, session, query))
+            })
+            .map(|session| session_list_item(&state, session))
+            .collect();
+        sessions.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        Ok(ListCadSessionsResult {
+            sessions,
+            search_fields: vec![
+                "title".to_string(),
+                "source".to_string(),
+                "conversation".to_string(),
+            ],
+        })
+    }
+
+    pub fn rename_session(&self, input: RenameCadSessionInput) -> Result<CadSessionState, String> {
+        let snapshot = {
+            let mut state = self.inner.lock().map_err(lock_error)?;
+            let session = require_session_mut(&mut state, &input.session_id)?;
+            session.title = Some(input.title.trim().to_string());
+            session.updated_at = timestamp();
+            rebuild_revision_summaries(&mut state, &input.session_id);
+            self.persist_session_graph(&state, &input.session_id)?;
+            build_state(&state, &input.session_id)?
+        };
+        self.emit(
+            CadBridgeEventType::SessionUpdated,
+            &input.session_id,
+            snapshot.clone(),
+        );
+        Ok(snapshot)
+    }
+
+    pub fn archive_session(
+        &self,
+        input: ArchiveCadSessionInput,
+    ) -> Result<CadSessionState, String> {
+        let snapshot = {
+            let mut state = self.inner.lock().map_err(lock_error)?;
+            let now = timestamp();
+            let archived = input.archived.unwrap_or(true);
+            let session = require_session_mut(&mut state, &input.session_id)?;
+            session.archived_at = archived.then_some(now.clone());
+            session.updated_at = now;
+            if archived
+                && state
+                    .current_interactive_session_id
+                    .as_deref()
+                    .is_some_and(|current| current == input.session_id)
+            {
+                state.current_interactive_session_id = None;
+            }
+            rebuild_revision_summaries(&mut state, &input.session_id);
+            self.persist_session_graph(&state, &input.session_id)?;
+            build_state(&state, &input.session_id)?
+        };
+        self.emit(
+            CadBridgeEventType::SessionUpdated,
+            &input.session_id,
+            snapshot.clone(),
+        );
+        Ok(snapshot)
+    }
+
+    pub fn delete_session(&self, session_id: &str) -> Result<DeleteCadSessionResult, String> {
+        let deleted_at = timestamp();
+        let current_session_id = {
+            let mut state = self.inner.lock().map_err(lock_error)?;
+            require_session(&state, session_id)?;
+            state.sessions.remove(session_id);
+            state.messages.remove(session_id);
+            state.conversation.remove(session_id);
+            state.agent_runs.remove(session_id);
+            state.agent_run_events.remove(session_id);
+            let revision_ids: Vec<String> = state
+                .revisions
+                .values()
+                .filter(|revision| revision.session_id == session_id)
+                .map(|revision| revision.id.clone())
+                .collect();
+            for revision_id in &revision_ids {
+                state.revisions.remove(revision_id);
+            }
+            state
+                .artifacts
+                .retain(|_, artifact| !revision_ids.contains(&artifact.revision_id));
+            if state
+                .current_interactive_session_id
+                .as_deref()
+                .is_some_and(|current| current == session_id)
+            {
+                state.current_interactive_session_id = None;
+            }
+            state.current_interactive_session_id.clone()
+        };
+        self.repository.delete_session(session_id, &deleted_at)?;
+        Ok(DeleteCadSessionResult {
+            session_id: session_id.to_string(),
+            current_session_id,
+        })
+    }
+
+    pub fn duplicate_session(
+        &self,
+        input: DuplicateCadSessionInput,
+    ) -> Result<CreateCadSessionResult, String> {
+        let now = timestamp();
+        let new_session_id = uuid();
+        let snapshot = {
+            let mut state = self.inner.lock().map_err(lock_error)?;
+            let source_session = require_session(&state, &input.session_id)?.clone();
+            let active_revision = source_session
+                .active_revision_id
+                .as_ref()
+                .and_then(|revision_id| state.revisions.get(revision_id))
+                .cloned();
+            let title = input.title.or_else(|| {
+                source_session
+                    .title
+                    .as_ref()
+                    .map(|title| format!("{title} copy"))
+            });
+            let active_revision_id = active_revision.as_ref().map(|_| uuid());
+            let session = CadSession {
+                id: new_session_id.clone(),
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                last_viewed_at: None,
+                connected_ui_clients: 0,
+                title,
+                active_revision_id: active_revision_id.clone(),
+                selected_runtime: source_session.selected_runtime,
+                status: CadSessionStatus::Idle,
+                recovery_diagnostics: source_session.recovery_diagnostics,
+                archived_at: None,
+                deleted_at: None,
+                revisions: Vec::new(),
+            };
+            state.sessions.insert(new_session_id.clone(), session);
+            state.messages.insert(new_session_id.clone(), Vec::new());
+            state
+                .conversation
+                .insert(new_session_id.clone(), Vec::new());
+            state.agent_runs.insert(new_session_id.clone(), Vec::new());
+            state
+                .agent_run_events
+                .insert(new_session_id.clone(), Vec::new());
+            if let (Some(mut revision), Some(new_revision_id)) =
+                (active_revision, active_revision_id)
+            {
+                revision.id = new_revision_id.clone();
+                revision.session_id = new_session_id.clone();
+                revision.parent_revision_id = None;
+                revision.restored_from_revision_id = None;
+                revision.source_hash = source_hash(&revision.source);
+                revision.created_at = now.clone();
+                revision.artifact_count = 0;
+                revision.artifacts = Vec::new();
+                revision.user_events = Vec::new();
+                revision.run_links = Vec::new();
+                state.revisions.insert(new_revision_id, revision);
+            }
+            rebuild_revision_summaries(&mut state, &new_session_id);
+            self.persist_session_graph(&state, &new_session_id)?;
+            build_state(&state, &new_session_id)?
+        };
+        self.emit(
+            CadBridgeEventType::SessionCreated,
+            &new_session_id,
+            snapshot.clone(),
+        );
+        Ok(CreateCadSessionResult {
+            session_id: new_session_id.clone(),
+            ui_url: format!("/sessions/{new_session_id}"),
+            state: snapshot,
+        })
     }
 
     pub fn update_model_source(
@@ -140,6 +420,8 @@ impl SessionService {
                 id: revision_id.clone(),
                 session_id: input.session_id.clone(),
                 parent_revision_id: input.parent_revision_id,
+                restored_from_revision_id: None,
+                source_hash: source_hash(&input.source),
                 source_language: input.source_language,
                 source: input.source,
                 parameters,
@@ -148,6 +430,7 @@ impl SessionService {
                 artifact_count: 0,
                 artifacts: Vec::new(),
                 user_events: Vec::new(),
+                run_links: Vec::new(),
             };
             state.revisions.insert(revision_id.clone(), revision);
             let session = require_session_mut(&mut state, &input.session_id)?;
@@ -155,6 +438,7 @@ impl SessionService {
             session.updated_at = now;
             session.status = CadSessionStatus::Idle;
             rebuild_revision_summaries(&mut state, &input.session_id);
+            self.persist_session_graph(&state, &input.session_id)?;
             build_state(&state, &input.session_id)?
         };
         self.emit(
@@ -163,6 +447,92 @@ impl SessionService {
             state_snapshot.clone(),
         );
         Ok(UpdateModelSourceResult {
+            revision_id,
+            state: state_snapshot,
+        })
+    }
+
+    pub fn set_active_revision(
+        &self,
+        input: SetActiveRevisionInput,
+    ) -> Result<CadSessionState, String> {
+        let snapshot = {
+            let mut state = self.inner.lock().map_err(lock_error)?;
+            let revision = require_revision(&state, &input.revision_id)?;
+            if revision.session_id != input.session_id {
+                return Err(format!(
+                    "CAD revision {} does not belong to session {}.",
+                    input.revision_id, input.session_id
+                ));
+            }
+            let session = require_session_mut(&mut state, &input.session_id)?;
+            session.active_revision_id = Some(input.revision_id.clone());
+            session.updated_at = timestamp();
+            session.status = CadSessionStatus::Idle;
+            rebuild_revision_summaries(&mut state, &input.session_id);
+            self.persist_session_graph(&state, &input.session_id)?;
+            build_state(&state, &input.session_id)?
+        };
+        self.emit(
+            CadBridgeEventType::RevisionActivated,
+            &input.session_id,
+            snapshot.clone(),
+        );
+        Ok(snapshot)
+    }
+
+    pub fn restore_revision(
+        &self,
+        input: RestoreRevisionInput,
+    ) -> Result<RestoreRevisionResult, String> {
+        let revision_id = uuid();
+        let state_snapshot = {
+            let mut state = self.inner.lock().map_err(lock_error)?;
+            let session = require_session(&state, &input.session_id)?.clone();
+            let source_revision = require_revision(&state, &input.revision_id)?.clone();
+            if source_revision.session_id != input.session_id {
+                return Err(format!(
+                    "CAD revision {} does not belong to session {}.",
+                    input.revision_id, input.session_id
+                ));
+            }
+            let now = timestamp();
+            let mut revision = CadRevision {
+                id: revision_id.clone(),
+                session_id: input.session_id.clone(),
+                parent_revision_id: session.active_revision_id.clone(),
+                restored_from_revision_id: Some(input.revision_id.clone()),
+                source_hash: source_hash(&source_revision.source),
+                source_language: source_revision.source_language,
+                source: source_revision.source,
+                parameters: source_revision.parameters,
+                created_at: now.clone(),
+                diagnostics: ok_diagnostics(0),
+                artifact_count: 0,
+                artifacts: Vec::new(),
+                user_events: Vec::new(),
+                run_links: Vec::new(),
+            };
+            add_user_event(
+                &mut revision,
+                "revision.restored",
+                json!({ "restoredFromRevisionId": input.revision_id }),
+            );
+            state.revisions.insert(revision_id.clone(), revision);
+            let session = require_session_mut(&mut state, &input.session_id)?;
+            session.active_revision_id = Some(revision_id.clone());
+            session.updated_at = now;
+            session.status = CadSessionStatus::Idle;
+            rebuild_revision_summaries(&mut state, &input.session_id);
+            self.persist_session_graph(&state, &input.session_id)?;
+            build_state(&state, &input.session_id)?
+        };
+        self.emit(
+            CadBridgeEventType::RevisionRestored,
+            &input.session_id,
+            state_snapshot.clone(),
+        );
+        Ok(RestoreRevisionResult {
             revision_id,
             state: state_snapshot,
         })
@@ -249,6 +619,7 @@ impl SessionService {
             };
             session.updated_at = timestamp();
             rebuild_revision_summaries(&mut state, &input.session_id);
+            self.persist_session_graph(&state, &input.session_id)?;
             build_state(&state, &input.session_id)?
         };
         self.emit(
@@ -277,19 +648,47 @@ impl SessionService {
                 .active_revision_id
                 .clone()
                 .ok_or_else(|| "No active revision is available.".to_string())?;
-            let revision = require_revision_mut(&mut state, &active_revision_id)?;
-            for parameter in &mut revision.parameters {
+            let source_revision = require_revision(&state, &active_revision_id)?.clone();
+            let now = timestamp();
+            let revision_id = uuid();
+            let mut parameters = source_revision.parameters.clone();
+            for parameter in &mut parameters {
                 if let Some(value) = values.get(&parameter.name) {
                     parameter.value = json_to_parameter_value(value.clone());
                 }
             }
-            add_user_event(revision, "parameter.updated", json!({ "values": values }));
+            let mut revision = CadRevision {
+                id: revision_id.clone(),
+                session_id: session_id.to_string(),
+                parent_revision_id: Some(active_revision_id),
+                restored_from_revision_id: None,
+                source_hash: source_hash(&source_revision.source),
+                source_language: source_revision.source_language,
+                source: source_revision.source,
+                parameters,
+                created_at: now.clone(),
+                diagnostics: ok_diagnostics(0),
+                artifact_count: 0,
+                artifacts: Vec::new(),
+                user_events: Vec::new(),
+                run_links: Vec::new(),
+            };
+            add_user_event(
+                &mut revision,
+                "parameter.updated",
+                json!({ "values": values }),
+            );
+            state.revisions.insert(revision_id.clone(), revision);
             let session = require_session_mut(&mut state, session_id)?;
-            session.updated_at = timestamp();
+            session.active_revision_id = Some(revision_id);
+            session.updated_at = now;
+            session.status = CadSessionStatus::Idle;
+            rebuild_revision_summaries(&mut state, session_id);
+            self.persist_session_graph(&state, session_id)?;
             build_state(&state, session_id)?
         };
         self.emit(
-            CadBridgeEventType::SessionUpdated,
+            CadBridgeEventType::RevisionCreated,
             session_id,
             snapshot.clone(),
         );
@@ -349,7 +748,9 @@ impl SessionService {
                 .conversation
                 .entry(input.session_id.clone())
                 .or_default()
-                .push(conversation_message);
+                .push(conversation_message.clone());
+            self.repository
+                .save_conversation_message(&conversation_message)?;
             let session = require_session_mut(&mut state, &input.session_id)?;
             session.updated_at = created_at;
             build_state(&state, &input.session_id)?
@@ -395,7 +796,31 @@ impl SessionService {
                 .conversation
                 .entry(session_id.to_string())
                 .or_default()
-                .push(message);
+                .push(message.clone());
+            self.repository.save_conversation_message(&message)?;
+            if let Some(run_id) = &message.run_id {
+                if matches!(
+                    message.role,
+                    CadConversationRole::Assistant
+                        | CadConversationRole::System
+                        | CadConversationRole::Tool
+                ) {
+                    let event = append_agent_run_event(
+                        &mut state,
+                        session_id,
+                        run_id,
+                        message.revision_id.clone(),
+                        CadAgentRunEventType::AgentMessageCreated,
+                        json!({
+                            "messageId": message.id,
+                            "role": message.role,
+                            "content": message.content
+                        }),
+                        None,
+                    );
+                    self.repository.save_agent_run_event(&event)?;
+                }
+            }
             build_state(&state, session_id)?
         };
         let message = snapshot
@@ -416,15 +841,44 @@ impl SessionService {
         &self,
         session_id: &str,
         prompt: String,
+        input_revision_id: Option<String>,
+        external_agent: Option<String>,
+        retry_of_run_id: Option<String>,
     ) -> Result<(CadAgentRun, CadSessionState), String> {
         let run_id = uuid();
         let snapshot = {
             let mut state = self.inner.lock().map_err(lock_error)?;
-            require_session(&state, session_id)?;
+            let resolved_input_revision_id = {
+                let session = require_session(&state, session_id)?;
+                input_revision_id.or_else(|| session.active_revision_id.clone())
+            };
+            if let Some(revision_id) = &resolved_input_revision_id {
+                let revision = require_revision(&state, revision_id)?;
+                if revision.session_id != session_id {
+                    return Err(format!(
+                        "CAD revision {revision_id} does not belong to session {session_id}."
+                    ));
+                }
+            }
+            if let Some(retry_of_run_id) = &retry_of_run_id {
+                let retry_source_exists = state
+                    .agent_runs
+                    .get(session_id)
+                    .into_iter()
+                    .flatten()
+                    .any(|run| run.id == *retry_of_run_id);
+                if !retry_source_exists {
+                    return Err(format!(
+                        "Retry source agent run not found: {retry_of_run_id}"
+                    ));
+                }
+            }
             let now = timestamp();
             let run = CadAgentRun {
                 id: run_id.clone(),
                 session_id: session_id.to_string(),
+                input_revision_id: resolved_input_revision_id.clone(),
+                output_revision_id: None,
                 status: CadAgentRunStatus::Queued,
                 prompt,
                 created_at: now.clone(),
@@ -433,12 +887,31 @@ impl SessionService {
                 completed_at: None,
                 error: None,
                 active_step: None,
+                external_agent,
+                external_thread_id: None,
+                external_turn_id: None,
             };
             state
                 .agent_runs
                 .entry(session_id.to_string())
                 .or_default()
-                .push(run);
+                .push(run.clone());
+            self.repository.save_agent_run(&run)?;
+            let event = append_agent_run_event(
+                &mut state,
+                session_id,
+                &run.id,
+                resolved_input_revision_id.clone(),
+                CadAgentRunEventType::AgentRunCreated,
+                json!({
+                    "status": &run.status,
+                    "prompt": &run.prompt,
+                    "inputRevisionId": resolved_input_revision_id,
+                    "retryOfRunId": retry_of_run_id
+                }),
+                None,
+            );
+            self.repository.save_agent_run_event(&event)?;
             let session = require_session_mut(&mut state, session_id)?;
             session.updated_at = timestamp();
             build_state(&state, session_id)?
@@ -457,6 +930,46 @@ impl SessionService {
         Ok((run, snapshot))
     }
 
+    pub fn link_agent_run_output_revision(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        output_revision_id: String,
+    ) -> Result<CadSessionState, String> {
+        let snapshot = {
+            let mut state = self.inner.lock().map_err(lock_error)?;
+            let revision = require_revision(&state, &output_revision_id)?;
+            if revision.session_id != session_id {
+                return Err(format!(
+                    "CAD revision {output_revision_id} does not belong to session {session_id}."
+                ));
+            }
+            let run = require_agent_run_mut(&mut state, session_id, run_id)?;
+            run.output_revision_id = Some(output_revision_id.clone());
+            run.updated_at = timestamp();
+            let run = run.clone();
+            self.repository.save_agent_run(&run)?;
+            let event = append_agent_run_event(
+                &mut state,
+                session_id,
+                run_id,
+                Some(output_revision_id.clone()),
+                CadAgentRunEventType::AgentRunUpdated,
+                json!({ "outputRevisionId": output_revision_id }),
+                None,
+            );
+            self.repository.save_agent_run_event(&event)?;
+            rebuild_revision_summaries(&mut state, session_id);
+            build_state(&state, session_id)?
+        };
+        self.emit(
+            CadBridgeEventType::AgentRunUpdated,
+            session_id,
+            snapshot.clone(),
+        );
+        Ok(snapshot)
+    }
+
     pub fn update_agent_run(
         &self,
         session_id: &str,
@@ -465,11 +978,14 @@ impl SessionService {
         active_step: Option<Option<String>>,
         error: Option<String>,
         event_type: Option<CadBridgeEventType>,
+        event_payload: Option<Value>,
     ) -> Result<(CadAgentRun, CadSessionState), String> {
         let snapshot = {
             let mut state = self.inner.lock().map_err(lock_error)?;
             let now = timestamp();
             let run = require_agent_run_mut(&mut state, session_id, run_id)?;
+            let previous_status = run.status.clone();
+            let previous_active_step = run.active_step.clone();
             if let Some(status) = status {
                 if status == CadAgentRunStatus::Running && run.started_at.is_none() {
                     run.started_at = Some(now.clone());
@@ -482,10 +998,46 @@ impl SessionService {
             if let Some(active_step) = active_step {
                 run.active_step = active_step;
             }
-            if let Some(error) = error {
+            if let Some(error) = error.clone() {
                 run.error = Some(error);
             }
             run.updated_at = now.clone();
+            let run = run.clone();
+            self.repository.save_agent_run(&run)?;
+            let event_type = run_event_type_for_update(event_type.as_ref(), &run.status);
+            let mut payload = metadata_from_value(event_payload.unwrap_or_else(|| json!({})));
+            payload.insert(
+                "previousStatus".to_string(),
+                serde_json::to_value(previous_status).map_err(|error| error.to_string())?,
+            );
+            payload.insert(
+                "status".to_string(),
+                serde_json::to_value(&run.status).map_err(|error| error.to_string())?,
+            );
+            if previous_active_step != run.active_step {
+                payload.insert(
+                    "previousActiveStep".to_string(),
+                    serde_json::to_value(previous_active_step)
+                        .map_err(|error| error.to_string())?,
+                );
+                payload.insert(
+                    "activeStep".to_string(),
+                    serde_json::to_value(&run.active_step).map_err(|error| error.to_string())?,
+                );
+            }
+            if let Some(error) = error {
+                payload.insert("error".to_string(), Value::String(error));
+            }
+            let event = append_agent_run_event(
+                &mut state,
+                session_id,
+                run_id,
+                run.input_revision_id.clone(),
+                event_type,
+                Value::Object(payload),
+                None,
+            );
+            self.repository.save_agent_run_event(&event)?;
             let session = require_session_mut(&mut state, session_id)?;
             session.updated_at = now;
             build_state(&state, session_id)?
@@ -499,6 +1051,79 @@ impl SessionService {
         let event_type = event_type.unwrap_or_else(|| event_type_for_run_status(&run.status));
         self.emit(event_type, session_id, snapshot.clone());
         Ok((run, snapshot))
+    }
+
+    pub fn update_agent_run_external_metadata(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        external_agent: Option<String>,
+        external_thread_id: Option<String>,
+        external_turn_id: Option<String>,
+    ) -> Result<CadSessionState, String> {
+        let snapshot = {
+            let mut state = self.inner.lock().map_err(lock_error)?;
+            let run = require_agent_run_mut(&mut state, session_id, run_id)?;
+            if external_agent.is_some() {
+                run.external_agent = external_agent.clone();
+            }
+            if external_thread_id.is_some() {
+                run.external_thread_id = external_thread_id.clone();
+            }
+            if external_turn_id.is_some() {
+                run.external_turn_id = external_turn_id.clone();
+            }
+            run.updated_at = timestamp();
+            let run = run.clone();
+            self.repository.save_agent_run(&run)?;
+            let event = append_agent_run_event(
+                &mut state,
+                session_id,
+                run_id,
+                run.input_revision_id.clone(),
+                CadAgentRunEventType::AgentRunUpdated,
+                json!({
+                    "externalAgent": external_agent,
+                    "externalThreadId": external_thread_id,
+                    "externalTurnId": external_turn_id
+                }),
+                None,
+            );
+            self.repository.save_agent_run_event(&event)?;
+            build_state(&state, session_id)?
+        };
+        self.emit(
+            CadBridgeEventType::AgentRunUpdated,
+            session_id,
+            snapshot.clone(),
+        );
+        Ok(snapshot)
+    }
+
+    pub fn revision_prompt_context(
+        &self,
+        session_id: &str,
+        revision_id: Option<&str>,
+    ) -> Result<(Option<String>, Option<CadSourceLanguage>, Option<String>), String> {
+        let state = self.inner.lock().map_err(lock_error)?;
+        let session = require_session(&state, session_id)?;
+        let revision_id = revision_id
+            .map(ToString::to_string)
+            .or_else(|| session.active_revision_id.clone());
+        let Some(revision_id) = revision_id else {
+            return Ok((None, None, None));
+        };
+        let revision = require_revision(&state, &revision_id)?;
+        if revision.session_id != session_id {
+            return Err(format!(
+                "CAD revision {revision_id} does not belong to session {session_id}."
+            ));
+        }
+        Ok((
+            Some(revision_id),
+            Some(revision.source_language.clone()),
+            Some(revision.source.clone()),
+        ))
     }
 
     pub fn record_agent_failure(
@@ -525,6 +1150,7 @@ impl SessionService {
             session.status = CadSessionStatus::Failed;
             session.updated_at = timestamp();
             rebuild_revision_summaries(&mut state, session_id);
+            self.persist_session_graph(&state, session_id)?;
             build_state(&state, session_id)?
         };
         self.emit(
@@ -595,6 +1221,7 @@ impl SessionService {
             revision.artifacts.push(artifact.clone());
             revision.artifact_count = revision.artifacts.len();
             rebuild_revision_summaries(&mut state, &input.session_id);
+            self.persist_session_graph(&state, &input.session_id)?;
             build_state(&state, &input.session_id)?
         };
         self.emit(
@@ -612,21 +1239,138 @@ impl SessionService {
     }
 
     pub fn read_artifact(&self, artifact_id: &str) -> Result<String, String> {
-        let path = {
-            let state = self.inner.lock().map_err(lock_error)?;
-            let artifact = state
-                .artifacts
-                .get(artifact_id)
-                .ok_or_else(|| "Artifact not found.".to_string())?;
-            artifact
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.get("path"))
-                .and_then(Value::as_str)
-                .map(PathBuf::from)
-                .ok_or_else(|| "Artifact path missing.".to_string())?
+        let artifact = self.load_artifact_manifest(artifact_id)?;
+        if artifact.deleted_at.is_some() {
+            return Err("Artifact has been deleted.".to_string());
+        }
+        let path = self.artifact_manifest_path(&artifact)?;
+        match fs::read_to_string(&path) {
+            Ok(contents) => Ok(contents),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.mark_artifact_missing(artifact_id, Some(timestamp()))?;
+                Err(format!("Artifact file is missing: {}", path.display()))
+            }
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    pub fn open_artifact(&self, artifact_id: &str) -> Result<OpenArtifactResult, String> {
+        let artifact = self.load_artifact_manifest(artifact_id)?;
+        if artifact.deleted_at.is_some() {
+            return Err("Artifact has been deleted.".to_string());
+        }
+        let path = self.artifact_manifest_path(&artifact)?;
+        if !path.exists() {
+            self.mark_artifact_missing(artifact_id, Some(timestamp()))?;
+            return Err(format!("Artifact file is missing: {}", path.display()));
+        }
+        Ok(OpenArtifactResult {
+            artifact,
+            path: path.to_string_lossy().to_string(),
+        })
+    }
+
+    pub fn delete_artifact(
+        &self,
+        input: DeleteArtifactInput,
+    ) -> Result<DeleteArtifactResult, String> {
+        let artifact = self.load_artifact_manifest(&input.artifact_id)?;
+        if self.artifact_session_id(&artifact)? != input.session_id {
+            return Err(format!(
+                "Artifact {} does not belong to session {}.",
+                input.artifact_id, input.session_id
+            ));
+        }
+        let deleted_at = timestamp();
+        let path = self.artifact_manifest_path(&artifact)?;
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        self.repository
+            .mark_artifact_deleted(&input.artifact_id, &deleted_at)?;
+        let snapshot = {
+            let mut state = self.inner.lock().map_err(lock_error)?;
+            state.artifacts.remove(&input.artifact_id);
+            for revision in state
+                .revisions
+                .values_mut()
+                .filter(|revision| revision.session_id == input.session_id)
+            {
+                revision
+                    .artifacts
+                    .retain(|artifact| artifact.id != input.artifact_id);
+                revision.artifact_count = revision.artifacts.len();
+            }
+            let session = require_session_mut(&mut state, &input.session_id)?;
+            session.updated_at = deleted_at;
+            rebuild_revision_summaries(&mut state, &input.session_id);
+            self.persist_session_graph(&state, &input.session_id)?;
+            build_state(&state, &input.session_id)?
         };
-        fs::read_to_string(path).map_err(|error| error.to_string())
+        self.emit(
+            CadBridgeEventType::ArtifactDeleted,
+            &input.session_id,
+            snapshot.clone(),
+        );
+        Ok(DeleteArtifactResult {
+            artifact_id: input.artifact_id,
+            state: snapshot,
+        })
+    }
+
+    pub fn verify_artifact_files(
+        &self,
+        session_id: Option<String>,
+    ) -> Result<VerifyArtifactFilesResult, String> {
+        let result = self.verify_artifact_files_inner(session_id.as_deref())?;
+        let state = match session_id {
+            Some(session_id) => Some(self.get_session_state(&session_id)?),
+            None => None,
+        };
+        if let Some(state) = &state {
+            self.emit(
+                CadBridgeEventType::ArtifactVerified,
+                &state.session.id,
+                state.clone(),
+            );
+        }
+        Ok(VerifyArtifactFilesResult { state, ..result })
+    }
+
+    pub fn cleanup_orphan_artifacts(
+        &self,
+        input: CleanupOrphanArtifactsInput,
+    ) -> Result<CleanupOrphanArtifactsResult, String> {
+        let known_paths = {
+            let state = self.inner.lock().map_err(lock_error)?;
+            state
+                .artifacts
+                .values()
+                .filter_map(|artifact| self.artifact_manifest_path(artifact).ok())
+                .collect::<std::collections::HashSet<_>>()
+        };
+        let mut checked_file_count = 0;
+        let mut orphan_paths = Vec::new();
+        let mut deleted_paths = Vec::new();
+        for file_path in collect_artifact_files(self.storage_layout.artifact_root())? {
+            checked_file_count += 1;
+            if known_paths.contains(&file_path) {
+                continue;
+            }
+            let display_path = file_path.to_string_lossy().to_string();
+            orphan_paths.push(display_path.clone());
+            if !input.dry_run {
+                fs::remove_file(&file_path).map_err(|error| error.to_string())?;
+                deleted_paths.push(display_path);
+            }
+        }
+        Ok(CleanupOrphanArtifactsResult {
+            checked_file_count,
+            orphan_paths,
+            deleted_paths,
+        })
     }
 
     pub fn get_session_state(&self, session_id: &str) -> Result<CadSessionState, String> {
@@ -642,25 +1386,50 @@ impl SessionService {
         contents: &str,
         metadata: Option<Value>,
     ) -> Result<CadArtifact, String> {
-        fs::create_dir_all(&self.artifact_root).map_err(|error| error.to_string())?;
         let id = uuid();
-        let path = self.artifact_root.join(format!("{id}.{format}"));
-        fs::write(&path, contents).map_err(|error| error.to_string())?;
+        let (session_id, path, relative_path) = {
+            let state = self.inner.lock().map_err(lock_error)?;
+            let revision = require_revision(&state, revision_id)?;
+            (
+                revision.session_id.clone(),
+                self.storage_layout
+                    .artifact_path(&revision.session_id, revision_id, &id, format)
+                    .map_err(|error| error.to_string())?,
+                self.storage_layout
+                    .artifact_relative_path(&revision.session_id, revision_id, &id, format)
+                    .map_err(|error| error.to_string())?,
+            )
+        };
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        let contents_bytes = contents.as_bytes();
+        fs::write(&path, contents_bytes).map_err(|error| error.to_string())?;
+        let sha256 = storage::sha256_hex(contents_bytes);
         let mut metadata_map = metadata.map(metadata_from_value).unwrap_or_default();
         metadata_map.insert(
             "path".to_string(),
             Value::String(path.to_string_lossy().to_string()),
         );
+        metadata_map.insert(
+            "relativePath".to_string(),
+            Value::String(relative_path.to_string_lossy().to_string()),
+        );
+        metadata_map.insert("sha256".to_string(), Value::String(sha256));
         let artifact = CadArtifact {
             id: id.clone(),
             revision_id: revision_id.to_string(),
             kind,
             format: format.to_string(),
             uri: format!("tauri://artifact/{id}"),
-            bytes: Some(contents.len() as u64),
+            bytes: Some(contents_bytes.len() as u64),
             created_at: timestamp(),
+            deleted_at: None,
+            missing_at: None,
             metadata: Some(metadata_map),
         };
+        self.repository
+            .save_artifact_manifest(&session_id, &artifact)?;
         let mut state = self.inner.lock().map_err(lock_error)?;
         state.artifacts.insert(id, artifact.clone());
         Ok(artifact)
@@ -675,12 +1444,290 @@ impl SessionService {
             state,
         });
     }
+
+    fn persist_session_graph(&self, state: &ServiceState, session_id: &str) -> Result<(), String> {
+        self.repository.save_session_graph(state, session_id)
+    }
+
+    fn load_artifact_manifest(&self, artifact_id: &str) -> Result<CadArtifact, String> {
+        if let Some(artifact) = self.repository.load_artifact_manifest(artifact_id)? {
+            return Ok(artifact);
+        }
+        let state = self.inner.lock().map_err(lock_error)?;
+        state
+            .artifacts
+            .get(artifact_id)
+            .cloned()
+            .ok_or_else(|| "Artifact not found.".to_string())
+    }
+
+    fn artifact_manifest_path(&self, artifact: &CadArtifact) -> Result<PathBuf, String> {
+        let metadata = artifact
+            .metadata
+            .as_ref()
+            .ok_or_else(|| "Artifact metadata missing.".to_string())?;
+        if let Some(relative_path) = metadata.get("relativePath").and_then(Value::as_str) {
+            let relative_path = PathBuf::from(relative_path);
+            validate_artifact_relative_path(&relative_path)?;
+            return Ok(self.storage_layout.app_data_dir().join(relative_path));
+        }
+        let path = metadata
+            .get("path")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .ok_or_else(|| "Artifact path missing.".to_string())?;
+        validate_artifact_absolute_path(&path, self.storage_layout.artifact_root())?;
+        Ok(path)
+    }
+
+    fn artifact_session_id(&self, artifact: &CadArtifact) -> Result<String, String> {
+        let state = self.inner.lock().map_err(lock_error)?;
+        let revision = require_revision(&state, &artifact.revision_id)?;
+        Ok(revision.session_id.clone())
+    }
+
+    fn mark_artifact_missing(
+        &self,
+        artifact_id: &str,
+        missing_at: Option<String>,
+    ) -> Result<(), String> {
+        self.repository
+            .set_artifact_missing_at(artifact_id, missing_at.as_deref())?;
+        let mut state = self.inner.lock().map_err(lock_error)?;
+        if let Some(artifact) = state.artifacts.get_mut(artifact_id) {
+            artifact.missing_at = missing_at.clone();
+        }
+        for revision in state.revisions.values_mut() {
+            for artifact in &mut revision.artifacts {
+                if artifact.id == artifact_id {
+                    artifact.missing_at = missing_at.clone();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_artifact_files_inner(
+        &self,
+        session_id: Option<&str>,
+    ) -> Result<VerifyArtifactFilesResult, String> {
+        let (artifacts, recovery_diagnostics) = {
+            let state = self.inner.lock().map_err(lock_error)?;
+            let artifacts = state
+                .artifacts
+                .values()
+                .filter(|artifact| artifact.deleted_at.is_none())
+                .filter(|artifact| {
+                    session_id.is_none_or(|session_id| {
+                        state
+                            .revisions
+                            .get(&artifact.revision_id)
+                            .is_some_and(|revision| revision.session_id == session_id)
+                    })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut recovery_diagnostics = state
+                .sessions
+                .values()
+                .filter(|session| {
+                    session_id
+                        .map(|session_id| session.id == session_id)
+                        .unwrap_or(true)
+                })
+                .flat_map(|session| session.recovery_diagnostics.clone())
+                .collect::<Vec<_>>();
+            recovery_diagnostics.extend(
+                state
+                    .revisions
+                    .values()
+                    .filter(|revision| {
+                        session_id
+                            .map(|session_id| revision.session_id == session_id)
+                            .unwrap_or(true)
+                    })
+                    .flat_map(|revision| {
+                        revision
+                            .diagnostics
+                            .items
+                            .iter()
+                            .filter(|diagnostic| diagnostic.message.contains("persisted"))
+                            .cloned()
+                    }),
+            );
+            (artifacts, recovery_diagnostics)
+        };
+        let mut missing_artifact_ids = Vec::new();
+        let mut hash_mismatch_artifact_ids = Vec::new();
+        let mut size_mismatch_artifact_ids = Vec::new();
+        let mut corrupt_metadata_artifact_ids = Vec::new();
+        let mut invalid_path_artifact_ids = Vec::new();
+        let mut diagnostics = recovery_diagnostics;
+        let mut known_paths = std::collections::HashSet::new();
+
+        for artifact in &artifacts {
+            let metadata = artifact.metadata.as_ref();
+            if metadata
+                .and_then(|metadata| metadata.get("metadataRecovery"))
+                .is_some()
+            {
+                corrupt_metadata_artifact_ids.push(artifact.id.clone());
+                diagnostics.push(verify_diagnostic(
+                    "warning",
+                    format!("Artifact {} has corrupt persisted metadata.", artifact.id),
+                ));
+            }
+
+            let path = match self.artifact_manifest_path(artifact) {
+                Ok(path) => path,
+                Err(error) => {
+                    invalid_path_artifact_ids.push(artifact.id.clone());
+                    diagnostics.push(verify_diagnostic(
+                        "error",
+                        format!(
+                            "Artifact {} has an invalid manifest path: {error}",
+                            artifact.id
+                        ),
+                    ));
+                    let missing_at = artifact.missing_at.clone().unwrap_or_else(timestamp);
+                    if artifact.missing_at.as_deref() != Some(missing_at.as_str()) {
+                        self.mark_artifact_missing(&artifact.id, Some(missing_at))?;
+                    }
+                    continue;
+                }
+            };
+            known_paths.insert(path.clone());
+
+            let missing_at = if path.exists() {
+                None
+            } else {
+                let missing_at = artifact.missing_at.clone().unwrap_or_else(timestamp);
+                missing_artifact_ids.push(artifact.id.clone());
+                diagnostics.push(verify_diagnostic(
+                    "error",
+                    format!(
+                        "Artifact {} file is missing at {}.",
+                        artifact.id,
+                        path.display()
+                    ),
+                ));
+                Some(missing_at)
+            };
+            if artifact.missing_at != missing_at {
+                self.mark_artifact_missing(&artifact.id, missing_at)?;
+            }
+            if !path.exists() {
+                continue;
+            }
+
+            let bytes = fs::read(&path).map_err(|error| error.to_string())?;
+            if artifact.bytes != Some(bytes.len() as u64) {
+                size_mismatch_artifact_ids.push(artifact.id.clone());
+                diagnostics.push(verify_diagnostic(
+                    "error",
+                    format!(
+                        "Artifact {} size mismatch: manifest {:?}, file {} bytes.",
+                        artifact.id,
+                        artifact.bytes,
+                        bytes.len()
+                    ),
+                ));
+            }
+            let actual_sha256 = storage::sha256_hex(&bytes);
+            let expected_sha256 = metadata
+                .and_then(|metadata| metadata.get("sha256"))
+                .and_then(Value::as_str);
+            if expected_sha256 != Some(actual_sha256.as_str()) {
+                hash_mismatch_artifact_ids.push(artifact.id.clone());
+                diagnostics.push(verify_diagnostic(
+                    "error",
+                    format!(
+                        "Artifact {} sha256 does not match its manifest.",
+                        artifact.id
+                    ),
+                ));
+            }
+        }
+        let mut orphan_paths = Vec::new();
+        for file_path in collect_artifact_files(self.storage_layout.artifact_root())? {
+            if known_paths.contains(&file_path) {
+                continue;
+            }
+            let path = file_path.to_string_lossy().to_string();
+            diagnostics.push(verify_diagnostic(
+                "warning",
+                format!("Found artifact file without a SQLite manifest: {path}."),
+            ));
+            orphan_paths.push(path);
+        }
+        Ok(VerifyArtifactFilesResult {
+            checked_count: artifacts.len(),
+            missing_artifact_ids,
+            hash_mismatch_artifact_ids,
+            size_mismatch_artifact_ids,
+            corrupt_metadata_artifact_ids,
+            invalid_path_artifact_ids,
+            orphan_paths,
+            diagnostics,
+            state: None,
+        })
+    }
 }
 
 pub fn metadata_from_value(value: Value) -> Metadata {
     match value {
         Value::Object(map) => map,
         _ => Map::new(),
+    }
+}
+
+fn collect_artifact_files(root: &std::path::Path) -> Result<Vec<PathBuf>, String> {
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut files = Vec::new();
+    for entry in fs::read_dir(root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(collect_artifact_files(&path)?);
+        } else if path.is_file() {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
+
+fn validate_artifact_relative_path(path: &Path) -> Result<(), String> {
+    if path.is_absolute()
+        || !path.starts_with(storage::ARTIFACT_DIR_NAME)
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(format!(
+            "Artifact relativePath escapes artifact root: {path:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_artifact_absolute_path(path: &Path, artifact_root: &Path) -> Result<(), String> {
+    if !path.starts_with(artifact_root) {
+        return Err(format!("Artifact path is outside artifact root: {path:?}"));
+    }
+    Ok(())
+}
+
+fn verify_diagnostic(severity: &str, message: String) -> CadDiagnostic {
+    CadDiagnostic {
+        severity: severity.to_string(),
+        message,
+        line: None,
+        column: None,
     }
 }
 
@@ -696,18 +1743,47 @@ fn add_user_event(revision: &mut CadRevision, event_type: &str, payload: Value) 
     event
 }
 
+fn append_agent_run_event(
+    state: &mut ServiceState,
+    session_id: &str,
+    run_id: &str,
+    revision_id: Option<String>,
+    event_type: CadAgentRunEventType,
+    payload: Value,
+    metadata: Option<Metadata>,
+) -> CadAgentRunEvent {
+    let events = state
+        .agent_run_events
+        .entry(session_id.to_string())
+        .or_default();
+    let sequence = events
+        .iter()
+        .filter(|event| event.run_id == run_id)
+        .map(|event| event.sequence)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let event = CadAgentRunEvent {
+        id: uuid(),
+        session_id: session_id.to_string(),
+        run_id: run_id.to_string(),
+        revision_id,
+        event_type,
+        sequence,
+        created_at: timestamp(),
+        payload: metadata_from_value(payload),
+        metadata,
+    };
+    events.push(event.clone());
+    event
+}
+
 fn rebuild_revision_summaries(state: &mut ServiceState, session_id: &str) {
     let mut summaries: Vec<CadRevisionSummary> = state
         .revisions
         .values()
         .filter(|revision| revision.session_id == session_id)
-        .map(|revision| CadRevisionSummary {
-            id: revision.id.clone(),
-            source_language: revision.source_language.clone(),
-            created_at: revision.created_at.clone(),
-            diagnostics: revision.diagnostics.clone(),
-            artifact_count: revision.artifact_count,
-        })
+        .map(|revision| revision_summary(state, revision))
         .collect();
     summaries.sort_by(|left, right| left.created_at.cmp(&right.created_at));
     if let Some(session) = state.sessions.get_mut(session_id) {
@@ -722,13 +1798,7 @@ fn build_state(state: &ServiceState, session_id: &str) -> Result<CadSessionState
         .revisions
         .values()
         .filter(|revision| revision.session_id == session_id)
-        .map(|revision| CadRevisionSummary {
-            id: revision.id.clone(),
-            source_language: revision.source_language.clone(),
-            created_at: revision.created_at.clone(),
-            diagnostics: revision.diagnostics.clone(),
-            artifact_count: revision.artifact_count,
-        })
+        .map(|revision| revision_summary(state, revision))
         .collect();
     session
         .revisions
@@ -737,7 +1807,7 @@ fn build_state(state: &ServiceState, session_id: &str) -> Result<CadSessionState
         .active_revision_id
         .as_ref()
         .and_then(|revision_id| state.revisions.get(revision_id))
-        .cloned();
+        .map(|revision| revision_with_derived_fields(state, revision));
     Ok(CadSessionState {
         session,
         active_revision,
@@ -752,7 +1822,123 @@ fn build_state(state: &ServiceState, session_id: &str) -> Result<CadSessionState
             .get(session_id)
             .cloned()
             .unwrap_or_default(),
+        agent_run_events: state
+            .agent_run_events
+            .get(session_id)
+            .cloned()
+            .unwrap_or_default(),
     })
+}
+
+fn revision_summary(state: &ServiceState, revision: &CadRevision) -> CadRevisionSummary {
+    CadRevisionSummary {
+        id: revision.id.clone(),
+        source_hash: source_hash(&revision.source),
+        parent_revision_id: revision.parent_revision_id.clone(),
+        restored_from_revision_id: revision.restored_from_revision_id.clone(),
+        source_language: revision.source_language.clone(),
+        created_at: revision.created_at.clone(),
+        diagnostics: revision.diagnostics.clone(),
+        artifact_count: revision.artifact_count,
+        run_links: revision_run_links(state, &revision.session_id, &revision.id),
+    }
+}
+
+fn revision_with_derived_fields(state: &ServiceState, revision: &CadRevision) -> CadRevision {
+    let mut revision = revision.clone();
+    revision.source_hash = source_hash(&revision.source);
+    revision.run_links = revision_run_links(state, &revision.session_id, &revision.id);
+    revision
+}
+
+fn session_list_item(state: &ServiceState, session: &CadSession) -> CadSessionListItem {
+    let active_revision = session
+        .active_revision_id
+        .as_ref()
+        .and_then(|revision_id| state.revisions.get(revision_id))
+        .map(|revision| revision_summary(state, revision));
+    let session_revisions = state
+        .revisions
+        .values()
+        .filter(|revision| revision.session_id == session.id);
+    let mut revision_count = 0;
+    let mut artifact_count = 0;
+    for revision in session_revisions {
+        revision_count += 1;
+        artifact_count += revision.artifact_count;
+    }
+    CadSessionListItem {
+        id: session.id.clone(),
+        created_at: session.created_at.clone(),
+        updated_at: session.updated_at.clone(),
+        last_viewed_at: session.last_viewed_at.clone(),
+        title: session.title.clone(),
+        active_revision_id: session.active_revision_id.clone(),
+        active_revision,
+        selected_runtime: session.selected_runtime.clone(),
+        status: session.status.clone(),
+        archived: session.archived_at.is_some(),
+        archived_at: session.archived_at.clone(),
+        revision_count,
+        artifact_count,
+    }
+}
+
+fn normalized_query(query: Option<&str>) -> Option<String> {
+    query
+        .map(str::trim)
+        .filter(|query| !query.is_empty())
+        .map(|query| query.to_lowercase())
+}
+
+fn session_matches_search(state: &ServiceState, session: &CadSession, query: &str) -> bool {
+    session
+        .title
+        .as_deref()
+        .is_some_and(|title| title.to_lowercase().contains(query))
+        || state
+            .revisions
+            .values()
+            .filter(|revision| revision.session_id == session.id)
+            .any(|revision| revision.source.to_lowercase().contains(query))
+        || state
+            .conversation
+            .get(&session.id)
+            .into_iter()
+            .flatten()
+            .any(|message| message.content.to_lowercase().contains(query))
+}
+
+fn revision_run_links(
+    state: &ServiceState,
+    session_id: &str,
+    revision_id: &str,
+) -> Vec<CadRevisionRunLink> {
+    let mut links = Vec::new();
+    for run in state.agent_runs.get(session_id).into_iter().flatten() {
+        if run.input_revision_id.as_deref() == Some(revision_id) {
+            links.push(CadRevisionRunLink {
+                run_id: run.id.clone(),
+                role: "input".to_string(),
+                status: run.status.clone(),
+                updated_at: run.updated_at.clone(),
+            });
+        }
+        if run.output_revision_id.as_deref() == Some(revision_id) {
+            links.push(CadRevisionRunLink {
+                run_id: run.id.clone(),
+                role: "output".to_string(),
+                status: run.status.clone(),
+                updated_at: run.updated_at.clone(),
+            });
+        }
+    }
+    links.sort_by(|left, right| left.updated_at.cmp(&right.updated_at));
+    links
+}
+
+fn source_hash(source: &str) -> String {
+    storage::sha256_hex(source.as_bytes())
 }
 
 fn require_session<'a>(
@@ -762,7 +1948,7 @@ fn require_session<'a>(
     state
         .sessions
         .get(session_id)
-        .ok_or_else(|| format!("CAD session not found: {session_id}"))
+        .ok_or_else(|| format!("CAD session is missing or has been deleted: {session_id}"))
 }
 
 fn require_session_mut<'a>(
@@ -772,7 +1958,7 @@ fn require_session_mut<'a>(
     state
         .sessions
         .get_mut(session_id)
-        .ok_or_else(|| format!("CAD session not found: {session_id}"))
+        .ok_or_else(|| format!("CAD session is missing or has been deleted: {session_id}"))
 }
 
 fn require_revision<'a>(
@@ -822,6 +2008,26 @@ fn event_type_for_run_status(status: &CadAgentRunStatus) -> CadBridgeEventType {
         CadAgentRunStatus::Failed => CadBridgeEventType::AgentRunFailed,
         CadAgentRunStatus::Queued => CadBridgeEventType::AgentRunCreated,
         _ => CadBridgeEventType::AgentRunUpdated,
+    }
+}
+
+fn run_event_type_for_update(
+    bridge_event_type: Option<&CadBridgeEventType>,
+    status: &CadAgentRunStatus,
+) -> CadAgentRunEventType {
+    match bridge_event_type {
+        Some(CadBridgeEventType::AgentMessageCreated) => CadAgentRunEventType::AgentMessageCreated,
+        Some(CadBridgeEventType::AgentToolStarted) => CadAgentRunEventType::AgentToolStarted,
+        Some(CadBridgeEventType::AgentToolCompleted) => CadAgentRunEventType::AgentToolCompleted,
+        Some(CadBridgeEventType::AgentRunCompleted) => CadAgentRunEventType::AgentRunCompleted,
+        Some(CadBridgeEventType::AgentRunFailed) => CadAgentRunEventType::AgentRunFailed,
+        _ => match status {
+            CadAgentRunStatus::Completed => CadAgentRunEventType::AgentRunCompleted,
+            CadAgentRunStatus::Failed => CadAgentRunEventType::AgentRunFailed,
+            CadAgentRunStatus::Cancelled => CadAgentRunEventType::AgentRunCancelled,
+            CadAgentRunStatus::Queued => CadAgentRunEventType::AgentRunCreated,
+            _ => CadAgentRunEventType::AgentRunUpdated,
+        },
     }
 }
 
@@ -897,6 +2103,7 @@ fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_repository::SqliteSessionRepository;
 
     #[test]
     fn serializes_camel_case_state() {
@@ -945,5 +2152,959 @@ mod tests {
             .artifacts
             .iter()
             .any(|artifact| artifact.kind == CadArtifactKind::PreviewMesh));
+    }
+
+    #[test]
+    fn revision_switch_restore_and_parameters_use_immutable_snapshots() {
+        let service =
+            SessionService::new(std::env::temp_dir().join(format!("cadastrophe-test-{}", uuid())));
+        let created = service
+            .create_session(CreateCadSessionInput::default())
+            .unwrap();
+        let root_revision_id = created.state.session.active_revision_id.clone().unwrap();
+        let parameterized = service
+            .update_model_source(UpdateModelSourceInput {
+                session_id: created.session_id.clone(),
+                source_language: CadSourceLanguage::Openscad,
+                source:
+                    "radius = 4; // @param min=1 max=20 step=1 label=Radius\nsphere(r = radius);"
+                        .to_string(),
+                parent_revision_id: Some(root_revision_id.clone()),
+                parameters: None,
+            })
+            .unwrap();
+        let parameterized_revision_id = parameterized.revision_id.clone();
+
+        let parameter_update = service
+            .update_parameters(
+                &created.session_id,
+                metadata_from_value(json!({ "radius": 9 })),
+            )
+            .unwrap();
+        let parameter_revision = parameter_update.active_revision.as_ref().unwrap();
+        assert_ne!(parameter_revision.id, parameterized_revision_id);
+        assert_eq!(
+            parameter_revision.parent_revision_id.as_deref(),
+            Some(parameterized_revision_id.as_str())
+        );
+        assert_eq!(
+            service
+                .get_session_state(&created.session_id)
+                .unwrap()
+                .session
+                .revisions
+                .len(),
+            3
+        );
+
+        let switched = service
+            .set_active_revision(SetActiveRevisionInput {
+                session_id: created.session_id.clone(),
+                revision_id: root_revision_id.clone(),
+            })
+            .unwrap();
+        assert_eq!(
+            switched.session.active_revision_id.as_deref(),
+            Some(root_revision_id.as_str())
+        );
+
+        let restored = service
+            .restore_revision(RestoreRevisionInput {
+                session_id: created.session_id.clone(),
+                revision_id: parameterized_revision_id.clone(),
+            })
+            .unwrap();
+        let restored_revision = restored.state.active_revision.as_ref().unwrap();
+        assert_eq!(
+            restored_revision.parent_revision_id.as_deref(),
+            Some(root_revision_id.as_str())
+        );
+        assert_eq!(
+            restored_revision.restored_from_revision_id.as_deref(),
+            Some(parameterized_revision_id.as_str())
+        );
+        assert_eq!(restored_revision.source_hash.len(), 64);
+        assert_eq!(restored_revision.artifact_count, 0);
+    }
+
+    #[test]
+    fn export_artifact_uses_session_revision_artifact_layout() {
+        let artifact_root = std::env::temp_dir()
+            .join(format!("cadastrophe-test-{}", uuid()))
+            .join("artifacts");
+        let service = SessionService::new(artifact_root.clone());
+        let created = service
+            .create_session(CreateCadSessionInput::default())
+            .unwrap();
+        let revision_id = created
+            .state
+            .session
+            .active_revision_id
+            .clone()
+            .expect("session has initial revision");
+
+        let (export, _) = service
+            .export_artifact(ExportArtifactInput {
+                session_id: created.session_id.clone(),
+                revision_id: Some(revision_id.clone()),
+                format: "stl".to_string(),
+            })
+            .unwrap();
+
+        let artifact = export.artifact.expect("artifact exported");
+        let metadata = artifact.metadata.as_ref().expect("artifact metadata");
+        let path = PathBuf::from(metadata["path"].as_str().expect("path metadata"));
+        assert_eq!(
+            path,
+            artifact_root
+                .join(&created.session_id)
+                .join(&revision_id)
+                .join(format!("{}.stl", artifact.id))
+        );
+        assert_eq!(
+            metadata["relativePath"].as_str(),
+            Some(
+                PathBuf::from("artifacts")
+                    .join(&created.session_id)
+                    .join(&revision_id)
+                    .join(format!("{}.stl", artifact.id))
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert!(path.exists());
+        assert_eq!(artifact.bytes, Some(fs::metadata(path).unwrap().len()));
+        assert_eq!(
+            metadata["sha256"].as_str().map(str::len),
+            Some(64),
+            "sha256 metadata should be stored as hex"
+        );
+    }
+
+    #[test]
+    fn sqlite_repository_restores_artifact_manifest_after_restart() {
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cadastrophe-artifact-repo-test-{}", uuid()));
+        let layout = StorageLayout::from_app_data_dir(app_data_dir);
+        storage::initialize_storage(&layout).unwrap();
+
+        let service = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout.clone())),
+        )
+        .unwrap();
+        let created = service
+            .create_session(CreateCadSessionInput::default())
+            .unwrap();
+        service.mark_session_viewed(&created.session_id).unwrap();
+        let revision_id = created.state.session.active_revision_id.clone().unwrap();
+        let (export, _) = service
+            .export_artifact(ExportArtifactInput {
+                session_id: created.session_id.clone(),
+                revision_id: Some(revision_id),
+                format: "stl".to_string(),
+            })
+            .unwrap();
+        let artifact = export.artifact.unwrap();
+        let original_contents = service.read_artifact(&artifact.id).unwrap();
+
+        let reloaded = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout.clone())),
+        )
+        .unwrap();
+        let state = reloaded.get_session_state(&created.session_id).unwrap();
+        let restored_artifact = state
+            .active_revision
+            .as_ref()
+            .unwrap()
+            .artifacts
+            .iter()
+            .find(|candidate| candidate.id == artifact.id)
+            .expect("artifact manifest restored");
+        assert_eq!(restored_artifact.kind, CadArtifactKind::Stl);
+        assert_eq!(
+            reloaded.read_artifact(&artifact.id).unwrap(),
+            original_contents
+        );
+        let opened = reloaded.open_artifact(&artifact.id).unwrap();
+        assert!(PathBuf::from(&opened.path).exists());
+
+        let deleted = reloaded
+            .delete_artifact(DeleteArtifactInput {
+                session_id: created.session_id.clone(),
+                artifact_id: artifact.id.clone(),
+            })
+            .unwrap();
+        assert!(!PathBuf::from(opened.path).exists());
+        assert!(!deleted
+            .state
+            .active_revision
+            .unwrap()
+            .artifacts
+            .iter()
+            .any(|candidate| candidate.id == artifact.id));
+
+        let reloaded_after_delete = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout)),
+        )
+        .unwrap();
+        let state_after_delete = reloaded_after_delete
+            .get_session_state(&created.session_id)
+            .unwrap();
+        assert!(!state_after_delete
+            .active_revision
+            .unwrap()
+            .artifacts
+            .iter()
+            .any(|candidate| candidate.id == artifact.id));
+        assert!(reloaded_after_delete.read_artifact(&artifact.id).is_err());
+    }
+
+    #[test]
+    fn sqlite_repository_marks_missing_artifacts_on_startup_and_verify() {
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cadastrophe-artifact-missing-test-{}", uuid()));
+        let layout = StorageLayout::from_app_data_dir(app_data_dir);
+        storage::initialize_storage(&layout).unwrap();
+
+        let service = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout.clone())),
+        )
+        .unwrap();
+        let created = service
+            .create_session(CreateCadSessionInput::default())
+            .unwrap();
+        let (export, _) = service
+            .export_artifact(ExportArtifactInput {
+                session_id: created.session_id.clone(),
+                revision_id: created.state.session.active_revision_id.clone(),
+                format: "metadata".to_string(),
+            })
+            .unwrap();
+        let artifact = export.artifact.unwrap();
+        let path = service.open_artifact(&artifact.id).unwrap().path;
+        fs::remove_file(&path).unwrap();
+
+        let reloaded = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout)),
+        )
+        .unwrap();
+        let state = reloaded.get_session_state(&created.session_id).unwrap();
+        let missing_artifact = state
+            .active_revision
+            .as_ref()
+            .unwrap()
+            .artifacts
+            .iter()
+            .find(|candidate| candidate.id == artifact.id)
+            .expect("missing artifact remains visible");
+        assert!(missing_artifact.missing_at.is_some());
+        assert!(reloaded.read_artifact(&artifact.id).is_err());
+
+        let verified = reloaded
+            .verify_artifact_files(Some(created.session_id.clone()))
+            .unwrap();
+        assert_eq!(verified.checked_count, 1);
+        assert_eq!(verified.missing_artifact_ids, vec![artifact.id]);
+        assert!(verified
+            .state
+            .unwrap()
+            .active_revision
+            .unwrap()
+            .artifacts
+            .iter()
+            .any(|candidate| candidate.missing_at.is_some()));
+    }
+
+    #[test]
+    fn sqlite_repository_restores_current_session_and_session_index() {
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cadastrophe-session-repo-test-{}", uuid()));
+        let layout = StorageLayout::from_app_data_dir(app_data_dir);
+        storage::initialize_storage(&layout).unwrap();
+
+        let service = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout.clone())),
+        )
+        .unwrap();
+        let created = service
+            .create_session(CreateCadSessionInput {
+                title: Some("Original title".to_string()),
+                selected_runtime: None,
+            })
+            .unwrap();
+        service.mark_session_viewed(&created.session_id).unwrap();
+        service
+            .rename_session(RenameCadSessionInput {
+                session_id: created.session_id.clone(),
+                title: "Persisted title".to_string(),
+            })
+            .unwrap();
+
+        let reloaded = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout.clone())),
+        )
+        .unwrap();
+        let current = reloaded.get_current_session().unwrap();
+
+        assert_eq!(
+            current.session_id.as_deref(),
+            Some(created.session_id.as_str())
+        );
+        let state = current.state.expect("current session state");
+        assert_eq!(state.session.title.as_deref(), Some("Persisted title"));
+        assert_eq!(
+            state
+                .active_revision
+                .as_ref()
+                .map(|revision| revision.source.as_str()),
+            Some(DEFAULT_SAMPLE_SOURCE)
+        );
+        assert_eq!(reloaded.list_sessions(false).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn session_list_returns_active_revision_summary_and_searches_title_source_conversation() {
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cadastrophe-session-list-test-{}", uuid()));
+        let layout = StorageLayout::from_app_data_dir(app_data_dir);
+        storage::initialize_storage(&layout).unwrap();
+
+        let service = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout)),
+        )
+        .unwrap();
+        let bracket = service
+            .create_session(CreateCadSessionInput {
+                title: Some("Bracket Assembly".to_string()),
+                selected_runtime: None,
+            })
+            .unwrap();
+        service
+            .update_model_source(UpdateModelSourceInput {
+                session_id: bracket.session_id.clone(),
+                source_language: CadSourceLanguage::Openscad,
+                source:
+                    "// mounting_slot_fixture\ndifference() { cube([8, 8, 2]); cylinder(r = 2); }"
+                        .to_string(),
+                parent_revision_id: bracket.state.session.active_revision_id.clone(),
+                parameters: None,
+            })
+            .unwrap();
+        service
+            .post_user_message(PostUserMessageInput {
+                session_id: bracket.session_id.clone(),
+                revision_id: None,
+                message: "Needs a mounting tab".to_string(),
+            })
+            .unwrap();
+        let _other = service
+            .create_session(CreateCadSessionInput {
+                title: Some("Plain block".to_string()),
+                selected_runtime: None,
+            })
+            .unwrap();
+
+        let listed = service
+            .list_sessions_for_input(ListCadSessionsInput {
+                include_archived: false,
+                query: Some("mounting_slot_fixture".to_string()),
+            })
+            .unwrap();
+        assert_eq!(
+            listed.search_fields,
+            vec!["title", "source", "conversation"]
+        );
+        assert_eq!(listed.sessions.len(), 1);
+        assert_eq!(listed.sessions[0].id, bracket.session_id);
+        assert_eq!(
+            listed.sessions[0].title.as_deref(),
+            Some("Bracket Assembly")
+        );
+        assert!(listed.sessions[0].active_revision.is_some());
+        assert_eq!(listed.sessions[0].revision_count, 2);
+        assert_eq!(listed.sessions[0].archived, false);
+
+        let conversation_match = service
+            .list_sessions_for_input(ListCadSessionsInput {
+                include_archived: false,
+                query: Some("mounting tab".to_string()),
+            })
+            .unwrap();
+        assert_eq!(conversation_match.sessions.len(), 1);
+        assert_eq!(conversation_match.sessions[0].id, bracket.session_id);
+    }
+
+    #[test]
+    fn archived_sessions_open_readable_but_do_not_become_current_and_deleted_is_explicit_error() {
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cadastrophe-session-state-test-{}", uuid()));
+        let layout = StorageLayout::from_app_data_dir(app_data_dir);
+        storage::initialize_storage(&layout).unwrap();
+
+        let service = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout)),
+        )
+        .unwrap();
+        let active = service
+            .create_session(CreateCadSessionInput {
+                title: Some("Active".to_string()),
+                selected_runtime: None,
+            })
+            .unwrap();
+        let archived = service
+            .create_session(CreateCadSessionInput {
+                title: Some("Archived".to_string()),
+                selected_runtime: None,
+            })
+            .unwrap();
+        service.mark_session_viewed(&active.session_id).unwrap();
+        service
+            .archive_session(ArchiveCadSessionInput {
+                session_id: archived.session_id.clone(),
+                archived: Some(true),
+            })
+            .unwrap();
+
+        let archived_state = service.get_session_state(&archived.session_id).unwrap();
+        assert!(archived_state.session.archived_at.is_some());
+        service.mark_session_viewed(&archived.session_id).unwrap();
+        assert_eq!(
+            service.get_current_session().unwrap().session_id.as_deref(),
+            Some(active.session_id.as_str())
+        );
+
+        service.delete_session(&archived.session_id).unwrap();
+        let error = service
+            .get_session_state(&archived.session_id)
+            .expect_err("deleted session should not open");
+        assert!(error.contains("missing or has been deleted"));
+    }
+
+    #[test]
+    fn sqlite_repository_persists_duplicate_archive_and_delete() {
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cadastrophe-session-repo-test-{}", uuid()));
+        let layout = StorageLayout::from_app_data_dir(app_data_dir);
+        storage::initialize_storage(&layout).unwrap();
+
+        let service = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout.clone())),
+        )
+        .unwrap();
+        let created = service
+            .create_session(CreateCadSessionInput {
+                title: Some("Original".to_string()),
+                selected_runtime: None,
+            })
+            .unwrap();
+        let duplicated = service
+            .duplicate_session(DuplicateCadSessionInput {
+                session_id: created.session_id.clone(),
+                title: Some("Copy".to_string()),
+            })
+            .unwrap();
+
+        let reloaded = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout.clone())),
+        )
+        .unwrap();
+        let sessions = reloaded.list_sessions(false).unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions
+            .iter()
+            .any(|session| session.title.as_deref() == Some("Copy")));
+        assert_eq!(
+            reloaded
+                .get_session_state(&duplicated.session_id)
+                .unwrap()
+                .active_revision
+                .as_ref()
+                .map(|revision| revision.source.as_str()),
+            Some(DEFAULT_SAMPLE_SOURCE)
+        );
+
+        reloaded
+            .archive_session(ArchiveCadSessionInput {
+                session_id: created.session_id.clone(),
+                archived: None,
+            })
+            .unwrap();
+        reloaded.delete_session(&duplicated.session_id).unwrap();
+
+        let reloaded_again = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout)),
+        )
+        .unwrap();
+        assert!(reloaded_again
+            .list_sessions(false)
+            .unwrap()
+            .iter()
+            .all(|session| session.id != created.session_id));
+        let archived_sessions = reloaded_again.list_sessions(true).unwrap();
+        assert_eq!(archived_sessions.len(), 1);
+        assert_eq!(archived_sessions[0].id, created.session_id);
+        assert!(archived_sessions[0].archived_at.is_some());
+        assert!(reloaded_again
+            .get_session_state(&duplicated.session_id)
+            .is_err());
+    }
+
+    #[test]
+    fn sqlite_repository_persists_restore_summary_fields_and_artifact_count() {
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cadastrophe-session-repo-test-{}", uuid()));
+        let layout = StorageLayout::from_app_data_dir(app_data_dir);
+        storage::initialize_storage(&layout).unwrap();
+
+        let service = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout.clone())),
+        )
+        .unwrap();
+        let created = service
+            .create_session(CreateCadSessionInput::default())
+            .unwrap();
+        let root_revision_id = created.state.session.active_revision_id.clone().unwrap();
+        let updated = service
+            .update_model_source(UpdateModelSourceInput {
+                session_id: created.session_id.clone(),
+                source_language: CadSourceLanguage::Openscad,
+                source: "sphere(r = 8);".to_string(),
+                parent_revision_id: Some(root_revision_id.clone()),
+                parameters: None,
+            })
+            .unwrap();
+        service
+            .set_active_revision(SetActiveRevisionInput {
+                session_id: created.session_id.clone(),
+                revision_id: root_revision_id.clone(),
+            })
+            .unwrap();
+        let restored = service
+            .restore_revision(RestoreRevisionInput {
+                session_id: created.session_id.clone(),
+                revision_id: updated.revision_id.clone(),
+            })
+            .unwrap();
+        service
+            .export_artifact(ExportArtifactInput {
+                session_id: created.session_id.clone(),
+                revision_id: Some(restored.revision_id.clone()),
+                format: "metadata".to_string(),
+            })
+            .unwrap();
+
+        let reloaded = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout)),
+        )
+        .unwrap();
+        let state = reloaded.get_session_state(&created.session_id).unwrap();
+        let restored_summary = state
+            .session
+            .revisions
+            .iter()
+            .find(|revision| revision.id == restored.revision_id)
+            .unwrap();
+        assert_eq!(
+            restored_summary.parent_revision_id.as_deref(),
+            Some(root_revision_id.as_str())
+        );
+        assert_eq!(
+            restored_summary.restored_from_revision_id.as_deref(),
+            Some(updated.revision_id.as_str())
+        );
+        assert_eq!(restored_summary.source_hash.len(), 64);
+        assert_eq!(restored_summary.artifact_count, 1);
+    }
+
+    #[test]
+    fn sqlite_repository_restores_conversation_runs_and_run_events_after_restart() {
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cadastrophe-run-log-repo-test-{}", uuid()));
+        let layout = StorageLayout::from_app_data_dir(app_data_dir);
+        storage::initialize_storage(&layout).unwrap();
+
+        let service = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout.clone())),
+        )
+        .unwrap();
+        let created = service
+            .create_session(CreateCadSessionInput::default())
+            .unwrap();
+        let input_revision_id = created.state.session.active_revision_id.clone();
+        let (run, _) = service
+            .create_agent_run(
+                &created.session_id,
+                "Create a persisted run log fixture.".to_string(),
+                input_revision_id.clone(),
+                Some("fake".to_string()),
+                None,
+            )
+            .unwrap();
+        service
+            .create_conversation_message(
+                &created.session_id,
+                input_revision_id.clone(),
+                CadConversationRole::Assistant,
+                "I will update the model.".to_string(),
+                Some(run.id.clone()),
+                Some(metadata_from_value(json!({"source": "test"}))),
+            )
+            .unwrap();
+        service
+            .update_agent_run_external_metadata(
+                &created.session_id,
+                &run.id,
+                Some("fake".to_string()),
+                Some("thread-1".to_string()),
+                Some("turn-1".to_string()),
+            )
+            .unwrap();
+        service
+            .update_agent_run(
+                &created.session_id,
+                &run.id,
+                Some(CadAgentRunStatus::Running),
+                Some(Some("generate_source".to_string())),
+                None,
+                Some(CadBridgeEventType::AgentToolStarted),
+                Some(json!({"tool": "generate_source"})),
+            )
+            .unwrap();
+        service
+            .update_agent_run(
+                &created.session_id,
+                &run.id,
+                None,
+                Some(None),
+                None,
+                Some(CadBridgeEventType::AgentToolCompleted),
+                Some(json!({"tool": "generate_source"})),
+            )
+            .unwrap();
+        let output = service
+            .update_model_source(UpdateModelSourceInput {
+                session_id: created.session_id.clone(),
+                source_language: CadSourceLanguage::Openscad,
+                source: "sphere(r = 4);".to_string(),
+                parent_revision_id: input_revision_id.clone(),
+                parameters: None,
+            })
+            .unwrap();
+        service
+            .link_agent_run_output_revision(&created.session_id, &run.id, output.revision_id)
+            .unwrap();
+        service
+            .update_agent_run(
+                &created.session_id,
+                &run.id,
+                Some(CadAgentRunStatus::Completed),
+                Some(None),
+                None,
+                Some(CadBridgeEventType::AgentRunCompleted),
+                Some(json!({"status": "completed"})),
+            )
+            .unwrap();
+
+        let reloaded = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout)),
+        )
+        .unwrap();
+        let state = reloaded.get_session_state(&created.session_id).unwrap();
+        assert!(state
+            .conversation
+            .iter()
+            .any(|message| message.run_id.as_deref() == Some(run.id.as_str())
+                && message.role == CadConversationRole::Assistant
+                && message.content == "I will update the model."));
+        let restored_run = state
+            .agent_runs
+            .iter()
+            .find(|candidate| candidate.id == run.id)
+            .expect("agent run restored");
+        assert_eq!(restored_run.status, CadAgentRunStatus::Completed);
+        assert_eq!(restored_run.external_agent.as_deref(), Some("fake"));
+        assert_eq!(restored_run.external_thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(restored_run.external_turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(
+            restored_run.input_revision_id.as_deref(),
+            input_revision_id.as_deref()
+        );
+        assert!(restored_run.output_revision_id.is_some());
+        let event_types = state
+            .agent_run_events
+            .iter()
+            .filter(|event| event.run_id == run.id)
+            .map(|event| event.event_type.clone())
+            .collect::<Vec<_>>();
+        assert!(event_types.contains(&CadAgentRunEventType::AgentRunCreated));
+        assert!(event_types.contains(&CadAgentRunEventType::AgentMessageCreated));
+        assert!(event_types.contains(&CadAgentRunEventType::AgentToolStarted));
+        assert!(event_types.contains(&CadAgentRunEventType::AgentToolCompleted));
+        assert!(event_types.contains(&CadAgentRunEventType::AgentRunCompleted));
+        let generate_tool_event = state
+            .agent_run_events
+            .iter()
+            .find(|event| event.event_type == CadAgentRunEventType::AgentToolStarted)
+            .expect("tool event restored");
+        assert_eq!(
+            generate_tool_event
+                .payload
+                .get("tool")
+                .and_then(Value::as_str),
+            Some("generate_source")
+        );
+    }
+
+    #[test]
+    fn sqlite_restart_restores_session_revision_artifacts_conversation_and_runs_together() {
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cadastrophe-restart-integrity-test-{}", uuid()));
+        let layout = StorageLayout::from_app_data_dir(app_data_dir);
+        storage::initialize_storage(&layout).unwrap();
+
+        let service = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout.clone())),
+        )
+        .unwrap();
+        let created = service
+            .create_session(CreateCadSessionInput {
+                title: Some("Restart fixture".to_string()),
+                selected_runtime: None,
+            })
+            .unwrap();
+        service.mark_session_viewed(&created.session_id).unwrap();
+        let root_revision_id = created.state.session.active_revision_id.clone().unwrap();
+        let updated = service
+            .update_model_source(UpdateModelSourceInput {
+                session_id: created.session_id.clone(),
+                source_language: CadSourceLanguage::Openscad,
+                source: "sphere(r = 5);".to_string(),
+                parent_revision_id: Some(root_revision_id.clone()),
+                parameters: None,
+            })
+            .unwrap();
+        let (export, _) = service
+            .export_artifact(ExportArtifactInput {
+                session_id: created.session_id.clone(),
+                revision_id: Some(updated.revision_id.clone()),
+                format: "metadata".to_string(),
+            })
+            .unwrap();
+        let artifact = export.artifact.unwrap();
+        let (run, _) = service
+            .create_agent_run(
+                &created.session_id,
+                "Persist all restart surfaces.".to_string(),
+                Some(updated.revision_id.clone()),
+                Some("fake".to_string()),
+                None,
+            )
+            .unwrap();
+        service
+            .create_conversation_message(
+                &created.session_id,
+                Some(updated.revision_id.clone()),
+                CadConversationRole::Assistant,
+                "Restart state is durable.".to_string(),
+                Some(run.id.clone()),
+                None,
+            )
+            .unwrap();
+        service
+            .link_agent_run_output_revision(
+                &created.session_id,
+                &run.id,
+                updated.revision_id.clone(),
+            )
+            .unwrap();
+        service
+            .update_agent_run(
+                &created.session_id,
+                &run.id,
+                Some(CadAgentRunStatus::Completed),
+                Some(None),
+                None,
+                Some(CadBridgeEventType::AgentRunCompleted),
+                Some(json!({"status": "completed"})),
+            )
+            .unwrap();
+
+        let reloaded = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout)),
+        )
+        .unwrap();
+        let current = reloaded.get_current_session().unwrap();
+        assert_eq!(
+            current.session_id.as_deref(),
+            Some(created.session_id.as_str())
+        );
+        let state = current.state.unwrap();
+        assert_eq!(state.session.title.as_deref(), Some("Restart fixture"));
+        assert_eq!(
+            state.session.active_revision_id.as_deref(),
+            Some(updated.revision_id.as_str())
+        );
+        assert_eq!(
+            state
+                .active_revision
+                .as_ref()
+                .map(|revision| revision.source.as_str()),
+            Some("sphere(r = 5);")
+        );
+        assert!(state
+            .active_revision
+            .as_ref()
+            .unwrap()
+            .artifacts
+            .iter()
+            .any(|candidate| candidate.id == artifact.id));
+        assert!(state
+            .conversation
+            .iter()
+            .any(|message| message.content == "Restart state is durable."));
+        assert!(state
+            .agent_runs
+            .iter()
+            .any(|candidate| candidate.id == run.id
+                && candidate.status == CadAgentRunStatus::Completed
+                && candidate.output_revision_id.as_deref()
+                    == state.session.active_revision_id.as_deref()));
+        assert!(state
+            .agent_run_events
+            .iter()
+            .any(|event| event.run_id == run.id
+                && event.event_type == CadAgentRunEventType::AgentRunCompleted));
+    }
+
+    #[test]
+    fn sqlite_repository_recovers_interrupted_missing_corrupt_and_unknown_persistence_state() {
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cadastrophe-recovery-test-{}", uuid()));
+        let layout = StorageLayout::from_app_data_dir(app_data_dir);
+        storage::initialize_storage(&layout).unwrap();
+
+        let service = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout.clone())),
+        )
+        .unwrap();
+        let created = service
+            .create_session(CreateCadSessionInput::default())
+            .unwrap();
+        let revision_id = created.state.session.active_revision_id.clone().unwrap();
+        let (export, _) = service
+            .export_artifact(ExportArtifactInput {
+                session_id: created.session_id.clone(),
+                revision_id: Some(revision_id.clone()),
+                format: "metadata".to_string(),
+            })
+            .unwrap();
+        let artifact = export.artifact.unwrap();
+        let artifact_path = service.open_artifact(&artifact.id).unwrap().path;
+
+        let orphan_path = layout
+            .artifact_path(
+                &created.session_id,
+                &revision_id,
+                "interrupted-write-without-manifest",
+                "stl",
+            )
+            .unwrap();
+        fs::create_dir_all(orphan_path.parent().unwrap()).unwrap();
+        fs::write(&orphan_path, b"partial artifact").unwrap();
+        fs::write(&artifact_path, b"tampered metadata artifact").unwrap();
+
+        let connection = rusqlite::Connection::open(layout.database_path()).unwrap();
+        connection
+            .execute(
+                "UPDATE sessions SET selected_runtime = 'runtime-from-the-future' WHERE id = ?1",
+                rusqlite::params![created.session_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE revisions SET source_language = 'braincad' WHERE id = ?1",
+                rusqlite::params![revision_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE artifacts SET metadata_json = '{not-json' WHERE id = ?1",
+                rusqlite::params![artifact.id],
+            )
+            .unwrap();
+
+        let reloaded = SessionService::with_repository(
+            layout.clone(),
+            Arc::new(SqliteSessionRepository::new(layout)),
+        )
+        .unwrap();
+        let state = reloaded.get_session_state(&created.session_id).unwrap();
+        assert_eq!(state.session.selected_runtime, CadRuntimeKind::OpenscadWasm);
+        assert!(state
+            .session
+            .recovery_diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.message.contains("Unknown persisted runtime") }));
+        let active_revision = state.active_revision.as_ref().unwrap();
+        assert_eq!(active_revision.source_language, CadSourceLanguage::Openscad);
+        assert!(active_revision.diagnostics.items.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("Unknown persisted source language")
+        }));
+
+        let verified = reloaded
+            .verify_artifact_files(Some(created.session_id.clone()))
+            .unwrap();
+        assert_eq!(verified.checked_count, 1);
+        assert_eq!(
+            verified.hash_mismatch_artifact_ids,
+            vec![artifact.id.clone()]
+        );
+        assert_eq!(
+            verified.size_mismatch_artifact_ids,
+            vec![artifact.id.clone()]
+        );
+        assert_eq!(verified.corrupt_metadata_artifact_ids, vec![artifact.id]);
+        assert!(verified
+            .orphan_paths
+            .iter()
+            .any(|path| path.ends_with("interrupted-write-without-manifest.stl")));
+        assert!(verified
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.message.contains("Unknown persisted runtime") }));
+        assert!(verified.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("Unknown persisted source language")
+        }));
+        assert!(verified
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.message.contains("corrupt persisted metadata") }));
+        assert!(verified
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.message.contains("without a SQLite manifest") }));
     }
 }

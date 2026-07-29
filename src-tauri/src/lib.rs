@@ -5,7 +5,9 @@ pub mod codex_process_client;
 mod fake_agent_adapter;
 pub mod protocol;
 mod runtime;
+mod session_repository;
 mod session_service;
+mod storage;
 
 use agent_adapter::AgentAdapter;
 use agent_gateway::AgentGateway;
@@ -66,6 +68,48 @@ fn mark_session_viewed(
     Ok(result)
 }
 
+#[tauri::command]
+fn list_sessions(
+    input: Option<ListCadSessionsInput>,
+    state: State<'_, AppState>,
+) -> Result<ListCadSessionsResult, String> {
+    state
+        .service
+        .list_sessions_for_input(input.unwrap_or_default())
+}
+
+#[tauri::command]
+fn rename_session(
+    input: RenameCadSessionInput,
+    state: State<'_, AppState>,
+) -> Result<CadSessionState, String> {
+    state.service.rename_session(input)
+}
+
+#[tauri::command]
+fn archive_session(
+    input: ArchiveCadSessionInput,
+    state: State<'_, AppState>,
+) -> Result<CadSessionState, String> {
+    state.service.archive_session(input)
+}
+
+#[tauri::command]
+fn delete_session(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<DeleteCadSessionResult, String> {
+    state.service.delete_session(&session_id)
+}
+
+#[tauri::command]
+fn duplicate_session(
+    input: DuplicateCadSessionInput,
+    state: State<'_, AppState>,
+) -> Result<CreateCadSessionResult, String> {
+    state.service.duplicate_session(input)
+}
+
 fn signal_smoke_ui_loaded(state: &State<'_, AppState>, session_id: String) -> Result<(), String> {
     if let Some(sender) = state
         .smoke_ui_loaded
@@ -84,6 +128,22 @@ fn update_model_source(
     state: State<'_, AppState>,
 ) -> Result<UpdateModelSourceResult, String> {
     state.service.update_model_source(input)
+}
+
+#[tauri::command]
+fn set_active_revision(
+    input: SetActiveRevisionInput,
+    state: State<'_, AppState>,
+) -> Result<CadSessionState, String> {
+    state.service.set_active_revision(input)
+}
+
+#[tauri::command]
+fn restore_revision(
+    input: RestoreRevisionInput,
+    state: State<'_, AppState>,
+) -> Result<RestoreRevisionResult, String> {
+    state.service.restore_revision(input)
 }
 
 #[tauri::command]
@@ -166,15 +226,59 @@ fn read_artifact(artifact_id: String, state: State<'_, AppState>) -> Result<Stri
     state.service.read_artifact(&artifact_id)
 }
 
+#[tauri::command]
+fn open_artifact(
+    artifact_id: String,
+    state: State<'_, AppState>,
+) -> Result<OpenArtifactResult, String> {
+    state.service.open_artifact(&artifact_id)
+}
+
+#[tauri::command]
+fn delete_artifact(
+    input: DeleteArtifactInput,
+    state: State<'_, AppState>,
+) -> Result<DeleteArtifactResult, String> {
+    state.service.delete_artifact(input)
+}
+
+#[tauri::command]
+fn verify_artifact_files(
+    input: Option<VerifyArtifactFilesInput>,
+    state: State<'_, AppState>,
+) -> Result<VerifyArtifactFilesResult, String> {
+    state
+        .service
+        .verify_artifact_files(input.and_then(|input| input.session_id))
+}
+
+#[tauri::command]
+fn cleanup_orphan_artifacts(
+    input: Option<CleanupOrphanArtifactsInput>,
+    state: State<'_, AppState>,
+) -> Result<CleanupOrphanArtifactsResult, String> {
+    state
+        .service
+        .cleanup_orphan_artifacts(input.unwrap_or_default())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let artifact_root = app
+            let app_data_dir = app
                 .path()
                 .app_data_dir()
-                .unwrap_or_else(|_| std::env::temp_dir().join("cadastrophe"))
-                .join("artifacts");
-            let service = Arc::new(SessionService::new(artifact_root));
+                .map_err(|error| format!("Failed to resolve Cadastrophe app data directory: {error}"))?;
+            let storage_layout = storage::StorageLayout::from_app_data_dir(app_data_dir);
+            storage::initialize_storage(&storage_layout)
+                .map_err(|error| format!("Failed to initialize Cadastrophe storage: {error}"))?;
+            let service = Arc::new(
+                SessionService::with_repository(
+                    storage_layout.clone(),
+                    Arc::new(session_repository::SqliteSessionRepository::new(storage_layout)),
+                )
+                .map_err(|error| format!("Failed to load Cadastrophe sessions: {error}"))?,
+            );
             let (smoke_tx, smoke_rx) = oneshot::channel();
             let smoke_enabled = std::env::var("CADASTROPHE_TAURI_SMOKE").is_ok_and(|value| value == "1");
             let adapter: Arc<dyn AgentAdapter> = match std::env::var("CADASTROPHE_AGENT_ADAPTER").as_deref() {
@@ -204,7 +308,14 @@ pub fn run() {
             get_current_session,
             get_session_state,
             mark_session_viewed,
+            list_sessions,
+            rename_session,
+            archive_session,
+            delete_session,
+            duplicate_session,
             update_model_source,
+            set_active_revision,
+            restore_revision,
             render_preview,
             update_parameters,
             post_user_message,
@@ -213,7 +324,11 @@ pub fn run() {
             get_agent_run,
             cancel_agent_run,
             export_artifact,
-            read_artifact
+            read_artifact,
+            open_artifact,
+            delete_artifact,
+            verify_artifact_files,
+            cleanup_orphan_artifacts
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cadastrophe Tauri app");
@@ -372,6 +487,7 @@ mod tests {
                 session_id: created.session_id.clone(),
                 prompt: "Create a sync-command launch regression fixture.".to_string(),
                 revision_id: created.state.session.active_revision_id.clone(),
+                retry_of_run_id: None,
             })
             .unwrap();
 
@@ -399,6 +515,7 @@ mod tests {
                 session_id: created.session_id.clone(),
                 prompt: "Create a slotted fixture plate.".to_string(),
                 revision_id: created.state.session.active_revision_id.clone(),
+                retry_of_run_id: None,
             })
             .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -416,6 +533,31 @@ mod tests {
             .artifacts
             .iter()
             .any(|artifact| artifact.kind == CadArtifactKind::PreviewMesh));
+        let run = state
+            .agent_runs
+            .iter()
+            .find(|run| run.id == started.run.id)
+            .unwrap();
+        assert_eq!(
+            run.input_revision_id.as_deref(),
+            created.state.session.active_revision_id.as_deref()
+        );
+        assert_eq!(
+            run.output_revision_id.as_deref(),
+            state.session.active_revision_id.as_deref()
+        );
+        let active_summary = state
+            .session
+            .revisions
+            .iter()
+            .find(|revision| {
+                Some(revision.id.as_str()) == state.session.active_revision_id.as_deref()
+            })
+            .unwrap();
+        assert!(active_summary
+            .run_links
+            .iter()
+            .any(|link| link.run_id == started.run.id && link.role == "output"));
     }
 
     #[tokio::test]
@@ -432,6 +574,7 @@ mod tests {
                 session_id: created.session_id.clone(),
                 prompt: "fail adapter".to_string(),
                 revision_id: created.state.session.active_revision_id.clone(),
+                retry_of_run_id: None,
             })
             .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -464,6 +607,7 @@ mod tests {
                 session_id: created.session_id.clone(),
                 prompt: "Create a slow-ish fake run.".to_string(),
                 revision_id: created.state.session.active_revision_id.clone(),
+                retry_of_run_id: None,
             })
             .unwrap();
         let (cancelled, state) = gateway
@@ -495,6 +639,7 @@ mod tests {
                 session_id: created.session_id.clone(),
                 prompt: "first slow source".to_string(),
                 revision_id: created.state.session.active_revision_id.clone(),
+                retry_of_run_id: None,
             })
             .unwrap();
         let second = gateway
@@ -502,6 +647,7 @@ mod tests {
                 session_id: created.session_id.clone(),
                 prompt: "second fast source".to_string(),
                 revision_id: created.state.session.active_revision_id.clone(),
+                retry_of_run_id: None,
             })
             .unwrap();
 

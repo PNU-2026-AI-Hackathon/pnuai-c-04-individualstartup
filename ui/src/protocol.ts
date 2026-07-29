@@ -32,7 +32,8 @@ export type CadAgentRunEventType =
   | "agent.tool.started"
   | "agent.tool.completed"
   | "agent.run.completed"
-  | "agent.run.failed";
+  | "agent.run.failed"
+  | "agent.run.cancelled";
 
 export interface CadRuntimeCapabilities {
   kind: CadRuntimeKind;
@@ -80,6 +81,8 @@ export interface CadArtifact {
   uri: string;
   bytes?: number;
   createdAt: string;
+  deletedAt?: string;
+  missingAt?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -144,6 +147,8 @@ export interface CadConversationMessage {
 export interface CadAgentRun {
   id: string;
   sessionId: string;
+  inputRevisionId?: string;
+  outputRevisionId?: string;
   status: CadAgentRunStatus;
   prompt: string;
   createdAt: string;
@@ -152,19 +157,44 @@ export interface CadAgentRun {
   completedAt?: string;
   error?: string;
   activeStep?: string;
+  externalAgent?: string;
+  externalThreadId?: string;
+  externalTurnId?: string;
+}
+
+export interface CadAgentRunEvent {
+  id: string;
+  sessionId: string;
+  runId: string;
+  revisionId?: string;
+  type: CadAgentRunEventType;
+  sequence: number;
+  createdAt: string;
+  payload: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CadRevisionRunLink {
+  runId: string;
+  role: "input" | "output" | string;
+  status: CadAgentRunStatus;
+  updatedAt: string;
 }
 
 export interface CadRevisionSummary {
   id: string;
+  sourceHash: string;
+  parentRevisionId?: string;
+  restoredFromRevisionId?: string;
   sourceLanguage: CadSourceLanguage;
   createdAt: string;
   diagnostics: CadDiagnostics;
   artifactCount: number;
+  runLinks: CadRevisionRunLink[];
 }
 
 export interface CadRevision extends CadRevisionSummary {
   sessionId: string;
-  parentRevisionId?: string;
   source: string;
   parameters: CadParameter[];
   artifacts: CadArtifact[];
@@ -181,6 +211,9 @@ export interface CadSession {
   activeRevisionId?: string;
   selectedRuntime: CadRuntimeKind;
   status: CadSessionStatus;
+  recoveryDiagnostics?: CadDiagnostic[];
+  archivedAt?: string;
+  deletedAt?: string;
   revisions: CadRevisionSummary[];
 }
 
@@ -190,6 +223,7 @@ export interface CadSessionState {
   messages: CadUserMessage[];
   conversation: CadConversationMessage[];
   agentRuns: CadAgentRun[];
+  agentRunEvents: CadAgentRunEvent[];
 }
 
 export interface CadBridgeEvent {
@@ -198,9 +232,13 @@ export interface CadBridgeEvent {
     | "session.created"
     | "session.updated"
     | "revision.created"
+    | "revision.activated"
+    | "revision.restored"
     | "preview.rendered"
     | "message.created"
     | "artifact.exported"
+    | "artifact.deleted"
+    | "artifact.verified"
     | CadAgentRunEventType;
   sessionId: string;
   createdAt: string;
@@ -224,6 +262,52 @@ export interface CurrentCadSessionResult {
   state?: CadSessionState;
 }
 
+export interface ListCadSessionsInput {
+  includeArchived?: boolean;
+  query?: string;
+}
+
+export interface CadSessionListItem {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  lastViewedAt?: string;
+  title?: string;
+  activeRevisionId?: string;
+  activeRevision?: CadRevisionSummary;
+  selectedRuntime: CadRuntimeKind;
+  status: CadSessionStatus;
+  archived: boolean;
+  archivedAt?: string;
+  revisionCount: number;
+  artifactCount: number;
+}
+
+export interface ListCadSessionsResult {
+  sessions: CadSessionListItem[];
+  searchFields: string[];
+}
+
+export interface RenameCadSessionInput {
+  sessionId: string;
+  title: string;
+}
+
+export interface ArchiveCadSessionInput {
+  sessionId: string;
+  archived?: boolean;
+}
+
+export interface DuplicateCadSessionInput {
+  sessionId: string;
+  title?: string;
+}
+
+export interface DeleteCadSessionResult {
+  sessionId: string;
+  currentSessionId?: string;
+}
+
 export interface UpdateModelSourceInput {
   sessionId: string;
   sourceLanguage: CadSourceLanguage;
@@ -233,6 +317,21 @@ export interface UpdateModelSourceInput {
 }
 
 export interface UpdateModelSourceResult {
+  revisionId: string;
+  state: CadSessionState;
+}
+
+export interface SetActiveRevisionInput {
+  sessionId: string;
+  revisionId: string;
+}
+
+export interface RestoreRevisionInput {
+  sessionId: string;
+  revisionId: string;
+}
+
+export interface RestoreRevisionResult {
   revisionId: string;
   state: CadSessionState;
 }
@@ -252,12 +351,46 @@ export interface CreateAgentRunInput {
   sessionId: string;
   prompt: string;
   revisionId?: string;
+  retryOfRunId?: string;
 }
 
 export interface CreateAgentRunResult {
   message: CadConversationMessage;
   run: CadAgentRun;
   state: CadSessionState;
+}
+
+export interface DeleteArtifactInput {
+  sessionId: string;
+  artifactId: string;
+}
+
+export interface DeleteArtifactResult {
+  artifactId: string;
+  state: CadSessionState;
+}
+
+export interface OpenArtifactResult {
+  artifact: CadArtifact;
+  path: string;
+}
+
+export interface VerifyArtifactFilesResult {
+  checkedCount: number;
+  missingArtifactIds: string[];
+  hashMismatchArtifactIds: string[];
+  sizeMismatchArtifactIds: string[];
+  corruptMetadataArtifactIds: string[];
+  invalidPathArtifactIds: string[];
+  orphanPaths: string[];
+  diagnostics: CadDiagnostic[];
+  state?: CadSessionState;
+}
+
+export interface CleanupOrphanArtifactsResult {
+  checkedFileCount: number;
+  orphanPaths: string[];
+  deletedPaths: string[];
 }
 
 export interface WaitForUserMessageInput {

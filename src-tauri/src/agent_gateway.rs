@@ -26,18 +26,24 @@ impl AgentGateway {
         if prompt.is_empty() {
             return Err("Agent prompt cannot be empty.".to_string());
         }
+        let (run, _) = self.service.create_agent_run(
+            &input.session_id,
+            prompt.clone(),
+            input.revision_id.clone(),
+            Some(self.adapter.external_agent().to_string()),
+            input.retry_of_run_id.clone(),
+        )?;
         let (message, _) = self.service.create_conversation_message(
             &input.session_id,
-            input.revision_id.clone(),
+            run.input_revision_id.clone(),
             CadConversationRole::User,
-            prompt.clone(),
-            None,
+            prompt,
+            Some(run.id.clone()),
             Some(crate::session_service::metadata_from_value(
                 serde_json::json!({"source": "web-ui"}),
             )),
         )?;
-        let (run, _) = self.service.create_agent_run(&input.session_id, prompt)?;
-        self.enqueue(run.clone(), input.revision_id);
+        self.enqueue(run.clone());
         Ok(CreateAgentRunResult {
             message,
             run,
@@ -78,10 +84,11 @@ impl AgentGateway {
             Some(None),
             None,
             Some(CadBridgeEventType::AgentRunUpdated),
+            Some(serde_json::json!({"reason": "cancel_requested"})),
         )
     }
 
-    fn enqueue(&self, run: CadAgentRun, revision_id: Option<String>) {
+    fn enqueue(&self, run: CadAgentRun) {
         let service = Arc::clone(&self.service);
         let adapter = Arc::clone(&self.adapter);
         let active_runs = Arc::clone(&self.active_runs);
@@ -91,7 +98,7 @@ impl AgentGateway {
                 active.insert(run.id.clone());
             }
             let _session_guard = session_lock.lock().await;
-            let result = execute_run(service, adapter, active_runs.clone(), run, revision_id).await;
+            let result = execute_run(service, adapter, active_runs.clone(), run).await;
             if let Err(error) = result {
                 eprintln!("agent gateway failed: {error}");
             }
@@ -116,7 +123,6 @@ async fn execute_run(
     adapter: Arc<dyn AgentAdapter>,
     active_runs: Arc<Mutex<HashSet<String>>>,
     run: CadAgentRun,
-    revision_id: Option<String>,
 ) -> Result<(), String> {
     if !is_active(&active_runs, &run.id) {
         return Ok(());
@@ -128,13 +134,18 @@ async fn execute_run(
         Some(Some("Starting agent run".to_string())),
         None,
         None,
+        Some(serde_json::json!({"activeStep": "Starting agent run"})),
     )?;
+    let (revision_id, revision_source_language, revision_source) =
+        service.revision_prompt_context(&run.session_id, run.input_revision_id.as_deref())?;
     let events = adapter
         .run(crate::agent_adapter::AgentAdapterRunInput {
             session_id: run.session_id.clone(),
             run_id: run.id.clone(),
             prompt: run.prompt.clone(),
             revision_id,
+            revision_source_language,
+            revision_source,
         })
         .await;
 
@@ -154,6 +165,7 @@ async fn execute_run(
                     Some(None),
                     None,
                     None,
+                    Some(serde_json::json!({"status": "completed"})),
                 )?;
             }
         }
@@ -174,8 +186,9 @@ async fn execute_run(
                 &run.id,
                 Some(CadAgentRunStatus::Failed),
                 Some(None),
-                Some(error),
+                Some(error.clone()),
                 None,
+                Some(serde_json::json!({"diagnostic": error})),
             )?;
         }
     }
@@ -191,6 +204,19 @@ fn apply_adapter_event(
     event: AgentAdapterEvent,
 ) -> Result<(), String> {
     match event {
+        AgentAdapterEvent::RunMetadata {
+            external_agent,
+            external_thread_id,
+            external_turn_id,
+        } => {
+            service.update_agent_run_external_metadata(
+                &run.session_id,
+                &run.id,
+                external_agent,
+                external_thread_id,
+                external_turn_id,
+            )?;
+        }
         AgentAdapterEvent::MessageCreated {
             role,
             content,
@@ -207,6 +233,7 @@ fn apply_adapter_event(
             )?;
         }
         AgentAdapterEvent::ToolStarted { name } => {
+            let tool_name = name.clone();
             service.update_agent_run(
                 &run.session_id,
                 &run.id,
@@ -214,6 +241,7 @@ fn apply_adapter_event(
                 Some(Some(name)),
                 None,
                 Some(CadBridgeEventType::AgentToolStarted),
+                Some(serde_json::json!({"tool": tool_name})),
             )?;
         }
         AgentAdapterEvent::ToolCompleted { name } => {
@@ -224,8 +252,8 @@ fn apply_adapter_event(
                 Some(None),
                 None,
                 Some(CadBridgeEventType::AgentToolCompleted),
+                Some(serde_json::json!({"tool": name})),
             )?;
-            let _completed_tool_name = name;
         }
         AgentAdapterEvent::SourceUpdated {
             source_language,
@@ -239,6 +267,11 @@ fn apply_adapter_event(
                 parent_revision_id: state.session.active_revision_id,
                 parameters: None,
             })?;
+            service.link_agent_run_output_revision(
+                &run.session_id,
+                &run.id,
+                updated.revision_id.clone(),
+            )?;
             service.render_preview(RenderPreviewInput {
                 session_id: run.session_id.clone(),
                 revision_id: Some(updated.revision_id),

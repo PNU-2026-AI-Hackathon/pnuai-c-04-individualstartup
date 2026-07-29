@@ -32,6 +32,8 @@ async fn run_smoke(client: &CodexProcessClient, prompt: String) -> Result<(), St
             run_id: uuid::Uuid::new_v4().to_string(),
             prompt,
             revision_id: None,
+            revision_source_language: None,
+            revision_source: None,
         })
         .await?;
     let source = events.iter().find_map(|event| match event {

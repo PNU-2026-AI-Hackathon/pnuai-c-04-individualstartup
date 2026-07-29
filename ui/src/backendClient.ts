@@ -8,7 +8,14 @@ import type {
   CreateAgentRunResult,
   CreateCadSessionResult,
   CurrentCadSessionResult,
-  UpdateModelSourceResult
+  DeleteArtifactResult,
+  DeleteCadSessionResult,
+  ListCadSessionsInput,
+  ListCadSessionsResult,
+  OpenArtifactResult,
+  RestoreRevisionResult,
+  UpdateModelSourceResult,
+  VerifyArtifactFilesResult
 } from "./protocol";
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected";
@@ -18,20 +25,30 @@ export interface CadBackendClient {
   getCurrentSession(): Promise<CurrentCadSessionResult>;
   getSessionState(sessionId: string): Promise<CadSessionState>;
   markSessionViewed(sessionId: string): Promise<CadSessionState>;
+  listSessions(input?: ListCadSessionsInput): Promise<ListCadSessionsResult>;
+  renameSession(input: { sessionId: string; title: string }): Promise<CadSessionState>;
+  archiveSession(input: { sessionId: string; archived?: boolean }): Promise<CadSessionState>;
+  deleteSession(sessionId: string): Promise<DeleteCadSessionResult>;
+  duplicateSession(input: { sessionId: string; title?: string }): Promise<CreateCadSessionResult>;
   updateModelSource(input: {
     sessionId: string;
     sourceLanguage: "openscad";
     source: string;
     parentRevisionId?: string;
   }): Promise<UpdateModelSourceResult>;
+  setActiveRevision(input: { sessionId: string; revisionId: string }): Promise<CadSessionState>;
+  restoreRevision(input: { sessionId: string; revisionId: string }): Promise<RestoreRevisionResult>;
   renderPreview(input: { sessionId: string; revisionId?: string }): Promise<{ state: CadSessionState }>;
   updateParameters(input: {
     sessionId: string;
     values: Record<string, CadParameter["value"]>;
   }): Promise<CadSessionState>;
-  createAgentRun(input: { sessionId: string; prompt: string; revisionId?: string }): Promise<CreateAgentRunResult>;
+  createAgentRun(input: { sessionId: string; prompt: string; revisionId?: string; retryOfRunId?: string }): Promise<CreateAgentRunResult>;
   cancelAgentRun(input: { sessionId: string; runId: string }): Promise<{ run: CadAgentRun; state: CadSessionState }>;
   exportArtifact(input: { sessionId: string; revisionId?: string; format: "stl" | "metadata" }): Promise<{ state: CadSessionState }>;
+  openArtifact(artifactId: string): Promise<OpenArtifactResult>;
+  deleteArtifact(input: { sessionId: string; artifactId: string }): Promise<DeleteArtifactResult>;
+  verifyArtifactFiles(input: { sessionId?: string }): Promise<VerifyArtifactFilesResult>;
   readPreviewMesh(artifact: CadArtifact): Promise<CadMesh>;
   subscribeSession(
     sessionId: string,
@@ -64,6 +81,26 @@ export class TauriCadBackendClient implements CadBackendClient {
     return invokeCommand("mark_session_viewed", { sessionId });
   }
 
+  listSessions(input: ListCadSessionsInput = {}): Promise<ListCadSessionsResult> {
+    return invokeCommand("list_sessions", { input });
+  }
+
+  renameSession(input: { sessionId: string; title: string }): Promise<CadSessionState> {
+    return invokeCommand("rename_session", { input });
+  }
+
+  archiveSession(input: { sessionId: string; archived?: boolean }): Promise<CadSessionState> {
+    return invokeCommand("archive_session", { input });
+  }
+
+  deleteSession(sessionId: string): Promise<DeleteCadSessionResult> {
+    return invokeCommand("delete_session", { sessionId });
+  }
+
+  duplicateSession(input: { sessionId: string; title?: string }): Promise<CreateCadSessionResult> {
+    return invokeCommand("duplicate_session", { input });
+  }
+
   updateModelSource(input: {
     sessionId: string;
     sourceLanguage: "openscad";
@@ -71,6 +108,14 @@ export class TauriCadBackendClient implements CadBackendClient {
     parentRevisionId?: string;
   }): Promise<UpdateModelSourceResult> {
     return invokeCommand("update_model_source", { input });
+  }
+
+  setActiveRevision(input: { sessionId: string; revisionId: string }): Promise<CadSessionState> {
+    return invokeCommand("set_active_revision", { input });
+  }
+
+  restoreRevision(input: { sessionId: string; revisionId: string }): Promise<RestoreRevisionResult> {
+    return invokeCommand("restore_revision", { input });
   }
 
   renderPreview(input: { sessionId: string; revisionId?: string }): Promise<{ state: CadSessionState }> {
@@ -84,7 +129,7 @@ export class TauriCadBackendClient implements CadBackendClient {
     return invokeCommand("update_parameters", { input });
   }
 
-  createAgentRun(input: { sessionId: string; prompt: string; revisionId?: string }): Promise<CreateAgentRunResult> {
+  createAgentRun(input: { sessionId: string; prompt: string; revisionId?: string; retryOfRunId?: string }): Promise<CreateAgentRunResult> {
     return invokeCommand("create_agent_run", { input });
   }
 
@@ -103,6 +148,18 @@ export class TauriCadBackendClient implements CadBackendClient {
   async readPreviewMesh(artifact: CadArtifact): Promise<CadMesh> {
     const contents = await invokeCommand<string>("read_artifact", { artifactId: artifact.id });
     return JSON.parse(contents) as CadMesh;
+  }
+
+  openArtifact(artifactId: string): Promise<OpenArtifactResult> {
+    return invokeCommand("open_artifact", { artifactId });
+  }
+
+  deleteArtifact(input: { sessionId: string; artifactId: string }): Promise<DeleteArtifactResult> {
+    return invokeCommand("delete_artifact", { input });
+  }
+
+  verifyArtifactFiles(input: { sessionId?: string }): Promise<VerifyArtifactFilesResult> {
+    return invokeCommand("verify_artifact_files", { input });
   }
 
   subscribeSession(

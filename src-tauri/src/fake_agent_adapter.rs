@@ -6,6 +6,10 @@ pub struct FakeAgentAdapter;
 
 #[async_trait::async_trait]
 impl AgentAdapter for FakeAgentAdapter {
+    fn external_agent(&self) -> &'static str {
+        "fake"
+    }
+
     async fn run(&self, input: AgentAdapterRunInput) -> Result<Vec<AgentAdapterEvent>, String> {
         if input.prompt.to_lowercase().contains("fail") || input.prompt.contains("[fail]") {
             return Err("Fake agent adapter failed by prompt request.".to_string());

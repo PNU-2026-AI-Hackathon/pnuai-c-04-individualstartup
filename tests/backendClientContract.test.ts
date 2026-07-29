@@ -3,6 +3,7 @@ import test from "node:test";
 import type { CadBackendClient } from "../ui/src/backendClient";
 import type {
   CadBridgeEvent,
+  CadSessionListItem,
   CadSessionState,
   CreateAgentRunResult,
   CreateCadSessionResult,
@@ -21,6 +22,20 @@ async function assertClientShape(client: CadBackendClient) {
 
   const current = await client.getCurrentSession();
   assertCurrentSessionShape(current);
+  const listed = await client.listSessions({ includeArchived: true, query: "cube" });
+  assertSessionListShape(listed.sessions[0]);
+  assert.deepEqual(listed.searchFields, ["title", "source", "conversation"]);
+  const renamed = await client.renameSession({ sessionId: created.sessionId, title: "Renamed contract" });
+  assert.equal(renamed.session.title, "Renamed contract");
+  const verified = await client.verifyArtifactFiles({ sessionId: created.sessionId });
+  assert.equal(verified.checkedCount, 1);
+  assert.deepEqual(verified.hashMismatchArtifactIds, []);
+  assert.deepEqual(verified.orphanPaths, []);
+  assert.deepEqual(verified.diagnostics, []);
+  const openedArtifact = await client.openArtifact("artifact-1");
+  assert.equal(openedArtifact.artifact.id, "artifact-1");
+  assert.equal(openedArtifact.artifact.kind, "stl");
+  assert.equal(typeof openedArtifact.path, "string");
 
   const observedSnapshots: CadSessionState[] = [];
   const unsubscribe = client.subscribeSession(created.sessionId, {
@@ -37,8 +52,28 @@ async function assertClientShape(client: CadBackendClient) {
     revisionId: created.state.session.activeRevisionId
   });
   assertAgentRunShape(started);
+  const active = await client.setActiveRevision({
+    sessionId: created.sessionId,
+    revisionId: created.state.session.activeRevisionId ?? "revision-1"
+  });
+  assert.equal(active.session.activeRevisionId, created.state.session.activeRevisionId);
+  const restored = await client.restoreRevision({
+    sessionId: created.sessionId,
+    revisionId: created.state.session.activeRevisionId ?? "revision-1"
+  });
+  assert.equal(restored.state.activeRevision?.restoredFromRevisionId, created.state.session.activeRevisionId);
+  const deletedArtifact = await client.deleteArtifact({
+    sessionId: created.sessionId,
+    artifactId: "artifact-1"
+  });
+  assert.equal(deletedArtifact.artifactId, "artifact-1");
+  assert.equal(deletedArtifact.state.activeRevision?.artifacts.length, 0);
+  const duplicated = await client.duplicateSession({ sessionId: created.sessionId });
+  assert.equal(duplicated.sessionId, `${created.sessionId}-copy`);
+  const deleted = await client.deleteSession(duplicated.sessionId);
+  assert.equal(deleted.sessionId, duplicated.sessionId);
+  assert.equal(typeof deleted.currentSessionId, "string");
   assert.equal(observedSnapshots.at(-1)?.session.id, created.sessionId);
-  assert.equal(observedSnapshots.at(-1)?.agentRuns.at(-1)?.id, started.run.id);
   unsubscribe();
 }
 
@@ -48,6 +83,8 @@ function assertSessionResultShape(result: CreateCadSessionResult) {
   assert.equal(result.state.session.id, result.sessionId);
   assert.equal(result.state.session.selectedRuntime, "openscad-wasm");
   assert.equal(result.state.activeRevision?.sourceLanguage, "openscad");
+  assert.equal(typeof result.state.session.revisions[0]?.sourceHash, "string");
+  assert.ok(Array.isArray(result.state.session.revisions[0]?.runLinks));
 }
 
 function assertCurrentSessionShape(result: CurrentCadSessionResult) {
@@ -58,7 +95,9 @@ function assertCurrentSessionShape(result: CurrentCadSessionResult) {
 function assertAgentRunShape(result: CreateAgentRunResult) {
   assert.equal(result.message.role, "user");
   assert.equal(result.run.status, "queued");
+  assert.equal(result.run.externalAgent, "mock");
   assert.equal(result.state.agentRuns.at(-1)?.id, result.run.id);
+  assert.equal(result.state.agentRunEvents.at(-1)?.runId, result.run.id);
   assert.equal(result.state.conversation.at(-1)?.id, result.message.id);
 }
 
@@ -93,11 +132,105 @@ class MockCadBackendClient implements CadBackendClient {
     return this.requireState();
   }
 
+  async listSessions(input: { includeArchived?: boolean; query?: string } = {}) {
+    const state = this.requireState();
+    const item = sessionListItem(state);
+    const query = input.query?.trim().toLowerCase();
+    const matchesQuery = !query
+      || item.title?.toLowerCase().includes(query)
+      || state.activeRevision?.source.toLowerCase().includes(query)
+      || state.conversation.some((message) => message.content.toLowerCase().includes(query));
+    return {
+      sessions: matchesQuery && (input.includeArchived || !item.archived) ? [item] : [],
+      searchFields: ["title", "source", "conversation"]
+    };
+  }
+
+  async renameSession(input: { sessionId: string; title: string }): Promise<CadSessionState> {
+    const state = this.requireState();
+    this.state = {
+      ...state,
+      session: { ...state.session, title: input.title }
+    };
+    this.emit("session.updated");
+    return this.state;
+  }
+
+  async archiveSession(): Promise<CadSessionState> {
+    const state = this.requireState();
+    this.state = {
+      ...state,
+      session: { ...state.session, archivedAt: new Date().toISOString() }
+    };
+    this.emit("session.updated");
+    return this.state;
+  }
+
+  async deleteSession() {
+    return { sessionId: this.requireState().session.id, currentSessionId: "session-1" };
+  }
+
+  async duplicateSession(input: { sessionId: string; title?: string }): Promise<CreateCadSessionResult> {
+    this.state = {
+      ...this.requireState(),
+      session: {
+        ...this.requireState().session,
+        id: `${input.sessionId}-copy`,
+        title: input.title ?? "Copy"
+      }
+    };
+    return {
+      sessionId: this.state.session.id,
+      uiUrl: `/sessions/${this.state.session.id}`,
+      state: this.state
+    };
+  }
+
   async updateModelSource(): Promise<{ revisionId: string; state: CadSessionState }> {
     return {
       revisionId: this.requireState().session.activeRevisionId ?? "revision-1",
       state: this.requireState()
     };
+  }
+
+  async setActiveRevision(input: { sessionId: string; revisionId: string }): Promise<CadSessionState> {
+    const state = this.requireState();
+    this.state = {
+      ...state,
+      session: { ...state.session, activeRevisionId: input.revisionId },
+      activeRevision: state.activeRevision?.id === input.revisionId ? state.activeRevision : undefined
+    };
+    this.emit("revision.activated");
+    return this.state;
+  }
+
+  async restoreRevision(input: { sessionId: string; revisionId: string }): Promise<{ revisionId: string; state: CadSessionState }> {
+    const state = this.requireState();
+    const sourceRevision = state.activeRevision;
+    const revisionId = "revision-restored";
+    const now = new Date().toISOString();
+    const restoredRevision = {
+      ...sourceRevision!,
+      id: revisionId,
+      parentRevisionId: state.session.activeRevisionId,
+      restoredFromRevisionId: input.revisionId,
+      createdAt: now,
+      artifactCount: 0,
+      artifacts: [],
+      userEvents: [],
+      runLinks: []
+    };
+    this.state = {
+      ...state,
+      session: {
+        ...state.session,
+        activeRevisionId: revisionId,
+        revisions: [...state.session.revisions, restoredRevision]
+      },
+      activeRevision: restoredRevision
+    };
+    this.emit("revision.restored");
+    return { revisionId, state: this.state };
   }
 
   async renderPreview(): Promise<{ state: CadSessionState }> {
@@ -108,7 +241,7 @@ class MockCadBackendClient implements CadBackendClient {
     return this.requireState();
   }
 
-  async createAgentRun(input: { sessionId: string; prompt: string; revisionId?: string }): Promise<CreateAgentRunResult> {
+  async createAgentRun(input: { sessionId: string; prompt: string; revisionId?: string; retryOfRunId?: string }): Promise<CreateAgentRunResult> {
     const state = this.requireState();
     const now = new Date().toISOString();
     const message = {
@@ -123,15 +256,28 @@ class MockCadBackendClient implements CadBackendClient {
     const run = {
       id: "tauri-run-1",
       sessionId: input.sessionId,
+      inputRevisionId: input.revisionId,
+      externalAgent: "mock",
       status: "queued" as const,
       prompt: input.prompt,
       createdAt: now,
       updatedAt: now
     };
+    const event = {
+      id: "tauri-run-event-1",
+      sessionId: input.sessionId,
+      runId: run.id,
+      revisionId: input.revisionId,
+      type: "agent.run.created" as const,
+      sequence: 1,
+      createdAt: now,
+      payload: { prompt: input.prompt, retryOfRunId: input.retryOfRunId }
+    };
     this.state = {
       ...state,
       conversation: [...state.conversation, message],
-      agentRuns: [...state.agentRuns, run]
+      agentRuns: [...state.agentRuns, run],
+      agentRunEvents: [...state.agentRunEvents, event]
     };
     this.emit("agent.run.created");
     return { message, run, state: this.state };
@@ -143,6 +289,43 @@ class MockCadBackendClient implements CadBackendClient {
 
   async exportArtifact(): Promise<{ state: CadSessionState }> {
     return { state: this.requireState() };
+  }
+
+  async openArtifact() {
+    return {
+      artifact: this.requireState().activeRevision!.artifacts[0],
+      path: "/tmp/cadastrophe-artifact.stl"
+    };
+  }
+
+  async deleteArtifact(input: { sessionId: string; artifactId: string }) {
+    const state = this.requireState();
+    this.state = {
+      ...state,
+      activeRevision: state.activeRevision
+        ? {
+            ...state.activeRevision,
+            artifactCount: state.activeRevision.artifacts.filter((artifact) => artifact.id !== input.artifactId).length,
+            artifacts: state.activeRevision.artifacts.filter((artifact) => artifact.id !== input.artifactId)
+          }
+        : undefined
+    };
+    this.emit("artifact.deleted");
+    return { artifactId: input.artifactId, state: this.state };
+  }
+
+  async verifyArtifactFiles() {
+    return {
+      checkedCount: this.requireState().activeRevision?.artifacts.length ?? 0,
+      missingArtifactIds: [],
+      hashMismatchArtifactIds: [],
+      sizeMismatchArtifactIds: [],
+      corruptMetadataArtifactIds: [],
+      invalidPathArtifactIds: [],
+      orphanPaths: [],
+      diagnostics: [],
+      state: this.requireState()
+    };
   }
 
   async readPreviewMesh() {
@@ -188,6 +371,16 @@ class MockCadBackendClient implements CadBackendClient {
 
 function sampleState(title: string): CadSessionState {
   const now = new Date().toISOString();
+  const artifact = {
+    id: "artifact-1",
+    revisionId: "revision-1",
+    kind: "stl" as const,
+    format: "stl",
+    uri: "artifacts/session-1/revision-1/artifact-1.stl",
+    bytes: 128,
+    createdAt: now,
+    metadata: { source: "contract-fixture" }
+  };
   return {
     session: {
       id: "session-1",
@@ -201,27 +394,60 @@ function sampleState(title: string): CadSessionState {
       revisions: [
         {
           id: "revision-1",
+          sourceHash: "sha256-source-fixture",
           sourceLanguage: "openscad",
           createdAt: now,
           diagnostics: { ok: true, elapsedMs: 0, items: [] },
-          artifactCount: 0
+          artifactCount: 1,
+          runLinks: []
         }
       ]
     },
     activeRevision: {
       id: "revision-1",
       sessionId: "session-1",
+      sourceHash: "sha256-source-fixture",
       sourceLanguage: "openscad",
       source: "cube([1, 1, 1]);",
       parameters: [],
       createdAt: now,
       diagnostics: { ok: true, elapsedMs: 0, items: [] },
-      artifactCount: 0,
-      artifacts: [],
-      userEvents: []
+      artifactCount: 1,
+      artifacts: [artifact],
+      userEvents: [],
+      runLinks: []
     },
     messages: [],
     conversation: [],
-    agentRuns: []
+    agentRuns: [],
+    agentRunEvents: []
   };
+}
+
+function sessionListItem(state: CadSessionState): CadSessionListItem {
+  const activeRevision = state.session.revisions.find((revision) => revision.id === state.session.activeRevisionId);
+  return {
+    id: state.session.id,
+    createdAt: state.session.createdAt,
+    updatedAt: state.session.updatedAt,
+    lastViewedAt: state.session.lastViewedAt,
+    title: state.session.title,
+    activeRevisionId: state.session.activeRevisionId,
+    activeRevision,
+    selectedRuntime: state.session.selectedRuntime,
+    status: state.session.status,
+    archived: Boolean(state.session.archivedAt),
+    archivedAt: state.session.archivedAt,
+    revisionCount: state.session.revisions.length,
+    artifactCount: state.session.revisions.reduce((sum, revision) => sum + revision.artifactCount, 0)
+  };
+}
+
+function assertSessionListShape(session: CadSessionListItem | undefined) {
+  assert.ok(session);
+  assert.equal(session.title, "Transport contract");
+  assert.equal(typeof session.updatedAt, "string");
+  assert.equal(session.archived, false);
+  assert.equal(session.activeRevision?.id, session.activeRevisionId);
+  assert.equal(typeof session.activeRevision?.sourceHash, "string");
 }
