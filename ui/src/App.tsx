@@ -80,6 +80,7 @@ export function App() {
   const [showArchivedSessions, setShowArchivedSessions] = useState(false);
   const [sessionRailOpen, setSessionRailOpen] = useState(false);
   const [sessionList, setSessionList] = useState<CadSessionListItem[]>([]);
+  const [locallyDeletedSessionIds, setLocallyDeletedSessionIds] = useState<Set<string>>(new Set());
   const locallyDeletedSessionIdsRef = useRef<Set<string>>(new Set());
   const [sessionSearchFields, setSessionSearchFields] = useState<string[]>([]);
   const [integrityResult, setIntegrityResult] = useState<VerifyArtifactFilesResult | null>(null);
@@ -102,6 +103,10 @@ export function App() {
   const previewArtifact = activeRevision?.artifacts.find((artifact) => artifact.kind === "preview-mesh");
   const activeAgentRun = state?.agentRuns.find((run) => isActiveRunStatus(run.status));
   const sessionArchived = Boolean(state?.session.archivedAt);
+  const visibleSessionList = useMemo(
+    () => filterSessionsByDeletedIds(sessionList, locallyDeletedSessionIds),
+    [locallyDeletedSessionIds, sessionList]
+  );
   const showStarterOverlay = Boolean(
     state &&
     !hiddenStarterSessionIds.has(state.session.id) &&
@@ -223,7 +228,7 @@ export function App() {
       .listSessions({ includeArchived: true, query: sessionSearch })
       .then((result) => {
         if (cancelled) return;
-        setSessionList(filterLocallyDeletedSessions(result.sessions));
+        setSessionList(result.sessions);
         setSessionSearchFields(result.searchFields);
       })
       .catch((caught) => setError(errorMessage(caught)));
@@ -491,7 +496,7 @@ export function App() {
 
   async function refreshSessionList(query = sessionSearch) {
     const result = await backend.listSessions({ includeArchived: true, query });
-    setSessionList(filterLocallyDeletedSessions(result.sessions));
+    setSessionList(result.sessions);
     setSessionSearchFields(result.searchFields);
     return result;
   }
@@ -547,11 +552,11 @@ export function App() {
 
   async function deleteSession(sessionId: string) {
     if (!window.confirm("Delete this session and its local management data?")) return;
-    locallyDeletedSessionIdsRef.current.add(sessionId);
+    markSessionLocallyDeleted(sessionId);
     setSessionList((sessions) => sessions.filter((session) => session.id !== sessionId));
     await runBusy(async () => {
       const deleted = await backend.deleteSession(sessionId).catch(async (caught) => {
-        locallyDeletedSessionIdsRef.current.delete(sessionId);
+        restoreLocallyDeletedSession(sessionId);
         await refreshSessionList().catch(() => undefined);
         throw caught;
       });
@@ -562,7 +567,7 @@ export function App() {
       }
       const nextSessionId =
         deleted.currentSessionId ??
-        (await backend.listSessions({ includeArchived: false })).sessions[0]?.id;
+        filterLocallyDeletedSessions((await backend.listSessions({ includeArchived: false })).sessions)[0]?.id;
       if (nextSessionId) {
         const nextState = await loadSession(nextSessionId, { forceSource: true });
         await backend.markSessionViewed(nextSessionId);
@@ -578,9 +583,25 @@ export function App() {
   }
 
   function filterLocallyDeletedSessions(sessions: CadSessionListItem[]) {
-    const deletedSessionIds = locallyDeletedSessionIdsRef.current;
-    if (deletedSessionIds.size === 0) return sessions;
-    return sessions.filter((session) => !deletedSessionIds.has(session.id));
+    return filterSessionsByDeletedIds(sessions, locallyDeletedSessionIdsRef.current);
+  }
+
+  function markSessionLocallyDeleted(sessionId: string) {
+    setLocallyDeletedSessionIds((previous) => {
+      const next = new Set(previous);
+      next.add(sessionId);
+      locallyDeletedSessionIdsRef.current = next;
+      return next;
+    });
+  }
+
+  function restoreLocallyDeletedSession(sessionId: string) {
+    setLocallyDeletedSessionIds((previous) => {
+      const next = new Set(previous);
+      next.delete(sessionId);
+      locallyDeletedSessionIdsRef.current = next;
+      return next;
+    });
   }
 
   function navigateTo(nextView: WorkspaceView, targetSessionId = state?.session.id) {
@@ -828,7 +849,7 @@ export function App() {
   return (
     <main className="app-shell">
       <SessionRail
-        sessions={sessionList}
+        sessions={visibleSessionList}
         activeSessionId={state.session.id}
         query={sessionSearch}
         showArchived={showArchivedSessions}
@@ -924,7 +945,7 @@ export function App() {
 
         {view === "sessions" ? (
           <SessionBrowser
-            sessions={sessionList}
+            sessions={visibleSessionList}
             activeSessionId={state.session.id}
             query={sessionSearch}
             searchFields={sessionSearchFields}
@@ -1006,6 +1027,14 @@ function stateWithDraftDiagnostics(state: CadSessionState, diagnostics: CadDiagn
     },
     activeRevision: state.activeRevision ? { ...state.activeRevision, diagnostics } : state.activeRevision
   };
+}
+
+export function filterSessionsByDeletedIds(
+  sessions: CadSessionListItem[],
+  deletedSessionIds: Set<string>
+): CadSessionListItem[] {
+  if (deletedSessionIds.size === 0) return sessions;
+  return sessions.filter((session) => !deletedSessionIds.has(session.id));
 }
 
 function topbarStatusLabel(state: CadSessionState, hasActiveRun: boolean, archived: boolean): string | null {

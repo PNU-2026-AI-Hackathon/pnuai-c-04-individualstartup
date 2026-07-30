@@ -3,6 +3,7 @@ import test from "node:test";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { Window } from "happy-dom";
+import { filterSessionsByDeletedIds } from "../ui/src/App";
 import { SessionRail } from "../ui/src/components/SessionRail";
 import { WorkspacePanel } from "../ui/src/components/WorkspacePanel";
 import type { CadRevision, CadSessionListItem, CadSessionState } from "../ui/src/protocol";
@@ -58,6 +59,80 @@ test("session rail exposes inline management without top-level Logs navigation",
     await act(async () => saveButton.click());
 
     assert.deepEqual(calls, ["rename:other-session:other-session"]);
+  } finally {
+    act(() => root.unmount());
+    browserWindow.close();
+  }
+});
+
+test("locally deleted sessions stay hidden when a stale session list arrives", () => {
+  const sessions = [
+    sessionListItem("active-session"),
+    sessionListItem("deleted-session"),
+    sessionListItem("other-session")
+  ];
+  const deletedSessionIds = new Set(["deleted-session"]);
+
+  const visibleSessions = filterSessionsByDeletedIds(sessions, deletedSessionIds);
+
+  assert.deepEqual(
+    visibleSessions.map((session) => session.id),
+    ["active-session", "other-session"]
+  );
+});
+
+test("session rail keeps a deleted session out of the DOM after a stale refresh", async () => {
+  const browserWindow = installDom();
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  const staleSessions = [
+    sessionListItem("active-session"),
+    sessionListItem("deleted-session"),
+    sessionListItem("other-session")
+  ];
+
+  function Harness() {
+    const [sessions, setSessions] = React.useState(staleSessions);
+    const [deletedSessionIds, setDeletedSessionIds] = React.useState<Set<string>>(new Set());
+    return React.createElement(SessionRail, {
+      sessions: filterSessionsByDeletedIds(sessions, deletedSessionIds),
+      activeSessionId: "active-session",
+      query: "",
+      showArchived: false,
+      busy: false,
+      open: true,
+      view: "workspace",
+      onQueryChange: () => undefined,
+      onShowArchivedChange: () => undefined,
+      onCreateSession: () => undefined,
+      onOpenSession: () => undefined,
+      onArchiveChange: () => undefined,
+      onRename: () => undefined,
+      onDuplicate: () => undefined,
+      onDelete: (sessionId: string) => {
+        setDeletedSessionIds(new Set([sessionId]));
+        setSessions(staleSessions);
+      },
+      onNavigate: () => undefined,
+      onClose: () => undefined
+    });
+  }
+
+  try {
+    await act(async () => {
+      root.render(React.createElement(Harness));
+    });
+    assert.match(container.textContent ?? "", /deleted-session/);
+
+    const menuButton = container.querySelector<HTMLButtonElement>("[aria-label='Session actions for deleted-session']");
+    assert.ok(menuButton);
+    await act(async () => menuButton.click());
+    const deleteButton = buttonByText(container, "Delete");
+    await act(async () => deleteButton.click());
+
+    assert.doesNotMatch(container.textContent ?? "", /deleted-session/);
+    assert.match(container.textContent ?? "", /other-session/);
   } finally {
     act(() => root.unmount());
     browserWindow.close();
