@@ -29,7 +29,7 @@
       "stlPath": "<fixture>/cube.stl"
     },
     {
-      "engine": "fallback-stl-parser",
+      "engine": "native-stl-parser",
       "error": null,
       "message": "STL mesh loaded.",
       "name": "stl_load",

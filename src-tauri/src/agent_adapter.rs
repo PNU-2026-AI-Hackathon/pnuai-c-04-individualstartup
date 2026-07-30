@@ -43,13 +43,13 @@ impl std::fmt::Debug for AgentAdapterRunInput {
 impl AgentAdapterRunInput {
     pub fn emit_event(
         &self,
-        fallback_events: &mut Vec<AgentAdapterEvent>,
+        buffered_events: &mut Vec<AgentAdapterEvent>,
         event: AgentAdapterEvent,
     ) -> Result<(), String> {
         if let Some(event_sink) = &self.event_sink {
             event_sink(event)
         } else {
-            fallback_events.push(event);
+            buffered_events.push(event);
             Ok(())
         }
     }

@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -23,7 +24,7 @@ impl Default for CodexProcessConfig {
                 .unwrap_or_else(|_| {
                     resolve_executable("codex").unwrap_or_else(|| "codex".to_string())
                 }),
-            request_timeout: duration_from_env("CADASTROPHE_CODEX_REQUEST_TIMEOUT_SECS", 30),
+            request_timeout: duration_from_env("CADASTROPHE_CODEX_REQUEST_TIMEOUT_SECS", 600),
         }
     }
 }
@@ -250,20 +251,24 @@ fn child_path_env() -> String {
         .map(|value| std::env::split_paths(&value).collect())
         .unwrap_or_default();
     for path in cadastrophe_binary_path_entries() {
-        if !paths.iter().any(|existing| existing == &path) {
-            paths.push(path);
-        }
+        push_unique_path(&mut paths, path);
     }
-    for fallback in fallback_path_entries() {
-        let path = PathBuf::from(fallback);
-        if !paths.iter().any(|existing| existing == &path) {
-            paths.push(path);
-        }
+    for path in configured_extra_path_entries(std::env::var_os("CADASTROPHE_CODEX_EXTRA_PATHS")) {
+        push_unique_path(&mut paths, path);
+    }
+    for path in login_shell_path_entries() {
+        push_unique_path(&mut paths, path);
     }
     std::env::join_paths(paths)
-        .unwrap_or_else(|_| std::ffi::OsString::from(fallback_path_entries().join(":")))
+        .unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
         .to_string_lossy()
         .to_string()
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
 }
 
 fn cadastrophe_binary_path_entries() -> Vec<PathBuf> {
@@ -293,17 +298,29 @@ fn cadastrophe_binary_path_entries() -> Vec<PathBuf> {
         })
 }
 
-fn fallback_path_entries() -> Vec<&'static str> {
-    vec![
-        "/opt/homebrew/bin",
-        "/opt/homebrew/sbin",
-        "/usr/local/bin",
-        "/usr/local/sbin",
-        "/usr/bin",
-        "/bin",
-        "/usr/sbin",
-        "/sbin",
-    ]
+fn configured_extra_path_entries(value: Option<OsString>) -> Vec<PathBuf> {
+    value
+        .map(|paths| std::env::split_paths(&paths).collect())
+        .unwrap_or_default()
+}
+
+fn login_shell_path_entries() -> Vec<PathBuf> {
+    let Some(shell) = std::env::var_os("SHELL").filter(|value| !value.is_empty()) else {
+        return Vec::new();
+    };
+    let Ok(output) = std::process::Command::new(shell)
+        .args(["-lc", "printf %s \"$PATH\""])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    std::env::split_paths(&OsString::from(
+        String::from_utf8_lossy(&output.stdout).as_ref(),
+    ))
+    .collect()
 }
 
 fn duration_from_env(name: &str, default_secs: u64) -> Duration {
@@ -350,10 +367,17 @@ mod tests {
     }
 
     #[test]
-    fn child_path_env_includes_homebrew_locations() {
-        let path = child_path_env();
-        assert!(path.contains("/opt/homebrew/bin"));
-        assert!(path.contains("/usr/local/bin"));
+    fn configured_extra_path_entries_split_platform_path_values() {
+        let first =
+            std::env::temp_dir().join(format!("cadastrophe-extra-path-a-{}", uuid::Uuid::new_v4()));
+        let second =
+            std::env::temp_dir().join(format!("cadastrophe-extra-path-b-{}", uuid::Uuid::new_v4()));
+        let joined = std::env::join_paths([first.as_path(), second.as_path()]).unwrap();
+
+        assert_eq!(
+            configured_extra_path_entries(Some(joined)),
+            vec![first, second]
+        );
     }
 
     #[test]

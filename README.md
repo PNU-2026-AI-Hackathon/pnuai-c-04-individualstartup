@@ -12,8 +12,8 @@ Tauri desktop CAD workspace:
 - Tauri IPC commands and `cad_bridge_event` snapshots as the only app backend
   transport.
 - Real OpenSCAD evaluation through `openscad-wasm`: the UI renders in a Web
-  Worker and exports the same STL bytes used for preview; CLI/agent fallback
-  commands invoke the same WASM package through Node.
+  Worker and exports the same STL bytes used for preview; CLI/agent commands
+  invoke the same WASM package through Node.
 - Real Codex process adapter as the default desktop agent path.
 
 ## Development
@@ -54,15 +54,7 @@ npm run build
 npm run build:tauri
 ```
 
-Run the real Codex adapter smoke, which requires a locally installed and
-authenticated `codex` CLI:
-
-```sh
-npm run smoke:codex -- "Create a simple OpenSCAD sphere with radius 6."
-```
-
-The desktop backend uses Codex by default. Set
-`CADASTROPHE_AGENT_ADAPTER=fake` only when you need deterministic fake-adapter
-regression behavior. Packaged macOS app launches do not inherit your interactive
-shell PATH, so the desktop backend also checks common Homebrew/npm locations such as
-`/opt/homebrew/bin` and passes the expanded PATH to the Codex child process.
+The desktop backend uses Codex. Packaged macOS app launches do not always inherit
+your interactive PATH, so the backend combines the current PATH, the app-adjacent
+CLI directory, `CADASTROPHE_CODEX_EXTRA_PATHS`, and the login shell PATH before
+starting the Codex child process.

@@ -1,0 +1,66 @@
+@media (max-width: 1180px) {
+  .workspace {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .side-pane {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(260px, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .app-shell {
+    padding: 10px;
+  }
+
+  .topbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .status-group,
+  .warning,
+  .management-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .workspace,
+  .side-pane,
+  .log-browser {
+    grid-template-columns: 1fr;
+  }
+
+  .session-list li {
+    display: flex;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .session-list-actions {
+    grid-template-columns: 1fr;
+    min-width: 0;
+  }
+
+  .artifact-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .artifact-detail dl,
+  .agent-progress-meta,
+  .run-log-meta,
+  .revision-diff {
+    grid-template-columns: 1fr;
+  }
+
+  .mesh-preview {
+    height: clamp(300px, 48vh, 420px);
+  }
+
+  .editor-pane textarea {
+    min-height: 420px;
+  }
+}

@@ -17,28 +17,42 @@ Expect a contract shaped like this:
 
 ```json
 {
-  "contract_type": "cadastrophe.vlm_judge.v1",
-  "artifact_id": "artifact-or-revision-id",
-  "request": "original natural language CAD request",
-  "source_language": "openscad",
+  "contractType": "cadastrophe.vlm_judge.v1",
+  "sessionId": "session-id",
+  "runId": "run-id",
+  "revisionId": "revision-id",
+  "artifactId": "final-stl-artifact-id",
+  "passThreshold": 0.8,
+  "prompt": "Judge whether the final CAD artifact visually satisfies the committed CadModelPlan.",
   "plan": {
+    "schemaVersion": "cad_model_plan.v1",
     "summary": "brief modeling intent",
-    "components": [
-      {"name": "base", "description": "rectangular base"}
-    ],
-    "expected_aspect_ratio": [1, 1, 0.4]
+    "mainComponent": {
+      "name": "base",
+      "purpose": "rectangular base"
+    },
+    "supportingComponents": [],
+    "expectedAspectRatio": { "x": 1, "y": 1, "z": 0.4, "tolerance": 0.2 },
+    "sourceLanguage": "openscad",
+    "runtimeConstraints": { "runtime": "openscad-wasm" }
   },
-  "artifact_paths": {
-    "stl": "/absolute/path/model.stl",
-    "obj": "/absolute/path/model.obj",
-    "preview_mesh": "/absolute/path/preview.json"
+  "artifact": {
+    "format": "stl",
+    "relativePath": "artifacts/session/revision/model.stl",
+    "sha256": "...",
+    "bytes": 12345
   },
-  "rendered_images": {
+  "renderedImages": {
     "available": true,
-    "grid": "/absolute/path/render-grid.png",
-    "views": ["front", "top", "right"]
-  },
-  "pass_threshold": 7
+    "artifactId": "render-grid-artifact-id",
+    "format": "png",
+    "relativePath": "artifacts/session/revision/render-grid.png",
+    "path": "/absolute/path/render-grid.png",
+    "sha256": "...",
+    "bytes": 23456,
+    "viewMode": "9-view",
+    "views": ["Front-Left-Top", "Front", "Front-Right-Top", "Left", "Top", "Right", "Bottom", "Back", "Back-Right-Top"]
+  }
 }
 ```
 
@@ -48,8 +62,8 @@ unless the parent explicitly provides one.
 
 ## Judgment Procedure
 
-1. Inspect the rendered image path in `rendered_images.grid` first.
-2. Enumerate every visible component, using names from `plan.components` when possible.
+1. Inspect the rendered image path in `renderedImages.path` first.
+2. Enumerate every visible component, using names from `plan.mainComponent` and `plan.supportingComponents` when possible.
 3. Compare visible components against the request and plan. Look for missing parts, wrong counts, wrong placement, implausible proportions, and visible contradictions.
 4. Check inter-view consistency when multiple labeled views are present.
 5. Score structure, components, and proportions using the rubric below.
@@ -78,8 +92,8 @@ Proportions:
 - 2: Plausible with minor issues.
 - 3: Natural and consistent with the request.
 
-Set `composite` to the sum of the three scores. Set `passed` to true only when
-`composite >= pass_threshold` and no major requested feature is visibly missing.
+Set `score` to `composite / 9.0`. Set `passed` to true only when
+`score >= passThreshold` and no major requested feature is visibly missing.
 
 ## Output
 
@@ -87,11 +101,20 @@ Return exactly this JSON shape:
 
 ```json
 {
-  "artifact_id": "artifact-or-revision-id",
+  "contractType": "cadastrophe.vlm_judge_report.v1",
+  "runId": "run-id",
+  "artifactId": "final-stl-artifact-id",
+  "score": 0.89,
   "passed": true,
+  "findings": [
+    {
+      "severity": "info",
+      "message": "The main rectangular base is visible across the labeled views."
+    }
+  ],
   "enumeration": [
     {
-      "plan_name": "base",
+      "planName": "base",
       "observed": "One rectangular base is visible in the front, top, and right views."
     }
   ],
@@ -102,15 +125,20 @@ Return exactly this JSON shape:
     "proportions": 2
   },
   "composite": 8,
-  "diagnostic": "Short, concrete feedback describing any visible mismatch."
+  "diagnostic": "Short, concrete feedback describing any visible mismatch.",
+  "failureReport": null
 }
 ```
 
 Rules:
 
 - Output no prose outside the JSON object.
-- `artifact_id` must exactly match the contract.
+- `contractType` must be exactly `cadastrophe.vlm_judge_report.v1`.
+- `runId` and `artifactId` must exactly match the contract.
+- `score` must be a number from `0.0` to `1.0`.
 - `composite` must equal `structure + components + proportions`.
-- `passed` must be consistent with `pass_threshold`.
+- `score` must equal `composite / 9.0`, rounded only as needed.
+- `passed` must be consistent with `passThreshold`.
 - Mention every major requested component in `enumeration`, including absent components.
 - Keep `diagnostic` actionable for the modeling agent.
+- If `passed` is false, include a non-null `failureReport` with `contractType: "cadastrophe.failure_report.v1"`, a concrete `reason`, and `nextAction: "outer_loop_refine_source"`.

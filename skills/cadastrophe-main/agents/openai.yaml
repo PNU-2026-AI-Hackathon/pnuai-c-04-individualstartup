@@ -1,4 +1,0 @@
-interface:
-  display_name: "Cadastrophe Assist"
-  short_description: "Run CAD sessions via the Tauri desktop app."
-  default_prompt: "Use $cadastrophe-main to create a CAD session, render the model, collect review feedback, and export artifacts."

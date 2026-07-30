@@ -12,7 +12,7 @@ import type {
 } from "../ui/src/protocol";
 
 test("Tauri backend client contract exposes semantic session and event shapes", async () => {
-  const tauri = new MockCadBackendClient();
+  const tauri = new ContractBackendClient();
 
   await assertClientShape(tauri);
 });
@@ -98,13 +98,13 @@ function assertCurrentSessionShape(result: CurrentCadSessionResult) {
 function assertAgentRunShape(result: CreateAgentRunResult) {
   assert.equal(result.message.role, "user");
   assert.equal(result.run.status, "queued");
-  assert.equal(result.run.externalAgent, "mock");
+  assert.equal(result.run.externalAgent, "contract-test");
   assert.equal(result.state.agentRuns.at(-1)?.id, result.run.id);
   assert.equal(result.state.agentRunEvents.at(-1)?.runId, result.run.id);
   assert.equal(result.state.conversation.at(-1)?.id, result.message.id);
 }
 
-class MockCadBackendClient implements CadBackendClient {
+class ContractBackendClient implements CadBackendClient {
   private state: CadSessionState | undefined;
   private listeners = new Set<(event: CadBridgeEvent) => void>();
 
@@ -265,7 +265,7 @@ class MockCadBackendClient implements CadBackendClient {
       id: "tauri-run-1",
       sessionId: input.sessionId,
       inputRevisionId: input.revisionId,
-      externalAgent: "mock",
+      externalAgent: "contract-test",
       status: "queued" as const,
       prompt: input.prompt,
       createdAt: now,
@@ -292,7 +292,7 @@ class MockCadBackendClient implements CadBackendClient {
   }
 
   async cancelAgentRun(): Promise<{ run: never; state: CadSessionState }> {
-    throw new Error("No cancellable run in mock.");
+    throw new Error("No cancellable run in contract fixture.");
   }
 
   async exportArtifact(): Promise<{ state: CadSessionState }> {
@@ -372,7 +372,7 @@ class MockCadBackendClient implements CadBackendClient {
   }
 
   private requireState(): CadSessionState {
-    if (!this.state) throw new Error("Mock session has not been created.");
+    if (!this.state) throw new Error("Contract session has not been created.");
     return this.state;
   }
 }

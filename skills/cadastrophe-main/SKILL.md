@@ -26,13 +26,13 @@ Use these exact command names:
 - `cadastrophe-preview-render --session <id> --revision <id>`: render preview and return diagnostics/artifact ids.
 - `cadastrophe-artifact-export --session <id> --revision <id> --format stl`: export an artifact when explicitly needed.
 - `cadastrophe-evaluate-structural --session <id> --revision <id> --plan <file>`: run the deterministic structural anchor directly when needed.
-- `cadastrophe-finalize --session <id> --run <id> --revision <id>`: lock final artifacts, run structural anchor, and either return a failure report or a pending VLM contract.
+- `cadastrophe-finalize --session <id> --run <id> --revision <id>`: lock final artifacts, run structural anchor, render mandatory VLM image evidence, and either return a failure report or a pending VLM contract.
 - `cadastrophe-vlm-submit --session <id> --run <id> --artifact <id> --report <file>`: submit a VLM judge report and append outer-loop pass/fail history.
 
-Important top-level CLI fields include `next_action`, `nextAction`,
-`diagnostics`, `failure_report`, `failureReport`, `artifact_paths`,
-`artifactPaths`, `contract_type`, and `contractType`. Treat non-zero exit status
-and JSON error envelopes as authoritative.
+Important CLI data fields include `nextAction`, `next_action`, `diagnostics`,
+`failureReport`, `failure_report`, `artifactPaths`, `contractType`,
+`vlmContract`, `finalArtifact`, and `renderedImageArtifact`. Treat non-zero exit
+status and JSON error envelopes as authoritative.
 
 ## Required Workflow
 
@@ -46,7 +46,7 @@ and JSON error envelopes as authoritative.
 8. If runtime diagnostics contain errors, explain the cause briefly, repair the source, then repeat source apply and preview render.
 9. When preview diagnostics pass, call `cadastrophe-finalize --session <id> --run <run_id> --revision <revision_id>`.
 10. If finalization returns a structural `failure_report` or `next_action` of `outer_loop_refine_source`, do not run VLM. Use that report for a new plan/source attempt.
-11. If finalization returns a `cadastrophe.vlm_judge.v1` contract, hand that exact contract to a separate subagent using the `cadastrophe-vlm-judge` skill. Ask the subagent to return only strict JSON.
+11. If finalization returns a `cadastrophe.vlm_judge.v1` contract, verify it includes `renderedImages.available: true` and a usable rendered PNG path, then hand that exact contract to a separate subagent using the `cadastrophe-vlm-judge` skill. Ask the subagent to return only strict JSON.
 12. Save the judge JSON to a file and call `cadastrophe-vlm-submit --session <id> --run <run_id> --artifact <artifact_id> --report <file>`.
 13. If VLM submit records failure, refine from the VLM failure report and repeat from plan commit. If it passes, finish with the final revision/artifact ids.
 
@@ -93,7 +93,21 @@ finalization returns a contract with:
 
 ```json
 {
-  "contractType": "cadastrophe.vlm_judge.v1"
+  "contractType": "cadastrophe.vlm_judge.v1",
+  "artifactId": "final-stl-artifact-id",
+  "passThreshold": 0.8,
+  "artifact": {
+    "format": "stl",
+    "relativePath": "artifacts/session/revision/final.stl",
+    "sha256": "..."
+  },
+  "renderedImages": {
+    "available": true,
+    "format": "png",
+    "path": "/absolute/path/render-grid.png",
+    "viewMode": "9-view",
+    "views": ["Front-Left-Top", "Front", "Front-Right-Top", "Left", "Top", "Right", "Bottom", "Back", "Back-Right-Top"]
+  }
 }
 ```
 

@@ -1,6 +1,6 @@
 {
   "name": "cadastrophe",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "description": "Text-to-CAD Tauri desktop workspace",
@@ -14,10 +14,7 @@
     "build:cli-tools": "cargo build --manifest-path src-tauri/Cargo.toml --bins && npm run build:sidecar",
     "check": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
-    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
-    "test:cli-manual": "node scripts/manual-cli-smoke.mjs",
-    "smoke:tauri": "CADASTROPHE_TAURI_SMOKE=1 CADASTROPHE_AGENT_ADAPTER=fake tauri dev",
-    "smoke:codex": "cargo run --manifest-path src-tauri/Cargo.toml --bin codex_smoke --"
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

@@ -11,7 +11,7 @@ export type CadSessionStatus =
   | "rendering"
   | "failed";
 
-export type CadArtifactKind = "preview-mesh" | "stl" | "metadata";
+export type CadArtifactKind = "preview-mesh" | "stl" | "metadata" | "render-image";
 
 export type CadUserMessageChannel = "web-ui";
 

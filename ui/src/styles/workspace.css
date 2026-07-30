@@ -1,0 +1,99 @@
+.workspace-nav {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  overflow-x: auto;
+}
+
+.workspace-nav button {
+  flex: 0 0 auto;
+  border-color: #c8d1da;
+}
+
+.workspace-nav button.active {
+  border-color: #216a6b;
+  background: #eef7f7;
+  color: #216a6b;
+  font-weight: 700;
+}
+
+.workspace-nav-action {
+  margin-left: auto;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(420px, 1.15fr) minmax(360px, 0.95fr) minmax(280px, 340px);
+  gap: 12px;
+  align-items: start;
+}
+
+.preview-pane,
+.editor-pane,
+.side-pane {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pane-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.mesh-preview {
+  position: relative;
+  display: grid;
+  width: 100%;
+  height: clamp(380px, 56vh, 560px);
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid #c8d1da;
+  border-radius: 8px;
+  background: #f6f7f9;
+}
+
+.mesh-preview canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+  touch-action: none;
+}
+
+.mesh-preview span {
+  color: #667789;
+}
+
+.editor-pane textarea {
+  min-height: 640px;
+  padding: 12px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.panel,
+.diagnostics {
+  border: 1px solid #c8d1da;
+  border-radius: 8px;
+  padding: 12px;
+  background: #ffffff;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
