@@ -61,6 +61,8 @@ impl SessionService {
                 .or_default()
                 .push(run.clone());
             self.repository.save_agent_run(&run)?;
+            let title_updated =
+                self.maybe_update_session_title_from_text(&mut state, session_id, &run.prompt)?;
             let event = append_agent_run_event(
                 &mut state,
                 session_id,
@@ -78,6 +80,9 @@ impl SessionService {
             persist_agent_run_event(self.repository.as_ref(), &mut state, session_id, event)?;
             let session = require_session_mut(&mut state, session_id)?;
             session.updated_at = timestamp();
+            if title_updated {
+                self.persist_session_graph(&state, session_id)?;
+            }
             build_state(&state, session_id)?
         };
         let run = snapshot

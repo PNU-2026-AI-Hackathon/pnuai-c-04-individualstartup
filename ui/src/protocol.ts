@@ -11,6 +11,11 @@ export type CadSessionStatus =
   | "rendering"
   | "failed";
 
+export type CadSessionTitleSource =
+  | "agent"
+  | "user"
+  | "system";
+
 export type CadArtifactKind = "preview-mesh" | "stl" | "metadata" | "render-image";
 
 export type CadUserMessageChannel = "web-ui";
@@ -287,6 +292,7 @@ export interface CadSession {
   lastViewedAt?: string;
   connectedUiClients: number;
   title?: string;
+  titleSource: CadSessionTitleSource;
   activeRevisionId?: string;
   selectedRuntime: CadRuntimeKind;
   status: CadSessionStatus;
@@ -336,6 +342,16 @@ export interface CreateCadSessionResult {
   state: CadSessionState;
 }
 
+export interface BootCadSessionResult {
+  sessionId: string;
+  uiUrl: string;
+  state: CadSessionState;
+  isFirstRun: boolean;
+  createdSession: boolean;
+  shouldUseExampleSession: boolean;
+  shouldAutoRender: boolean;
+}
+
 export interface CurrentCadSessionResult {
   sessionId?: string;
   uiUrl?: string;
@@ -353,6 +369,7 @@ export interface CadSessionListItem {
   updatedAt: string;
   lastViewedAt?: string;
   title?: string;
+  titleSource: CadSessionTitleSource;
   activeRevisionId?: string;
   activeRevision?: CadRevisionSummary;
   selectedRuntime: CadRuntimeKind;
@@ -453,6 +470,12 @@ export interface DeleteArtifactResult {
 export interface OpenArtifactResult {
   artifact: CadArtifact;
   path: string;
+}
+
+export interface RevealArtifactResult {
+  artifact: CadArtifact;
+  path: string;
+  revealed: boolean;
 }
 
 export interface VerifyArtifactFilesResult {

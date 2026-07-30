@@ -65,7 +65,13 @@ textarea {
 }
 
 .app-shell {
+  display: grid;
+  grid-template-columns: 272px minmax(0, 1fr);
   min-height: 100vh;
+}
+
+.workspace-main {
+  min-width: 0;
   padding: 16px;
 }
 
@@ -79,7 +85,7 @@ textarea {
 
 .topbar h1 {
   margin: 0;
-  font-size: 22px;
+  font-size: 21px;
 }
 
 .topbar p {
@@ -89,7 +95,7 @@ textarea {
 }
 
 .status {
-  min-width: 128px;
+  min-width: 124px;
   border-radius: 6px;
   padding: 7px 10px;
   text-align: center;
@@ -109,6 +115,14 @@ textarea {
 
 .status-rendering {
   background: #8b5e22;
+}
+
+.status-finalized {
+  background: #25745f;
+}
+
+.status-archived {
+  background: #6b7280;
 }
 
 .runtime-state {
@@ -179,3 +193,9 @@ textarea {
   color: #a33a38;
 }
 
+.rail-menu-button {
+  display: none;
+  width: 36px;
+  min-width: 36px;
+  padding: 0;
+}

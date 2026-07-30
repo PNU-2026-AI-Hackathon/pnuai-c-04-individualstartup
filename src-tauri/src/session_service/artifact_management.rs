@@ -33,6 +33,16 @@ impl SessionService {
         })
     }
 
+    pub fn reveal_artifact(&self, artifact_id: &str) -> Result<RevealArtifactResult, String> {
+        let opened = self.open_artifact(artifact_id)?;
+        let revealed = reveal_path_in_file_manager(Path::new(&opened.path))?;
+        Ok(RevealArtifactResult {
+            artifact: opened.artifact,
+            path: opened.path,
+            revealed,
+        })
+    }
+
     pub fn delete_artifact(
         &self,
         input: DeleteArtifactInput,
@@ -424,5 +434,25 @@ impl SessionService {
             diagnostics,
             state: None,
         })
+    }
+}
+
+fn reveal_path_in_file_manager(path: &Path) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open")
+            .arg("-R")
+            .arg(path)
+            .status()
+            .map_err(|error| error.to_string())?;
+        if !status.success() {
+            return Err(format!("Failed to reveal artifact in Finder: {status}"));
+        }
+        Ok(true)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        Ok(false)
     }
 }

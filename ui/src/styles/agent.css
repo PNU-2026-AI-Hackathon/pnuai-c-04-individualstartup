@@ -2,6 +2,31 @@
   border-color: #9fb4bb;
 }
 
+.agent-debug-menu {
+  position: relative;
+  font-size: 12px;
+}
+
+.agent-debug-menu summary {
+  min-height: 28px;
+  border: 1px solid #c8d1da;
+  border-radius: 6px;
+  padding: 5px 8px;
+  background: #ffffff;
+  color: #4f5f6f;
+  cursor: pointer;
+}
+
+.agent-debug-menu button {
+  position: absolute;
+  top: 32px;
+  right: 0;
+  z-index: 5;
+  min-height: 30px;
+  justify-content: flex-start;
+  font-size: 12px;
+}
+
 .active-step {
   border-left: 3px solid #216a6b;
   padding: 8px;
@@ -180,6 +205,43 @@
   padding: 6px 8px;
   background: #fff7f6;
   color: #a33a38;
+}
+
+.agent-failure-action {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #d79a99;
+  border-left-width: 3px;
+  border-radius: 6px;
+  padding: 10px;
+  background: #fff7f6;
+  font-size: 12px;
+}
+
+.agent-failure-action div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.agent-failure-action strong,
+.agent-failure-action p,
+.agent-failure-action small {
+  overflow-wrap: anywhere;
+}
+
+.agent-failure-action p {
+  margin: 0;
+  color: #4f5f6f;
+}
+
+.agent-failure-action small {
+  color: #a33a38;
+  font-weight: 700;
+}
+
+.agent-failure-action button {
+  justify-self: start;
 }
 
 .conversation {
@@ -415,4 +477,3 @@
 a {
   color: #216a6b;
 }
-

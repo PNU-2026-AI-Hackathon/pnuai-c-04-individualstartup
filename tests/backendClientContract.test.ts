@@ -119,6 +119,27 @@ class ContractBackendClient implements CadBackendClient {
     return result;
   }
 
+  async bootSession() {
+    if (!this.state) {
+      return this.createSession({ title: "Example OpenSCAD session" }).then((result) => ({
+        ...result,
+        isFirstRun: true,
+        createdSession: true,
+        shouldUseExampleSession: true,
+        shouldAutoRender: true
+      }));
+    }
+    return {
+      sessionId: this.state.session.id,
+      uiUrl: `/sessions/${this.state.session.id}`,
+      state: this.state,
+      isFirstRun: false,
+      createdSession: false,
+      shouldUseExampleSession: false,
+      shouldAutoRender: false
+    };
+  }
+
   async getCurrentSession(): Promise<CurrentCadSessionResult> {
     return {
       sessionId: this.requireState().session.id,
@@ -153,7 +174,7 @@ class ContractBackendClient implements CadBackendClient {
     const state = this.requireState();
     this.state = {
       ...state,
-      session: { ...state.session, title: input.title }
+      session: { ...state.session, title: input.title, titleSource: "user" }
     };
     this.emit("session.updated");
     return this.state;
@@ -179,7 +200,8 @@ class ContractBackendClient implements CadBackendClient {
       session: {
         ...this.requireState().session,
         id: `${input.sessionId}-copy`,
-        title: input.title ?? "Copy"
+        title: input.title ?? "Copy",
+        titleSource: input.title ? "user" : this.requireState().session.titleSource
       }
     };
     return {
@@ -306,6 +328,14 @@ class ContractBackendClient implements CadBackendClient {
     };
   }
 
+  async revealArtifact() {
+    return {
+      artifact: this.requireState().activeRevision!.artifacts[0],
+      path: "/tmp/cadastrophe-artifact.stl",
+      revealed: false
+    };
+  }
+
   async deleteArtifact(input: { sessionId: string; artifactId: string }) {
     const state = this.requireState();
     this.state = {
@@ -396,6 +426,7 @@ function sampleState(title: string): CadSessionState {
       updatedAt: now,
       connectedUiClients: 0,
       title,
+      titleSource: "user",
       activeRevisionId: "revision-1",
       selectedRuntime: "openscad-wasm",
       status: "idle",
@@ -497,6 +528,7 @@ function sessionListItem(state: CadSessionState): CadSessionListItem {
     updatedAt: state.session.updatedAt,
     lastViewedAt: state.session.lastViewedAt,
     title: state.session.title,
+    titleSource: state.session.titleSource,
     activeRevisionId: state.session.activeRevisionId,
     activeRevision,
     selectedRuntime: state.session.selectedRuntime,

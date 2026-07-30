@@ -29,6 +29,65 @@ pub(super) fn json_to_parameter_value(value: Value) -> CadParameterValue {
     }
 }
 
+pub(super) fn propose_session_title(text: &str) -> Option<String> {
+    let mut words = Vec::new();
+    for raw_word in text.split(|character: char| !character.is_ascii_alphanumeric()) {
+        let word = raw_word.trim().to_ascii_lowercase();
+        if word.len() < 3 || TITLE_STOP_WORDS.contains(&word.as_str()) {
+            continue;
+        }
+        if words.iter().any(|existing| existing == &word) {
+            continue;
+        }
+        words.push(word);
+        if words.len() == 4 {
+            break;
+        }
+    }
+    if words.is_empty() {
+        return None;
+    }
+    Some(
+        words
+            .into_iter()
+            .map(|word| {
+                let mut characters = word.chars();
+                match characters.next() {
+                    Some(first) => {
+                        let mut titled = first.to_ascii_uppercase().to_string();
+                        titled.push_str(characters.as_str());
+                        titled
+                    }
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+const TITLE_STOP_WORDS: &[&str] = &[
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "into",
+    "cad",
+    "model",
+    "make",
+    "create",
+    "build",
+    "design",
+    "generate",
+    "please",
+    "using",
+    "parametric",
+    "openscad",
+];
+
 pub(super) fn uuid() -> String {
     Uuid::new_v4().to_string()
 }

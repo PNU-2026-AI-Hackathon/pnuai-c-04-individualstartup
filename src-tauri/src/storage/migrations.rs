@@ -2,7 +2,7 @@ use super::StorageResult;
 use rusqlite::{params, Connection};
 
 #[cfg(test)]
-pub(super) const SCHEMA_VERSION: i64 = 2;
+pub(super) const SCHEMA_VERSION: i64 = 3;
 
 pub fn run_migrations(connection: &mut Connection) -> StorageResult<()> {
     connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -209,6 +209,20 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         ON workflow_outer_iterations(revision_id);
       CREATE INDEX idx_workflow_pending_vlm_artifact
         ON workflow_pending_vlm(artifact_id);
+    "#,
+    },
+    Migration {
+        version: 3,
+        name: "milestone_4_0_first_run_and_title_source",
+        sql: r#"
+      ALTER TABLE sessions
+        ADD COLUMN title_source TEXT NOT NULL DEFAULT 'system';
+
+      CREATE TABLE app_kv (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
     "#,
     },
 ];

@@ -57,8 +57,16 @@ impl SessionService {
                 .push(conversation_message.clone());
             self.repository
                 .save_conversation_message(&conversation_message)?;
+            let title_updated = self.maybe_update_session_title_from_text(
+                &mut state,
+                &input.session_id,
+                &input.message,
+            )?;
             let session = require_session_mut(&mut state, &input.session_id)?;
             session.updated_at = created_at;
+            if title_updated {
+                self.persist_session_graph(&state, &input.session_id)?;
+            }
             build_state(&state, &input.session_id)?
         };
         let message = snapshot
@@ -104,6 +112,11 @@ impl SessionService {
                 .or_default()
                 .push(message.clone());
             self.repository.save_conversation_message(&message)?;
+            let title_updated = if message.role == CadConversationRole::User {
+                self.maybe_update_session_title_from_text(&mut state, session_id, &message.content)?
+            } else {
+                false
+            };
             if let Some(run_id) = &message.run_id {
                 if matches!(
                     message.role,
@@ -131,6 +144,9 @@ impl SessionService {
                         event,
                     )?;
                 }
+            }
+            if title_updated {
+                self.persist_session_graph(&state, session_id)?;
             }
             build_state(&state, session_id)?
         };

@@ -1,4 +1,4 @@
-import { RefreshCcw, Send, X } from "lucide-react";
+import { RefreshCcw, ScrollText, Send, X } from "lucide-react";
 import type {
   CadAgentRun,
   CadAgentRunEvent,
@@ -8,6 +8,9 @@ import type {
 import {
   AgentRunProgressDetails,
   WorkflowRunSummary,
+  failureSummary,
+  failureTitle,
+  formatPayload,
   workflowRunView
 } from "./AgentWorkflow";
 
@@ -24,6 +27,7 @@ export function AgentWorkspace(props: {
   onStartRun: () => void;
   onRetryRun: (run: CadAgentRun) => void;
   onCancelRun: (runId: string) => void;
+  onOpenFullHistory: () => void;
 }) {
   const latestRun = props.runs.at(-1);
   const conversation = buildAgentConversation(props.conversation);
@@ -40,6 +44,12 @@ export function AgentWorkspace(props: {
     <section className="panel agent-workspace">
       <div className="panel-heading">
         <h2>Codex Agent</h2>
+        <details className="agent-debug-menu">
+          <summary>Debug</summary>
+          <button onClick={props.onOpenFullHistory} title="Open full session history">
+            <ScrollText size={15} /> Full history
+          </button>
+        </details>
       </div>
       {props.activeRun?.activeStep ? (
         <div className="active-step" data-testid="active-step">
@@ -48,6 +58,17 @@ export function AgentWorkspace(props: {
       ) : null}
       {latestRun && latestWorkflow ? (
         <WorkflowRunSummary run={latestRun} view={latestWorkflow} compact />
+      ) : null}
+      {latestRun && latestWorkflow?.latestFailure ? (
+        <AgentFailureAction
+          run={latestRun}
+          failure={latestWorkflow.latestFailure}
+          nextAction={latestWorkflow.latestNextAction}
+          busy={props.busy}
+          readOnly={props.readOnly}
+          activeRun={props.activeRun}
+          onRetryRun={props.onRetryRun}
+        />
       ) : null}
       {latestRun && latestWorkflow ? (
         <AgentRunProgressDetails run={latestRun} events={latestRunEvents} view={latestWorkflow} />
@@ -88,7 +109,7 @@ export function AgentWorkspace(props: {
           <X size={16} /> Cancel
         </button>
       </div>
-      {latestRun?.status === "failed" || latestRun?.status === "cancelled" ? (
+      {(latestRun?.status === "failed" || latestRun?.status === "cancelled") && !latestWorkflow?.latestFailure ? (
         <button
           data-testid="retry-agent-run"
           onClick={() => props.onRetryRun(latestRun)}
@@ -98,6 +119,47 @@ export function AgentWorkspace(props: {
           <RefreshCcw size={16} /> Retry
         </button>
       ) : null}
+    </section>
+  );
+}
+
+function AgentFailureAction({
+  run,
+  failure,
+  nextAction,
+  busy,
+  readOnly,
+  activeRun,
+  onRetryRun
+}: {
+  run: CadAgentRun;
+  failure: Record<string, unknown>;
+  nextAction?: string;
+  busy: boolean;
+  readOnly: boolean;
+  activeRun?: CadAgentRun;
+  onRetryRun: (run: CadAgentRun) => void;
+}) {
+  return (
+    <section className="agent-failure-action" data-testid="agent-failure-action">
+      <div>
+        <strong>{failureTitle(failure)}</strong>
+        <p>{failureSummary(failure)}</p>
+        <small>Next action: {nextAction ? nextAction.replaceAll("_", " ") : "revise source and rerun"}</small>
+      </div>
+      {run.status === "failed" || run.status === "cancelled" ? (
+        <button
+          onClick={() => onRetryRun(run)}
+          disabled={busy || readOnly || Boolean(activeRun)}
+          title="Retry the failed agent run"
+        >
+          <RefreshCcw size={16} /> Retry
+        </button>
+      ) : null}
+      <details className="advanced-disclosure">
+        <summary>Advanced failure payload</summary>
+        <code>{formatPayload(failure)}</code>
+      </details>
     </section>
   );
 }

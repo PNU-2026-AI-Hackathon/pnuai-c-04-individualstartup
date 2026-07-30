@@ -39,6 +39,7 @@ fn sqlite_repository_restores_current_session_and_session_index() {
     );
     let state = current.state.expect("current session state");
     assert_eq!(state.session.title.as_deref(), Some("Persisted title"));
+    assert_eq!(state.session.title_source, CadSessionTitleSource::User);
     assert_eq!(
         state
             .active_revision
@@ -47,6 +48,112 @@ fn sqlite_repository_restores_current_session_and_session_index() {
         Some(DEFAULT_SAMPLE_SOURCE)
     );
     assert_eq!(reloaded.list_sessions(false).unwrap().len(), 1);
+}
+
+#[test]
+fn first_run_boot_creates_example_once_and_persists_completion() {
+    let app_data_dir =
+        std::env::temp_dir().join(format!("cadastrophe-first-run-test-{}", uuid()));
+    let layout = StorageLayout::from_app_data_dir(app_data_dir);
+    storage::initialize_storage(&layout).unwrap();
+
+    let service = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout.clone())),
+    )
+    .unwrap();
+    let first = service.boot_session().unwrap();
+
+    assert!(first.is_first_run);
+    assert!(first.created_session);
+    assert!(first.should_use_example_session);
+    assert!(first.should_auto_render);
+    assert_eq!(
+        first
+            .state
+            .active_revision
+            .as_ref()
+            .map(|revision| revision.source.as_str()),
+        Some(DEFAULT_SAMPLE_SOURCE)
+    );
+    assert_eq!(first.state.session.title_source, CadSessionTitleSource::System);
+
+    let second = service.boot_session().unwrap();
+    assert!(!second.is_first_run);
+    assert!(!second.created_session);
+    assert_eq!(second.session_id, first.session_id);
+
+    let reloaded = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout)),
+    )
+    .unwrap();
+    let after_reload = reloaded.boot_session().unwrap();
+    assert!(!after_reload.is_first_run);
+    assert!(!after_reload.created_session);
+    assert_eq!(after_reload.session_id, first.session_id);
+    assert_eq!(reloaded.list_sessions(false).unwrap().len(), 1);
+}
+
+#[test]
+fn generated_title_updates_from_prompt_until_user_rename() {
+    let app_data_dir =
+        std::env::temp_dir().join(format!("cadastrophe-title-source-test-{}", uuid()));
+    let layout = StorageLayout::from_app_data_dir(app_data_dir);
+    storage::initialize_storage(&layout).unwrap();
+
+    let service = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout.clone())),
+    )
+    .unwrap();
+    let created = service.create_session(CreateCadSessionInput::default()).unwrap();
+
+    let (_, prompted) = service
+        .create_agent_run(
+            &created.session_id,
+            "Create a slotted fixture plate with rounded corners".to_string(),
+            created.state.session.active_revision_id.clone(),
+            Some("test".to_string()),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        prompted.session.title.as_deref(),
+        Some("Slotted Fixture Plate Rounded")
+    );
+    assert_eq!(prompted.session.title_source, CadSessionTitleSource::Agent);
+
+    let renamed = service
+        .rename_session(RenameCadSessionInput {
+            session_id: created.session_id.clone(),
+            title: "My saved name".to_string(),
+        })
+        .unwrap();
+    assert_eq!(renamed.session.title_source, CadSessionTitleSource::User);
+
+    service
+        .create_agent_run(
+            &created.session_id,
+            "Create a different hinge bracket".to_string(),
+            prompted.session.active_revision_id.clone(),
+            Some("test".to_string()),
+            None,
+        )
+        .unwrap();
+
+    let reloaded = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout)),
+    )
+    .unwrap();
+    let state = reloaded.get_session_state(&created.session_id).unwrap();
+    assert_eq!(state.session.title.as_deref(), Some("My saved name"));
+    assert_eq!(state.session.title_source, CadSessionTitleSource::User);
+    assert_eq!(
+        reloaded.list_sessions(false).unwrap()[0].title_source,
+        CadSessionTitleSource::User
+    );
 }
 
 #[test]

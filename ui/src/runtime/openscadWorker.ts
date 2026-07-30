@@ -1,26 +1,38 @@
 import { createOpenSCAD, type OpenSCAD } from "openscad-wasm";
 import { parseStlToMesh } from "./stl";
 import type { CadDiagnostic, CadDiagnostics, CadMesh, CadParameter } from "../protocol";
+import {
+  applyParameterValuesToSource,
+  parameterHashInput,
+  ParameterDraftError
+} from "./parameterDraft";
 
 type RenderRequest = {
   type: "render";
   token: number;
+  sessionId: string;
+  revisionId: string;
   source: string;
   parameters: CadParameter[];
+  sourceHash: string;
+  parameterHash: string;
 };
 
 type CancelRequest = {
   type: "cancel";
   token: number;
+  sessionId?: string;
 };
 
 type WorkerRequest = RenderRequest | CancelRequest;
 
 export type OpenscadWorkerResponse =
-  | { type: "initialized"; token: number }
+  | { type: "initialized"; token: number; sessionId: string; revisionId: string }
   | {
       type: "rendered";
       token: number;
+      sessionId: string;
+      revisionId: string;
       diagnostics: CadDiagnostics;
       mesh: CadMesh;
       stlBytes: Uint8Array;
@@ -28,10 +40,12 @@ export type OpenscadWorkerResponse =
       parameterHash: string;
       stlSha256: string;
     }
-  | { type: "failed"; token: number; diagnostics: CadDiagnostics };
+  | { type: "failed"; token: number; sessionId: string; revisionId: string; diagnostics: CadDiagnostics };
 
 let modulePromise: Promise<OpenSCAD> | undefined;
 let activeToken = 0;
+const moduleStdout: string[] = [];
+const moduleStderr: string[] = [];
 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const message = event.data;
@@ -42,50 +56,123 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
     postMessage({
       type: "failed",
       token: message.token,
-      diagnostics: diagnostics(false, 0, [
-        {
-          severity: "error",
-          message: error instanceof Error ? error.message : String(error)
-        }
-      ])
+      sessionId: message.sessionId,
+      revisionId: message.revisionId,
+      diagnostics: failureDiagnostics({
+        origin: "worker-throw",
+        message,
+        code: errorCode(error),
+        detail: errorMessage(error),
+        elapsedMs: 0
+      })
     } satisfies OpenscadWorkerResponse);
   });
 };
 
 async function render(message: RenderRequest) {
   const startedAt = performance.now();
-  const stdout: string[] = [];
-  const stderr: string[] = [];
-  const openscad = await getModule(stdout, stderr);
-  if (message.token !== activeToken) return;
-  postMessage({ type: "initialized", token: message.token } satisfies OpenscadWorkerResponse);
-
-  const inputPath = `/cadastrophe-${message.token}.scad`;
-  const outputPath = `/cadastrophe-${message.token}.stl`;
+  clearModuleOutput();
+  let appliedSource: string;
+  let sourceHash: string;
+  let parameterHash: string;
   try {
-    openscad.FS.writeFile(inputPath, applyParameters(message.source, message.parameters));
+    appliedSource = applyParameterValuesToSource(message.source, message.parameters);
+    sourceHash = await sha256Hex(appliedSource);
+    parameterHash = await sha256Hex(parameterHashInput(message.parameters));
+  } catch (error) {
+    postFailure(message, failureDiagnostics({
+      origin: error instanceof ParameterDraftError ? "parameter-draft" : "worker-throw",
+      message,
+      code: errorCode(error),
+      detail: errorMessage(error),
+      elapsedMs: elapsed(startedAt)
+    }));
+    return;
+  }
+  if (sourceHash !== message.sourceHash || parameterHash !== message.parameterHash) {
+    postFailure(message, failureDiagnostics({
+      origin: "stale-render",
+      message,
+      code: "render-identity-mismatch",
+      detail: "OpenSCAD render identity changed before worker execution.",
+      elapsedMs: elapsed(startedAt),
+      actualSourceHash: sourceHash,
+      actualParameterHash: parameterHash
+    }));
+    return;
+  }
+
+  let openscad: OpenSCAD;
+  try {
+    openscad = await getModule();
+  } catch (error) {
+    postFailure(message, failureDiagnostics({
+      origin: "worker-throw",
+      message,
+      code: errorCode(error),
+      detail: errorMessage(error),
+      elapsedMs: elapsed(startedAt)
+    }));
+    return;
+  }
+  if (message.token !== activeToken) return;
+  postMessage({
+    type: "initialized",
+    token: message.token,
+    sessionId: message.sessionId,
+    revisionId: message.revisionId
+  } satisfies OpenscadWorkerResponse);
+
+  const namespace = requestNamespace(message);
+  const inputPath = `/cadastrophe-${namespace}.scad`;
+  const outputPath = `/cadastrophe-${namespace}.stl`;
+  try {
+    openscad.FS.writeFile(inputPath, appliedSource);
     const exitCode = openscad.callMain([inputPath, "--enable=manifold", "-o", outputPath]);
     if (message.token !== activeToken) return;
+    const stdout = drainModuleOutput(moduleStdout);
+    const stderr = drainModuleOutput(moduleStderr);
     if (exitCode !== 0) {
       postMessage({
         type: "failed",
         token: message.token,
-        diagnostics: diagnostics(false, elapsed(startedAt), [
-          ...diagnosticsFromLines("info", stdout),
-          ...diagnosticsFromLines("error", stderr),
-          { severity: "error", message: `OpenSCAD exited with status ${exitCode}.` }
-        ])
+        sessionId: message.sessionId,
+        revisionId: message.revisionId,
+        diagnostics: failureDiagnostics({
+          origin: "openscad-stderr",
+          message,
+          code: `openscad-exit-${exitCode}`,
+          detail: stderr.find((line) => line.trim()) ?? `OpenSCAD exited with status ${exitCode}.`,
+          elapsedMs: elapsed(startedAt),
+          items: [
+            ...diagnosticsFromLines("info", stdout),
+            ...diagnosticsFromLines("error", stderr)
+          ]
+        })
       } satisfies OpenscadWorkerResponse);
       return;
     }
-    const stlBytes = openscad.FS.readFile(outputPath, { encoding: "binary" });
-    const mesh = parseStlToMesh(stlBytes);
-    const sourceHash = await sha256Hex(message.source);
-    const parameterHash = await sha256Hex(JSON.stringify(parameterValues(message.parameters)));
+    let stlBytes: Uint8Array;
+    let mesh: CadMesh;
+    try {
+      stlBytes = openscad.FS.readFile(outputPath, { encoding: "binary" });
+      mesh = parseStlToMesh(stlBytes);
+    } catch (error) {
+      postFailure(message, failureDiagnostics({
+        origin: "stl-parse",
+        message,
+        code: errorCode(error),
+        detail: errorMessage(error),
+        elapsedMs: elapsed(startedAt)
+      }));
+      return;
+    }
     const stlSha256 = await sha256Hex(stlBytes);
     postMessage({
       type: "rendered",
       token: message.token,
+      sessionId: message.sessionId,
+      revisionId: message.revisionId,
       diagnostics: diagnostics(true, elapsed(startedAt), [
         ...diagnosticsFromLines("info", stdout),
         ...diagnosticsFromLines("warning", stderr)
@@ -102,37 +189,26 @@ async function render(message: RenderRequest) {
   }
 }
 
-function getModule(stdout: string[], stderr: string[]) {
+function getModule() {
   if (!modulePromise) {
     modulePromise = createOpenSCAD({
       noInitialRun: true,
-      print: (text) => stdout.push(text),
-      printErr: (text) => stderr.push(text)
+      print: (text) => moduleStdout.push(text),
+      printErr: (text) => moduleStderr.push(text)
     }).then((instance) => instance.getInstance());
   }
   return modulePromise;
 }
 
-function applyParameters(source: string, parameters: CadParameter[]) {
-  if (parameters.length === 0) return source;
-  const values = new Map(parameters.map((parameter) => [parameter.name, scadLiteral(parameter.value)]));
-  return source
-    .split(/\r?\n/)
-    .map((line) => {
-      const match = /^(\s*([A-Za-z_]\w*)\s*=\s*)([^;]*)(;.*\/\/\s*@param\b.*)$/.exec(line);
-      if (!match || !values.has(match[2])) return line;
-      return `${match[1]}${values.get(match[2])}${match[4]}`;
-    })
-    .join("\n");
+function clearModuleOutput() {
+  moduleStdout.length = 0;
+  moduleStderr.length = 0;
 }
 
-function scadLiteral(value: CadParameter["value"]) {
-  if (typeof value === "string") return JSON.stringify(value);
-  return String(value);
-}
-
-function parameterValues(parameters: CadParameter[]) {
-  return Object.fromEntries(parameters.map((parameter) => [parameter.name, parameter.value]).sort());
+function drainModuleOutput(lines: string[]) {
+  const output = [...lines];
+  lines.length = 0;
+  return output;
 }
 
 function diagnostics(ok: boolean, elapsedMs: number, items: CadDiagnostic[]): CadDiagnostics {
@@ -148,6 +224,87 @@ function diagnosticsFromLines(severity: CadDiagnostic["severity"], lines: string
 
 function elapsed(startedAt: number) {
   return Math.max(0, Math.round(performance.now() - startedAt));
+}
+
+function requestNamespace(message: RenderRequest) {
+  return [
+    message.sessionId,
+    message.revisionId,
+    message.sourceHash.slice(0, 16),
+    message.parameterHash.slice(0, 16),
+    String(message.token)
+  ].map((part) => part.replace(/[^A-Za-z0-9_.-]/g, "_")).join("-");
+}
+
+type FailureOrigin = "openscad-stderr" | "worker-throw" | "stl-parse" | "parameter-draft" | "stale-render";
+
+function postFailure(message: RenderRequest, diagnostics: CadDiagnostics): void {
+  if (message.token !== activeToken) return;
+  postMessage({
+    type: "failed",
+    token: message.token,
+    sessionId: message.sessionId,
+    revisionId: message.revisionId,
+    diagnostics
+  } satisfies OpenscadWorkerResponse);
+}
+
+function failureDiagnostics(input: {
+  origin: FailureOrigin;
+  message: RenderRequest;
+  code?: string | number;
+  detail: string;
+  elapsedMs: number;
+  items?: CadDiagnostic[];
+  actualSourceHash?: string;
+  actualParameterHash?: string;
+}): CadDiagnostics {
+  return diagnostics(false, input.elapsedMs, [
+    ...(input.items ?? []),
+    {
+      severity: "error",
+      message: renderFailureMessage(input)
+    }
+  ]);
+}
+
+function renderFailureMessage(input: {
+  origin: FailureOrigin;
+  message: RenderRequest;
+  code?: string | number;
+  detail: string;
+  actualSourceHash?: string;
+  actualParameterHash?: string;
+}): string {
+  const parts = [
+    `origin=${input.origin}`,
+    `code=${input.code ?? "unknown"}`,
+    `message=${JSON.stringify(input.detail)}`,
+    `session=${input.message.sessionId}`,
+    `revision=${input.message.revisionId}`,
+    `sourceHash=${input.message.sourceHash}`,
+    `parameterHash=${input.message.parameterHash}`
+  ];
+  if (input.actualSourceHash) parts.push(`actualSourceHash=${input.actualSourceHash}`);
+  if (input.actualParameterHash) parts.push(`actualParameterHash=${input.actualParameterHash}`);
+  return `Render failure diagnostics: ${parts.join(" ")}`;
+}
+
+function errorCode(error: unknown): string | number | undefined {
+  if (error instanceof ParameterDraftError) return error.code;
+  if (typeof error === "object" && error && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "string" || typeof code === "number") return code;
+  }
+  return extractNumericErrorCode(errorMessage(error));
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function extractNumericErrorCode(message: string): string | undefined {
+  return /(?:error|code)[:\s]+(\d+)/i.exec(message)?.[1];
 }
 
 async function sha256Hex(input: string | Uint8Array) {

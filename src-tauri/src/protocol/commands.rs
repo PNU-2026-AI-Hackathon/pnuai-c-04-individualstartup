@@ -17,6 +17,18 @@ pub struct CreateCadSessionResult {
     pub state: CadSessionState,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BootCadSessionResult {
+    pub session_id: String,
+    pub ui_url: String,
+    pub state: CadSessionState,
+    pub is_first_run: bool,
+    pub created_session: bool,
+    pub should_use_example_session: bool,
+    pub should_auto_render: bool,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CurrentCadSessionResult {
@@ -47,6 +59,7 @@ pub struct CadSessionListItem {
     pub last_viewed_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    pub title_source: CadSessionTitleSource,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_revision_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -222,6 +235,14 @@ pub struct DeleteArtifactResult {
 pub struct OpenArtifactResult {
     pub artifact: CadArtifact,
     pub path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RevealArtifactResult {
+    pub artifact: CadArtifact,
+    pub path: String,
+    pub revealed: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]

@@ -71,6 +71,24 @@ pub(super) fn load_current_session_id(
         .map_err(|error| error.to_string())
 }
 
+pub(super) fn load_app_kv_bool(
+    connection: &Connection,
+    key: &str,
+) -> SessionRepositoryResult<bool> {
+    let value_json: Option<String> = connection
+        .query_row(
+            "SELECT value_json FROM app_kv WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some(value_json) = value_json else {
+        return Ok(false);
+    };
+    Ok(serde_json::from_str::<bool>(&value_json).unwrap_or(false))
+}
+
 pub(super) fn rebuild_loaded_revision_summaries(
     sessions: &mut HashMap<String, CadSession>,
     revisions: &HashMap<String, CadRevision>,
@@ -176,6 +194,10 @@ pub(super) fn recover_source_language(value: &str) -> (CadSourceLanguage, Option
             }),
         ),
     }
+}
+
+pub(super) fn recover_title_source(value: &str) -> Option<CadSessionTitleSource> {
+    from_db_text(value).ok()
 }
 
 pub(super) fn recover_diagnostics(value: &str) -> CadDiagnostics {

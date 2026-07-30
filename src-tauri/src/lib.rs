@@ -45,6 +45,11 @@ fn get_current_session(state: State<'_, AppState>) -> Result<CurrentCadSessionRe
 }
 
 #[tauri::command]
+fn boot_session(state: State<'_, AppState>) -> Result<BootCadSessionResult, String> {
+    state.service.boot_session()
+}
+
+#[tauri::command]
 fn get_session_state(
     session_id: String,
     state: State<'_, AppState>,
@@ -223,6 +228,14 @@ fn open_artifact(
 }
 
 #[tauri::command]
+fn reveal_artifact(
+    artifact_id: String,
+    state: State<'_, AppState>,
+) -> Result<RevealArtifactResult, String> {
+    state.service.reveal_artifact(&artifact_id)
+}
+
+#[tauri::command]
 fn delete_artifact(
     input: DeleteArtifactInput,
     state: State<'_, AppState>,
@@ -277,6 +290,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             create_session,
             get_current_session,
+            boot_session,
             get_session_state,
             mark_session_viewed,
             list_sessions,
@@ -298,6 +312,7 @@ pub fn run() {
             export_artifact,
             read_artifact,
             open_artifact,
+            reveal_artifact,
             delete_artifact,
             verify_artifact_files,
             cleanup_orphan_artifacts

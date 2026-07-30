@@ -36,7 +36,8 @@ use runtime_render::*;
 use state_view::*;
 pub use support::metadata_from_value;
 use support::{
-    json_to_parameter_value, lock_error, source_hash, timestamp, uuid, verify_diagnostic,
+    json_to_parameter_value, lock_error, propose_session_title, source_hash, timestamp, uuid,
+    verify_diagnostic,
 };
 
 #[derive(Default)]
@@ -52,6 +53,7 @@ pub(crate) struct ServiceState {
     pub(crate) workflow_outer_iterations: HashMap<String, Vec<CadWorkflowOuterIteration>>,
     pub(crate) workflow_pending_vlm: HashMap<String, CadWorkflowPendingVlm>,
     pub(crate) current_interactive_session_id: Option<String>,
+    pub(crate) has_completed_first_run: bool,
 }
 
 impl From<SessionRepositorySnapshot> for ServiceState {
@@ -63,6 +65,7 @@ impl From<SessionRepositorySnapshot> for ServiceState {
         let workflow_plans = snapshot.workflow_plans;
         let workflow_outer_iterations = snapshot.workflow_outer_iterations;
         let workflow_pending_vlm = snapshot.workflow_pending_vlm;
+        let has_completed_first_run = snapshot.has_completed_first_run;
         for session_id in snapshot.sessions.keys() {
             messages.insert(session_id.clone(), Vec::new());
             conversation.insert(
@@ -102,6 +105,7 @@ impl From<SessionRepositorySnapshot> for ServiceState {
             workflow_outer_iterations,
             workflow_pending_vlm,
             current_interactive_session_id: snapshot.current_interactive_session_id,
+            has_completed_first_run,
         }
     }
 }

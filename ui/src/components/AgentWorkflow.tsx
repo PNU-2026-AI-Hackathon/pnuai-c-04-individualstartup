@@ -234,7 +234,7 @@ function hasCompletedCommand(events: CadAgentRunEvent[], command: string): boole
   });
 }
 
-function failureTitle(report: Record<string, unknown>): string {
+export function failureTitle(report: Record<string, unknown>): string {
   const reason = failureReason(report);
   return reason.includes("vlm") ? "VLM failure report" : "Structural failure report";
 }
@@ -243,7 +243,7 @@ function failureReason(report: Record<string, unknown>): string {
   return stringField(report, "reason") ?? stringField(report, "code") ?? "";
 }
 
-function failureSummary(report: Record<string, unknown>): string {
+export function failureSummary(report: Record<string, unknown>): string {
   return stringField(report, "summary")
     ?? stringField(report, "message")
     ?? stringField(report, "reason")

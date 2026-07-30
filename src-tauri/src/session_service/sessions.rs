@@ -5,6 +5,23 @@ impl SessionService {
         &self,
         input: CreateCadSessionInput,
     ) -> Result<CreateCadSessionResult, String> {
+        let title_source = if input
+            .title
+            .as_deref()
+            .is_some_and(|title| !title.trim().is_empty())
+        {
+            CadSessionTitleSource::User
+        } else {
+            CadSessionTitleSource::System
+        };
+        self.create_session_with_title_source(input, title_source)
+    }
+
+    fn create_session_with_title_source(
+        &self,
+        input: CreateCadSessionInput,
+        title_source: CadSessionTitleSource,
+    ) -> Result<CreateCadSessionResult, String> {
         let now = timestamp();
         let session_id = uuid();
         let session = CadSession {
@@ -18,6 +35,7 @@ impl SessionService {
                     .title
                     .unwrap_or_else(|| "Untitled CAD session".to_string()),
             ),
+            title_source,
             active_revision_id: None,
             selected_runtime: input
                 .selected_runtime
@@ -56,6 +74,74 @@ impl SessionService {
             ui_url: format!("/sessions/{session_id}"),
             state,
         })
+    }
+
+    pub fn boot_session(&self) -> Result<BootCadSessionResult, String> {
+        let (has_completed_first_run, current_session_id) = {
+            let state = self.inner.lock().map_err(lock_error)?;
+            (
+                state.has_completed_first_run,
+                state.current_interactive_session_id.clone(),
+            )
+        };
+        if !has_completed_first_run {
+            let created = self.create_session_with_title_source(
+                CreateCadSessionInput {
+                    title: Some("Example OpenSCAD session".to_string()),
+                    selected_runtime: Some(CadRuntimeKind::OpenscadWasm),
+                },
+                CadSessionTitleSource::System,
+            )?;
+            self.mark_session_viewed(&created.session_id)?;
+            self.mark_first_run_completed()?;
+            let state = self.get_session_state(&created.session_id)?;
+            return Ok(BootCadSessionResult {
+                session_id: created.session_id.clone(),
+                ui_url: format!("/sessions/{}", created.session_id),
+                state,
+                is_first_run: true,
+                created_session: true,
+                should_use_example_session: true,
+                should_auto_render: true,
+            });
+        }
+
+        if let Some(session_id) = current_session_id {
+            return Ok(BootCadSessionResult {
+                ui_url: format!("/sessions/{session_id}"),
+                state: self.get_session_state(&session_id)?,
+                session_id,
+                is_first_run: false,
+                created_session: false,
+                should_use_example_session: false,
+                should_auto_render: false,
+            });
+        }
+
+        let created = self.create_session(CreateCadSessionInput::default())?;
+        self.mark_session_viewed(&created.session_id)?;
+        let state = self.get_session_state(&created.session_id)?;
+        Ok(BootCadSessionResult {
+            session_id: created.session_id.clone(),
+            ui_url: format!("/sessions/{}", created.session_id),
+            state,
+            is_first_run: false,
+            created_session: true,
+            should_use_example_session: false,
+            should_auto_render: false,
+        })
+    }
+
+    fn mark_first_run_completed(&self) -> Result<(), String> {
+        {
+            let mut state = self.inner.lock().map_err(lock_error)?;
+            if state.has_completed_first_run {
+                return Ok(());
+            }
+            state.has_completed_first_run = true;
+        }
+        self.repository
+            .set_app_kv_json("hasCompletedFirstRun", &Value::Bool(true))
     }
 
     pub fn get_current_session(&self) -> Result<CurrentCadSessionResult, String> {
@@ -132,6 +218,7 @@ impl SessionService {
             let mut state = self.inner.lock().map_err(lock_error)?;
             let session = require_session_mut(&mut state, &input.session_id)?;
             session.title = Some(input.title.trim().to_string());
+            session.title_source = CadSessionTitleSource::User;
             session.updated_at = timestamp();
             rebuild_revision_summaries(&mut state, &input.session_id);
             self.persist_session_graph(&state, &input.session_id)?;
@@ -240,7 +327,16 @@ impl SessionService {
                 .as_ref()
                 .and_then(|revision_id| state.revisions.get(revision_id))
                 .cloned();
-            let title = input.title.or_else(|| {
+            let provided_title = input.title;
+            let title_source = if provided_title
+                .as_deref()
+                .is_some_and(|title| !title.trim().is_empty())
+            {
+                CadSessionTitleSource::User
+            } else {
+                source_session.title_source.clone()
+            };
+            let title = provided_title.or_else(|| {
                 source_session
                     .title
                     .as_ref()
@@ -254,6 +350,7 @@ impl SessionService {
                 last_viewed_at: None,
                 connected_ui_clients: 0,
                 title,
+                title_source,
                 active_revision_id: active_revision_id.clone(),
                 selected_runtime: source_session.selected_runtime,
                 status: CadSessionStatus::Idle,
@@ -300,5 +397,28 @@ impl SessionService {
             ui_url: format!("/sessions/{new_session_id}"),
             state: snapshot,
         })
+    }
+
+    pub(super) fn maybe_update_session_title_from_text(
+        &self,
+        state: &mut ServiceState,
+        session_id: &str,
+        text: &str,
+    ) -> Result<bool, String> {
+        let Some(proposed_title) = propose_session_title(text) else {
+            return Ok(false);
+        };
+        let session = require_session_mut(state, session_id)?;
+        if session.title_source == CadSessionTitleSource::User {
+            return Ok(false);
+        }
+        if session.title.as_deref() == Some(proposed_title.as_str()) {
+            return Ok(false);
+        }
+        session.title = Some(proposed_title);
+        session.title_source = CadSessionTitleSource::Agent;
+        session.updated_at = timestamp();
+        rebuild_revision_summaries(state, session_id);
+        Ok(true)
     }
 }

@@ -1,4 +1,4 @@
-import { Box, Home, List, Plus, ScrollText } from "lucide-react";
+import { Box, Home, Plus } from "lucide-react";
 import type { WorkspaceView } from "../navigation";
 
 export function WorkspaceNav({
@@ -14,9 +14,7 @@ export function WorkspaceNav({
 }) {
   const items: Array<{ view: WorkspaceView; label: string; icon: typeof Home }> = [
     { view: "workspace", label: "Workspace", icon: Home },
-    { view: "sessions", label: "Sessions", icon: List },
-    { view: "artifacts", label: "Artifacts", icon: Box },
-    { view: "logs", label: "Logs", icon: ScrollText }
+    { view: "artifacts", label: "Artifacts", icon: Box }
   ];
   return (
     <nav className="workspace-nav" aria-label="Workspace navigation">

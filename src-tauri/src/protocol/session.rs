@@ -57,6 +57,7 @@ pub struct CadSession {
     pub connected_ui_clients: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    pub title_source: CadSessionTitleSource,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_revision_id: Option<String>,
     pub selected_runtime: CadRuntimeKind,

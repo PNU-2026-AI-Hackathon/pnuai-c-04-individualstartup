@@ -28,6 +28,14 @@ pub enum CadSessionStatus {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CadSessionTitleSource {
+    Agent,
+    User,
+    System,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum CadArtifactKind {
     PreviewMesh,

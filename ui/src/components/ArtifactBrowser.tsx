@@ -34,12 +34,12 @@ export function ArtifactBrowser({
   return (
     <section className="management-view artifact-browser" data-testid="artifact-browser">
       <div className="management-toolbar">
-        <h2>Artifacts</h2>
+        <h2>Export history</h2>
         <div className="button-row compact">
-          <button onClick={() => onExport("stl")} disabled={busy || readOnly} title="Export STL">
-            <Download size={16} /> STL
+          <button onClick={() => onExport("stl")} disabled={busy || readOnly} title="Re-export active revision STL">
+            <Download size={16} /> Re-export STL
           </button>
-          <button onClick={() => onExport("metadata")} disabled={busy || readOnly} title="Export metadata">
+          <button onClick={() => onExport("metadata")} disabled={busy || readOnly} title="Export active revision metadata">
             <RefreshCcw size={16} /> Metadata
           </button>
           <button onClick={onVerify} disabled={busy} title="Check artifact integrity">

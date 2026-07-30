@@ -148,6 +148,7 @@ pub(super) fn session_list_item(state: &ServiceState, session: &CadSession) -> C
         updated_at: session.updated_at.clone(),
         last_viewed_at: session.last_viewed_at.clone(),
         title: session.title.clone(),
+        title_source: session.title_source.clone(),
         active_revision_id: session.active_revision_id.clone(),
         active_revision,
         selected_runtime: session.selected_runtime.clone(),

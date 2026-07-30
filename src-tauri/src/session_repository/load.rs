@@ -7,7 +7,7 @@ pub(super) fn load_sessions(
     let mut statement = connection
         .prepare(
             r#"
-            SELECT id, title, selected_runtime, status, active_revision_id,
+            SELECT id, title, title_source, selected_runtime, status, active_revision_id,
                    created_at, updated_at, last_viewed_at, connected_ui_clients,
                    archived_at, deleted_at
             FROM sessions
@@ -18,22 +18,26 @@ pub(super) fn load_sessions(
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map([], |row| {
-            let selected_runtime: String = row.get(2)?;
-            let status: String = row.get(3)?;
+            let title_source: String = row.get(2)?;
+            let selected_runtime: String = row.get(3)?;
+            let status: String = row.get(4)?;
             let (selected_runtime, runtime_diagnostic) = recover_runtime_kind(&selected_runtime);
+            let title_source =
+                recover_title_source(&title_source).unwrap_or(CadSessionTitleSource::System);
             Ok(CadSession {
                 id: row.get(0)?,
                 title: row.get(1)?,
+                title_source,
                 selected_runtime,
                 status: from_db_text(&status).map_err(to_rusqlite_error)?,
                 recovery_diagnostics: runtime_diagnostic.into_iter().collect(),
-                active_revision_id: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                last_viewed_at: row.get(7)?,
-                connected_ui_clients: row.get::<_, i64>(8)?.max(0) as u32,
-                archived_at: row.get(9)?,
-                deleted_at: row.get(10)?,
+                active_revision_id: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+                last_viewed_at: row.get(8)?,
+                connected_ui_clients: row.get::<_, i64>(9)?.max(0) as u32,
+                archived_at: row.get(10)?,
+                deleted_at: row.get(11)?,
                 revisions: Vec::new(),
             })
         })

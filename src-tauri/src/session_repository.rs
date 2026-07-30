@@ -28,6 +28,7 @@ pub(crate) struct SessionRepositorySnapshot {
     pub workflow_outer_iterations: HashMap<String, Vec<CadWorkflowOuterIteration>>,
     pub workflow_pending_vlm: HashMap<String, CadWorkflowPendingVlm>,
     pub current_interactive_session_id: Option<String>,
+    pub has_completed_first_run: bool,
 }
 
 pub(crate) trait SessionRepository: Send + Sync {
@@ -76,6 +77,7 @@ pub(crate) trait SessionRepository: Send + Sync {
         deleted_at: &str,
     ) -> SessionRepositoryResult<()>;
     fn delete_session(&self, session_id: &str, deleted_at: &str) -> SessionRepositoryResult<()>;
+    fn set_app_kv_json(&self, key: &str, value: &Value) -> SessionRepositoryResult<()>;
 }
 
 #[cfg(test)]
@@ -169,6 +171,10 @@ impl SessionRepository for InMemorySessionRepository {
     fn delete_session(&self, _session_id: &str, _deleted_at: &str) -> SessionRepositoryResult<()> {
         Ok(())
     }
+
+    fn set_app_kv_json(&self, _key: &str, _value: &Value) -> SessionRepositoryResult<()> {
+        Ok(())
+    }
 }
 
 pub(crate) struct SqliteSessionRepository {
@@ -208,6 +214,7 @@ impl SessionRepository for SqliteSessionRepository {
             rebuild_loaded_revision_summaries(&mut sessions, &revisions, &agent_runs, &session_id);
         }
         let current_interactive_session_id = load_current_session_id(&connection)?;
+        let has_completed_first_run = load_app_kv_bool(&connection, "hasCompletedFirstRun")?;
         Ok(SessionRepositorySnapshot {
             sessions,
             revisions,
@@ -219,6 +226,7 @@ impl SessionRepository for SqliteSessionRepository {
             workflow_outer_iterations,
             workflow_pending_vlm,
             current_interactive_session_id,
+            has_completed_first_run,
         })
     }
 
@@ -239,12 +247,13 @@ impl SessionRepository for SqliteSessionRepository {
             .execute(
                 r#"
                 INSERT INTO sessions (
-                  id, title, selected_runtime, status, active_revision_id,
+                  id, title, title_source, selected_runtime, status, active_revision_id,
                   created_at, updated_at, last_viewed_at, connected_ui_clients,
                   archived_at, deleted_at, metadata_json
-                ) VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?9, ?10, NULL)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, ?10, ?11, NULL)
                 ON CONFLICT(id) DO UPDATE SET
                   title = excluded.title,
+                  title_source = excluded.title_source,
                   selected_runtime = excluded.selected_runtime,
                   status = excluded.status,
                   active_revision_id = NULL,
@@ -259,6 +268,7 @@ impl SessionRepository for SqliteSessionRepository {
                 params![
                     session.id,
                     session.title,
+                    to_db_text(&session.title_source)?,
                     to_db_text(&session.selected_runtime)?,
                     to_db_text(&session.status)?,
                     session.created_at,
@@ -431,6 +441,26 @@ impl SessionRepository for SqliteSessionRepository {
             .execute(
                 "UPDATE sessions SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2",
                 params![deleted_at, session_id],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    fn set_app_kv_json(&self, key: &str, value: &Value) -> SessionRepositoryResult<()> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                r#"
+                INSERT INTO app_kv (key, value_json, updated_at)
+                VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                ON CONFLICT(key) DO UPDATE SET
+                  value_json = excluded.value_json,
+                  updated_at = excluded.updated_at
+                "#,
+                params![
+                    key,
+                    serde_json::to_string(value).map_err(|error| error.to_string())?,
+                ],
             )
             .map_err(|error| error.to_string())?;
         Ok(())
