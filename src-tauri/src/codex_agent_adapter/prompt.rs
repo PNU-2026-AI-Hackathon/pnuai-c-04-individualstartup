@@ -57,7 +57,7 @@ User request:
 
 Required order:
 1. Inspect current state with `cadastrophe-session-state --app-data-dir {app_data_dir} --session {session_id}` when useful, especially on retries.
-2. Create a CadModelPlan JSON file under the Cadastrophe app data directory, then commit it with `cadastrophe-plan-commit --app-data-dir {app_data_dir} --session {session_id} --run {run_id} --plan <file>`.
+2. Create a CadModelPlanDraft JSON file under the Cadastrophe app data directory, then commit it with `cadastrophe-plan-commit --app-data-dir {app_data_dir} --session {session_id} --run {run_id} --plan <file>`.
 3. Do not call `cadastrophe-source-apply` or `cadastrophe-finalize` until the plan commit succeeds for this run.
 4. Write complete OpenSCAD source to a file under the Cadastrophe app data directory, then call `cadastrophe-source-apply --app-data-dir {app_data_dir} --session {session_id} --run {run_id} --source <file> --language openscad`.
 5. Source apply triggers the app-owned preview render automatically and returns runtime diagnostics. If diagnostics contain errors, explain the cause briefly, repair the source, and repeat source apply.
@@ -74,6 +74,12 @@ CLI contract reminders:
 - Preserve command outputs that include `next_action`, `nextAction`, `diagnostics`, `failure_report`, `failureReport`, `artifact_paths`, `artifactPaths`, `contract_type`, or `contractType`; these fields are shown in the UI run log.
 - A retry must inspect previous workflow failures via `cadastrophe-session-state --app-data-dir {app_data_dir} --session {session_id}` and carry the latest structural or VLM failure report into the new attempt.
 - Do not call `cadastrophe-preview-render`, `cadastrophe-artifact-export`, `cadastrophe-evaluate-structural`, or `cadastrophe-vlm-submit`; they are not part of the agent surface.
+
+Plan draft contract:
+- The plan file passed to `cadastrophe-plan-commit` must be a `CadModelPlanDraft`, not the full persisted `CadModelPlan`.
+- Include only `summary`, `mainComponent`, `supportingComponents`, and `expectedAspectRatio`.
+- `mainComponent` and each supporting component use `name`, `purpose`, and optional `requiredFeatures`.
+- Do not include `schemaVersion`, `sourceLanguage`, or `runtimeConstraints`; the app generates those system-owned fields during plan commit.
 
 OpenSCAD constraints for the current Cadastrophe openscad-wasm runtime:
 - Use OpenSCAD CSG normally, including cube, sphere, cylinder, translate, rotate, union, and difference.

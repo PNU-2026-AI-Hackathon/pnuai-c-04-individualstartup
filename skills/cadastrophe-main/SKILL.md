@@ -1,6 +1,6 @@
 ---
 name: cadastrophe-main
-description: Generate and iterate CAD model code through the Cadastrophe app-owned workflow. Use when Codex needs to turn a natural language CAD request into a CadModelPlan plus OpenSCAD source for openscad-wasm, apply source, finalize app-owned evaluation, respond to structural/VLM failure reports, or hand a rendered artifact contract to the dedicated cadastrophe-vlm-judge subagent.
+description: Generate and iterate CAD model code through the Cadastrophe app-owned workflow. Use when Codex needs to turn a natural language CAD request into a CadModelPlanDraft plus OpenSCAD source for openscad-wasm, apply source, finalize app-owned evaluation, respond to structural/VLM failure reports, or hand a rendered artifact contract to the dedicated cadastrophe-vlm-judge subagent.
 ---
 
 # Cadastrophe Main
@@ -18,7 +18,7 @@ Use these exact command names:
 
 - `cadastrophe-session-current`: inspect current session id, active revision, selected runtime, and app data path.
 - `cadastrophe-session-state --session <id>`: inspect session/revision/artifact/run/workflow state JSON.
-- `cadastrophe-plan-commit --session <id> --run <id> --plan <file>`: validate and persist a `CadModelPlan`.
+- `cadastrophe-plan-commit --session <id> --run <id> --plan <file>`: normalize a `CadModelPlanDraft` into the full persisted `CadModelPlan`, validate it, and persist it.
 - `cadastrophe-source-apply --session <id> --run <id> --source <file> --language openscad`: append a source revision linked to the run; the app renders preview/STL automatically and returns diagnostics.
 - `cadastrophe-finalize --session <id> --run <id> --revision <id>`: lock final artifacts, run structural anchor, render mandatory VLM image evidence, and either return a failure report or a pending VLM contract.
 
@@ -31,7 +31,7 @@ status and JSON error envelopes as authoritative.
 
 1. Reuse the current UI-visible session when possible. Use `cadastrophe-session-current` or the provided session id.
 2. Inspect `cadastrophe-session-state --session <id>` before retrying, and carry the latest structural or VLM `failureReport`/`failure_report` into the next attempt.
-3. Create a `CadModelPlan` JSON file and commit it with `cadastrophe-plan-commit --session <id> --run <run_id> --plan <file>`.
+3. Create a `CadModelPlanDraft` JSON file and commit it with `cadastrophe-plan-commit --session <id> --run <run_id> --plan <file>`.
 4. Do not apply source or finalize until plan commit succeeds for the same run.
 5. Generate source for the selected runtime. Current primary support is OpenSCAD through `openscad-wasm`.
 6. Call `cadastrophe-source-apply --session <id> --run <run_id> --source <file> --language openscad`.
@@ -46,15 +46,24 @@ Plan -> source apply -> app preview -> finalize -> app structural/VLM sequence.
 
 ## Plan Contract
 
-The plan file must be runtime-neutral JSON shaped as `CadModelPlan`:
+The plan file authored by the agent must be runtime-neutral JSON shaped as `CadModelPlanDraft`:
 
-- `schemaVersion`: currently `cad_model_plan.v1`.
 - `summary`: concise model intent.
 - `mainComponent`: object with `name`, `purpose`, and optional `requiredFeatures`.
 - `supportingComponents`: array of component objects.
 - `expectedAspectRatio`: `{ "x": number, "y": number, "z": number, "tolerance": number }`.
-- `sourceLanguage`: currently `openscad`.
-- `runtimeConstraints`: runtime, required/forbidden features, and optional `mainComponentAnnotation`.
+
+Do not include the full persisted `CadModelPlan` system-owned fields:
+
+- `schemaVersion`
+- `sourceLanguage`
+- `runtimeConstraints`
+
+`cadastrophe-plan-commit` generates those fields using the current app runtime policy:
+`schemaVersion: cad_model_plan.v1`, `sourceLanguage: openscad`,
+`runtimeConstraints.runtime: openscad-wasm`, policy-owned forbidden features,
+draft-derived/default required features, and `mainComponentAnnotation` generated
+from `mainComponent.name`.
 
 For OpenSCAD, include a source header matching the committed main component:
 

@@ -19,6 +19,16 @@ pub struct CadModelAspectRatio {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CadModelPlanDraft {
+    pub summary: String,
+    pub main_component: CadModelPlanComponent,
+    #[serde(default)]
+    pub supporting_components: Vec<CadModelPlanComponent>,
+    pub expected_aspect_ratio: CadModelAspectRatio,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CadModelRuntimeConstraints {
     pub runtime: CadRuntimeKind,

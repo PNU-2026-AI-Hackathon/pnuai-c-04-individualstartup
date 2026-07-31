@@ -1,7 +1,7 @@
 use super::model_commands::{plan_commit, source_apply};
 use super::workflow_commands::finalize;
 use super::*;
-use crate::protocol::CreateCadSessionInput;
+use crate::protocol::{CadModelPlan, CreateCadSessionInput};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
@@ -150,14 +150,7 @@ fn cli_workflow_persists_required_tool_event_order() {
             None,
         )
         .unwrap();
-    let plan_path = write_json_file(
-        &app_data_dir,
-        "plan.json",
-        &serde_json::from_str(include_str!(
-            "../../../fixtures/contracts/cad_model_plan.v1.json"
-        ))
-        .unwrap(),
-    );
+    let plan_path = write_json_file(&app_data_dir, "plan.json", &draft_plan_value());
     let source_path = app_data_dir.join("source.scad");
     fs::write(
         &source_path,
@@ -237,6 +230,134 @@ fn cli_workflow_persists_required_tool_event_order() {
 }
 
 #[test]
+fn plan_commit_normalizes_draft_contract_to_full_workflow_plan() {
+    let app_data_dir = temp_app_data_dir("plan-draft-normalization");
+    let service = sqlite_service(&app_data_dir);
+    let created = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let (run, _) = service
+        .create_agent_run(
+            &created.session_id,
+            "Create a wall bracket.".to_string(),
+            created.state.session.active_revision_id.clone(),
+            Some("test".to_string()),
+            None,
+        )
+        .unwrap();
+    let plan_path = write_json_file(&app_data_dir, "draft-plan.json", &draft_plan_value());
+
+    let output = plan_commit(
+        &args([
+            ("session", &created.session_id),
+            ("run", &run.id),
+            ("plan", plan_path.to_str().unwrap()),
+        ]),
+        &service,
+        &app_data_dir,
+    )
+    .unwrap();
+
+    assert_eq!(
+        output.data["plan"]["schemaVersion"].as_str(),
+        Some("cad_model_plan.v1")
+    );
+    assert_eq!(
+        output.data["plan"]["sourceLanguage"].as_str(),
+        Some("openscad")
+    );
+    assert_eq!(
+        output.data["plan"]["runtimeConstraints"]["runtime"].as_str(),
+        Some("openscad-wasm")
+    );
+    assert_eq!(
+        output.data["plan"]["runtimeConstraints"]["mainComponentAnnotation"].as_str(),
+        Some("// @main_component wall_bracket")
+    );
+    assert!(
+        output.data["plan"]["runtimeConstraints"]["forbiddenFeatures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|feature| feature.as_str() == Some("external_file_include"))
+    );
+    assert!(
+        output.data["plan"]["runtimeConstraints"]["requiredFeatures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|feature| feature.as_str() == Some("two_aligned_holes"))
+    );
+
+    let state = service.get_session_state(&created.session_id).unwrap();
+    assert_eq!(state.workflow.plans.len(), 1);
+    assert_eq!(
+        state.workflow.plans[0]
+            .plan
+            .runtime_constraints
+            .main_component_annotation
+            .as_deref(),
+        Some("// @main_component wall_bracket")
+    );
+}
+
+#[test]
+fn plan_commit_rejects_agent_authored_runtime_policy() {
+    let app_data_dir = temp_app_data_dir("plan-runtime-policy-rejection");
+    let service = sqlite_service(&app_data_dir);
+    let created = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let (run, _) = service
+        .create_agent_run(
+            &created.session_id,
+            "Create a cadquery model.".to_string(),
+            created.state.session.active_revision_id.clone(),
+            Some("test".to_string()),
+            None,
+        )
+        .unwrap();
+    let full_plan = json!({
+        "schemaVersion": "cad_model_plan.v1",
+        "summary": "Unsupported runtime policy attempt.",
+        "mainComponent": {
+            "name": "wall_bracket",
+            "purpose": "single printable bracket body"
+        },
+        "supportingComponents": [],
+        "expectedAspectRatio": {
+            "x": 3.0,
+            "y": 1.0,
+            "z": 2.0,
+            "tolerance": 0.25
+        },
+        "sourceLanguage": "cadquery",
+        "runtimeConstraints": {
+            "runtime": "cadquery-local",
+            "forbiddenFeatures": []
+        }
+    });
+    let plan_path = write_json_file(&app_data_dir, "full-plan.json", &full_plan);
+
+    let error = plan_commit(
+        &args([
+            ("session", &created.session_id),
+            ("run", &run.id),
+            ("plan", plan_path.to_str().unwrap()),
+        ]),
+        &service,
+        &app_data_dir,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "invalid_input");
+    assert!(error.message.contains("system-owned runtime policy"));
+    assert!(error.message.contains("runtimeConstraints"));
+    let state = service.get_session_state(&created.session_id).unwrap();
+    assert!(state.workflow.plans.is_empty());
+}
+
+#[test]
 fn source_apply_runtime_failure_records_source_repair_event_diagnostics() {
     let app_data_dir = temp_app_data_dir("preview-source-repair");
     let service = sqlite_service(&app_data_dir);
@@ -253,14 +374,7 @@ fn source_apply_runtime_failure_records_source_repair_event_diagnostics() {
             None,
         )
         .unwrap();
-    let plan_path = write_json_file(
-        &app_data_dir,
-        "repair-plan.json",
-        &serde_json::from_str(include_str!(
-            "../../../fixtures/contracts/cad_model_plan.v1.json"
-        ))
-        .unwrap(),
-    );
+    let plan_path = write_json_file(&app_data_dir, "repair-plan.json", &draft_plan_value());
     let source_path = app_data_dir.join("invalid.scad");
     fs::write(
         &source_path,
@@ -500,6 +614,35 @@ fn write_json_file(app_data_dir: &PathBuf, name: &str, value: &Value) -> PathBuf
     let path = app_data_dir.join(name);
     fs::write(&path, serde_json::to_string(value).unwrap()).unwrap();
     path
+}
+
+fn draft_plan_value() -> Value {
+    json!({
+        "summary": "Parametric wall bracket with a back plate, two screw holes, and a forward support tab.",
+        "mainComponent": {
+            "name": "wall_bracket",
+            "purpose": "single printable bracket body",
+            "requiredFeatures": ["back_plate", "screw_holes", "support_tab"]
+        },
+        "supportingComponents": [
+            {
+                "name": "screw_holes",
+                "purpose": "mounting clearance holes through the back plate",
+                "requiredFeatures": ["two_aligned_holes"]
+            },
+            {
+                "name": "support_tab",
+                "purpose": "horizontal tab for carrying a small load",
+                "requiredFeatures": ["rounded_outer_edge"]
+            }
+        ],
+        "expectedAspectRatio": {
+            "x": 3.0,
+            "y": 1.0,
+            "z": 2.0,
+            "tolerance": 0.25
+        }
+    })
 }
 
 fn args<const N: usize>(values: [(&str, &str); N]) -> ParsedArgs {

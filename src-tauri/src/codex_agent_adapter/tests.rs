@@ -34,6 +34,10 @@ fn prompt_limits_agent_to_modeling_cli_surface() {
     assert!(prompt.contains("cadastrophe.vlm_judge.v1"));
     assert!(prompt.contains("the app will consume it and record the VLM result automatically"));
     assert!(prompt.contains("Do not call `cadastrophe-preview-render`"));
+    assert!(prompt.contains("CadModelPlanDraft"));
+    assert!(prompt.contains("Include only `summary`, `mainComponent`, `supportingComponents`, and `expectedAspectRatio`"));
+    assert!(prompt
+        .contains("Do not include `schemaVersion`, `sourceLanguage`, or `runtimeConstraints`"));
     assert!(!prompt.contains("cadastrophe-preview-render --app-data-dir"));
     assert!(!prompt.contains("cadastrophe-artifact-export --app-data-dir"));
     assert!(!prompt.contains("cadastrophe-evaluate-structural --app-data-dir"));

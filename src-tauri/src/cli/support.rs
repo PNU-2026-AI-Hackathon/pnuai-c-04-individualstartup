@@ -1,4 +1,7 @@
-use crate::protocol::{CadModelPlan, CadSourceLanguage};
+use crate::protocol::{
+    CadModelPlan, CadModelPlanComponent, CadModelPlanDraft, CadModelRuntimeConstraints,
+    CadRuntimeKind, CadSourceLanguage,
+};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -7,6 +10,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const APP_IDENTIFIER: &str = "dev.cadastrophe.desktop";
 const PLAN_SCHEMA_VERSION: &str = "cad_model_plan.v1";
+const PLAN_FORBIDDEN_FEATURES: &[&str] = &["external_file_include"];
+const PLAN_DEFAULT_REQUIRED_FEATURE: &str = "main_component_annotation";
+const PLAN_SYSTEM_OWNED_FIELDS: &[&str] =
+    &["schemaVersion", "sourceLanguage", "runtimeConstraints"];
 
 #[derive(Debug)]
 pub(super) struct ParsedArgs {
@@ -308,6 +315,124 @@ pub(super) fn validate_plan(plan: &CadModelPlan) -> CliResult<()> {
         ));
     }
     Ok(())
+}
+
+pub(super) fn parse_plan_draft_json(plan_json: &str, label: &str) -> CliResult<CadModelPlan> {
+    let value: Value = serde_json::from_str(plan_json).map_err(|error| {
+        CliError::invalid_input(format!(
+            "Plan file {label} is not a valid JSON document: {error}",
+        ))
+    })?;
+    let object = value.as_object().ok_or_else(|| {
+        CliError::invalid_input(format!(
+            "Plan file {label} must be a CadModelPlanDraft JSON object."
+        ))
+    })?;
+    let system_owned_fields = PLAN_SYSTEM_OWNED_FIELDS
+        .iter()
+        .copied()
+        .filter(|field| object.contains_key(*field))
+        .collect::<Vec<_>>();
+    if !system_owned_fields.is_empty() {
+        return Err(CliError::invalid_input(format!(
+            "Plan draft must not define system-owned runtime policy fields: {}. cadastrophe-plan-commit owns schemaVersion, sourceLanguage, and runtimeConstraints.",
+            system_owned_fields.join(", ")
+        )));
+    }
+
+    let draft: CadModelPlanDraft = serde_json::from_value(value).map_err(|error| {
+        CliError::invalid_input(format!(
+            "Plan file {label} is not a valid CadModelPlanDraft JSON document: {error}",
+        ))
+    })?;
+    validate_plan_draft(&draft)?;
+    let plan = normalize_plan_draft(draft);
+    validate_plan(&plan)?;
+    Ok(plan)
+}
+
+fn validate_plan_draft(draft: &CadModelPlanDraft) -> CliResult<()> {
+    if draft.summary.trim().is_empty() {
+        return Err(CliError::invalid_input(
+            "Plan draft summary must not be empty.",
+        ));
+    }
+    validate_plan_component(&draft.main_component, "mainComponent")?;
+    for (index, component) in draft.supporting_components.iter().enumerate() {
+        validate_plan_component(component, &format!("supportingComponents[{index}]"))?;
+    }
+    let ratio = &draft.expected_aspect_ratio;
+    for (name, value) in [
+        ("expectedAspectRatio.x", ratio.x),
+        ("expectedAspectRatio.y", ratio.y),
+        ("expectedAspectRatio.z", ratio.z),
+    ] {
+        if !value.is_finite() || value <= 0.0 {
+            return Err(CliError::invalid_input(format!("{name} must be positive.")));
+        }
+    }
+    if !ratio.tolerance.is_finite() || ratio.tolerance < 0.0 {
+        return Err(CliError::invalid_input(
+            "expectedAspectRatio.tolerance must be zero or positive.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_plan_component(component: &CadModelPlanComponent, label: &str) -> CliResult<()> {
+    if component.name.trim().is_empty() {
+        return Err(CliError::invalid_input(format!(
+            "Plan draft {label}.name must not be empty."
+        )));
+    }
+    if component.purpose.trim().is_empty() {
+        return Err(CliError::invalid_input(format!(
+            "Plan draft {label}.purpose must not be empty."
+        )));
+    }
+    Ok(())
+}
+
+fn normalize_plan_draft(draft: CadModelPlanDraft) -> CadModelPlan {
+    let main_component_name = draft.main_component.name.trim().to_string();
+    let mut required_features = Vec::new();
+    append_required_features(&mut required_features, &draft.main_component);
+    for component in &draft.supporting_components {
+        append_required_features(&mut required_features, component);
+    }
+    if required_features.is_empty() {
+        required_features.push(PLAN_DEFAULT_REQUIRED_FEATURE.to_string());
+    }
+
+    CadModelPlan {
+        schema_version: PLAN_SCHEMA_VERSION.to_string(),
+        summary: draft.summary,
+        main_component: draft.main_component,
+        supporting_components: draft.supporting_components,
+        expected_aspect_ratio: draft.expected_aspect_ratio,
+        source_language: CadSourceLanguage::Openscad,
+        runtime_constraints: CadModelRuntimeConstraints {
+            runtime: CadRuntimeKind::OpenscadWasm,
+            required_features,
+            forbidden_features: PLAN_FORBIDDEN_FEATURES
+                .iter()
+                .map(|feature| (*feature).to_string())
+                .collect(),
+            main_component_annotation: Some(format!("// @main_component {main_component_name}")),
+        },
+    }
+}
+
+fn append_required_features(
+    required_features: &mut Vec<String>,
+    component: &CadModelPlanComponent,
+) {
+    for feature in &component.required_features {
+        let feature = feature.trim();
+        if !feature.is_empty() && !required_features.iter().any(|existing| existing == feature) {
+            required_features.push(feature.to_string());
+        }
+    }
 }
 
 pub(super) fn parse_source_language(value: &str) -> CliResult<CadSourceLanguage> {

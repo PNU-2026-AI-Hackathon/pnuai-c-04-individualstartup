@@ -8,9 +8,9 @@ mod workflow_commands;
 mod workflow_support;
 
 use crate::protocol::{
-    CadAgentRunEventType, CadArtifact, CadArtifactKind, CadExportResult, CadModelPlan,
-    CadSourceLanguage, CadWorkflowOuterIteration, CadWorkflowPendingVlm, CadWorkflowPlan,
-    ExportArtifactInput, RenderPreviewInput, UpdateModelSourceInput,
+    CadAgentRunEventType, CadArtifact, CadArtifactKind, CadExportResult, CadSourceLanguage,
+    CadWorkflowOuterIteration, CadWorkflowPendingVlm, CadWorkflowPlan, ExportArtifactInput,
+    RenderPreviewInput, UpdateModelSourceInput,
 };
 use crate::session_repository::SqliteSessionRepository;
 use crate::session_service::SessionService;

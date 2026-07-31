@@ -1,6 +1,4 @@
-use super::workflow_support::{
-    require_committed_plan, with_tool_events,
-};
+use super::workflow_support::{require_committed_plan, with_tool_events};
 use super::*;
 
 pub(super) fn plan_commit(
@@ -30,13 +28,7 @@ pub(super) fn plan_commit(
                     plan_path.display()
                 ))
             })?;
-            let plan: CadModelPlan = serde_json::from_str(&plan_json).map_err(|error| {
-                CliError::invalid_input(format!(
-                    "Plan file {} is not a valid CadModelPlan JSON document: {error}",
-                    plan_path.display()
-                ))
-            })?;
-            validate_plan(&plan)?;
+            let plan = parse_plan_draft_json(&plan_json, &plan_path.display().to_string())?;
             let workflow_plan = CadWorkflowPlan {
                 run_id: run_id.clone(),
                 revision_id: active_revision_id.clone(),
