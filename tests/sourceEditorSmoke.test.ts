@@ -49,6 +49,25 @@ test("starter source is displayed as overlay while the editable source stays emp
   harness.cleanup();
 });
 
+test("starter preview does not advance workflow progress for an empty session", async () => {
+  const harness = mountWorkspace({
+    sessionId: "empty-preview",
+    source: "",
+    emptySession: true,
+    runtimeState: "completed",
+    starterSource: "cube([1, 1, 1]);",
+    showStarterOverlay: true
+  });
+
+  const steps = [...harness.container.querySelectorAll<HTMLElement>(".workflow-step")];
+  const previewStep = steps.find((step) => step.textContent?.includes("Preview"));
+  const structuralStep = steps.find((step) => step.textContent?.includes("Structural"));
+
+  assert.ok(previewStep?.classList.contains("workflow-step-pending"));
+  assert.ok(structuralStep?.classList.contains("workflow-step-pending"));
+  harness.cleanup();
+});
+
 test("source editor click after session switch uses the new editor instance", async () => {
   const dismissedSessions: string[] = [];
   const harness = mountWorkspace({
@@ -118,6 +137,7 @@ test("source editor focus handler failures stay local to the editor pane", async
 type WorkspaceHarnessOptions = {
   sessionId: string;
   source: string;
+  emptySession?: boolean;
   starterSource?: string;
   runtimeState?: OpenscadRuntimeState;
   showStarterOverlay?: boolean;
@@ -203,7 +223,7 @@ async function clickAndFocus(editor: HTMLTextAreaElement) {
 }
 
 function workspaceProps(options: WorkspaceHarnessOptions, handlers: WorkspaceHandlers) {
-  const state = sampleState(options.sessionId, options.source);
+  const state = options.emptySession ? emptyState(options.sessionId) : sampleState(options.sessionId, options.source);
   return {
     state,
     mesh: null,
@@ -230,6 +250,33 @@ function workspaceProps(options: WorkspaceHarnessOptions, handlers: WorkspaceHan
     onRestoreRevision: () => undefined,
     onExport: () => undefined,
     onOpenFullHistory: () => undefined
+  };
+}
+
+function emptyState(sessionId: string): CadSessionState {
+  const now = "2026-07-30T00:00:00.000Z";
+  return {
+    session: {
+      id: sessionId,
+      createdAt: now,
+      updatedAt: now,
+      connectedUiClients: 1,
+      title: `Session ${sessionId}`,
+      titleSource: "user",
+      selectedRuntime: "openscad-wasm",
+      status: "idle",
+      revisions: []
+    },
+    activeRevision: undefined,
+    messages: [],
+    conversation: [],
+    agentRuns: [],
+    agentRunEvents: [],
+    workflow: {
+      plans: [],
+      outerIterations: [],
+      pendingVlm: []
+    }
   };
 }
 

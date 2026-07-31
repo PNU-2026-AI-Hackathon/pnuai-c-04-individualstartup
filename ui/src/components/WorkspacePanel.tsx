@@ -482,10 +482,17 @@ function workflowSteps(
   runtimeState: OpenscadRuntimeState
 ): Array<{ label: string; state: "pending" | "active" | "pass" | "fail" }> {
   const hasPlan = state.workflow.plans.length > 0;
+  const isSourceFreeSession =
+    !state.activeRevision &&
+    !state.session.activeRevisionId &&
+    state.session.revisions.length === 0;
+  const hasCanonicalPreviewRuntime = !isSourceFreeSession && runtimeState === "completed";
+  const hasCanonicalPreviewFailure =
+    !isSourceFreeSession && (runtimeState === "failed" || runtimeState === "canceled");
   const hasPreview =
     Boolean(state.activeRevision?.artifacts.some((artifact) => artifact.kind === "preview-mesh")) ||
     hasCompletedCommand(events, "cadastrophe-preview-render") ||
-    runtimeState === "completed";
+    hasCanonicalPreviewRuntime;
   const latestIteration = state.workflow.outerIterations.at(-1);
   const failureReason = latestFailure ? stringField(latestFailure, "reason") ?? stringField(latestFailure, "code") ?? "" : "";
   const structuralFailed = Boolean(latestFailure && !failureReason.toLowerCase().includes("vlm"));
@@ -498,7 +505,7 @@ function workflowSteps(
     { label: "Plan", state: hasPlan ? "pass" : hasActiveRun ? "active" : "pending" },
     {
       label: "Preview",
-      state: runtimeState === "failed" || runtimeState === "canceled"
+      state: hasCanonicalPreviewFailure
         ? "fail"
         : hasPreview
           ? "pass"
