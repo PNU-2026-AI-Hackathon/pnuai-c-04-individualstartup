@@ -11,7 +11,8 @@
     "build:tauri": "tauri build",
     "build:sidecar": "node scripts/build-structural-sidecar.mjs --profile debug",
     "build:sidecar:release": "node scripts/build-structural-sidecar.mjs --profile release",
-    "build:cli-tools": "cargo build --manifest-path src-tauri/Cargo.toml --bins && npm run build:sidecar",
+    "clean:obsolete-cli-tools": "node scripts/clean-obsolete-cli-tools.mjs",
+    "build:cli-tools": "npm run clean:obsolete-cli-tools && cargo build --manifest-path src-tauri/Cargo.toml --bins && npm run build:sidecar",
     "check": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml"

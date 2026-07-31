@@ -203,7 +203,6 @@ function workflowStage(
   if (iterations.some((iteration) => iteration.passed)) return "VLM accepted";
   if (latestFailure) return failureReason(latestFailure).includes("vlm") ? "VLM repair" : "Structural repair";
   if (hasCompletedCommand(events, "cadastrophe-finalize")) return "Finalized";
-  if (hasCompletedCommand(events, "cadastrophe-preview-render")) return "Preview rendered";
   if (hasCompletedCommand(events, "cadastrophe-source-apply")) return "Source applied";
   if (hasPlan) return "Plan committed";
   if (isActiveRunStatus(run.status)) return "Planning";

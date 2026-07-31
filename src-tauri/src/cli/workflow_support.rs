@@ -44,7 +44,7 @@ pub(super) fn record_structural_started(
             Some(revision_id.to_string()),
             CadAgentRunEventType::AgentToolStarted,
             json!({
-                "command": "cadastrophe-evaluate-structural",
+                "phase": "structural-anchor",
                 "status": "started"
             }),
         )
@@ -62,7 +62,7 @@ pub(super) fn record_structural_completed(
 ) -> CliResult<()> {
     let payload = if let Some(evaluation) = evaluation {
         json!({
-            "command": "cadastrophe-evaluate-structural",
+            "phase": "structural-anchor",
             "status": "completed",
             "ok": true,
             "passed": evaluation.passed,
@@ -72,7 +72,7 @@ pub(super) fn record_structural_completed(
     } else {
         let error = error.expect("error provided when evaluation missing");
         json!({
-            "command": "cadastrophe-evaluate-structural",
+            "phase": "structural-anchor",
             "status": "failed",
             "ok": false,
             "error": {
@@ -91,33 +91,6 @@ pub(super) fn record_structural_completed(
         )
         .map(|_| ())
         .map_err(CliError::storage)
-}
-
-pub(super) fn pending_vlm_for_run(
-    service: &SessionService,
-    session_id: &str,
-    run_id: &str,
-    artifact_id: &str,
-) -> CliResult<CadWorkflowPendingVlm> {
-    let pending = service
-        .get_session_state(session_id)
-        .map_err(CliError::not_found)?
-        .workflow
-        .pending_vlm
-        .into_iter()
-        .find(|pending| pending.run_id == run_id)
-        .ok_or_else(|| {
-            CliError::precondition_failed(format!(
-                "Run {run_id} has no pending cadastrophe.vlm_judge.v1 contract."
-            ))
-        })?;
-    if pending.artifact_id != artifact_id {
-        return Err(CliError::precondition_failed(format!(
-            "Pending VLM artifact {} does not match submitted artifact {artifact_id}.",
-            pending.artifact_id
-        )));
-    }
-    Ok(pending)
 }
 
 pub(super) fn append_outer_iteration(

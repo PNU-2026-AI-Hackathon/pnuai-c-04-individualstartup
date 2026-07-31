@@ -453,7 +453,7 @@ fn submit_inline_vlm_judge_report(
         revision_id.clone(),
         CadAgentRunEventType::AgentToolStarted,
         json!({
-            "command": "cadastrophe-vlm-submit",
+            "phase": "vlm-judge-callback",
             "status": "started",
             "source": "codex-inline-vlm-report"
         }),
@@ -479,7 +479,7 @@ fn submit_inline_vlm_judge_report(
         revision_id,
         CadAgentRunEventType::AgentToolCompleted,
         json!({
-            "command": "cadastrophe-vlm-submit",
+            "phase": "vlm-judge-callback",
             "status": "completed",
             "ok": true,
             "artifactId": pending.artifact_id,
@@ -582,11 +582,7 @@ fn is_cadastrophe_cli_command(name: &str) -> bool {
         "cadastrophe-session-state",
         "cadastrophe-plan-commit",
         "cadastrophe-source-apply",
-        "cadastrophe-preview-render",
-        "cadastrophe-artifact-export",
-        "cadastrophe-evaluate-structural",
         "cadastrophe-finalize",
-        "cadastrophe-vlm-submit",
     ]
     .iter()
     .any(|command| name.contains(command))

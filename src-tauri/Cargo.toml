@@ -40,21 +40,5 @@ name = "cadastrophe-source-apply"
 path = "src/bin/cadastrophe_source_apply.rs"
 
 [[bin]]
-name = "cadastrophe-preview-render"
-path = "src/bin/cadastrophe_preview_render.rs"
-
-[[bin]]
-name = "cadastrophe-artifact-export"
-path = "src/bin/cadastrophe_artifact_export.rs"
-
-[[bin]]
-name = "cadastrophe-evaluate-structural"
-path = "src/bin/cadastrophe_evaluate_structural.rs"
-
-[[bin]]
 name = "cadastrophe-finalize"
 path = "src/bin/cadastrophe_finalize.rs"
-
-[[bin]]
-name = "cadastrophe-vlm-submit"
-path = "src/bin/cadastrophe_vlm_submit.rs"

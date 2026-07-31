@@ -384,8 +384,7 @@ async fn gateway_consumes_inline_vlm_judge_report_without_showing_raw_json() {
     assert!(state.agent_run_events.iter().any(|event| {
         event.run_id == started.run.id
             && event.event_type == CadAgentRunEventType::AgentToolCompleted
-            && event.payload.get("command").and_then(Value::as_str)
-                == Some("cadastrophe-vlm-submit")
+            && event.payload.get("phase").and_then(Value::as_str) == Some("vlm-judge-callback")
     }));
 }
 

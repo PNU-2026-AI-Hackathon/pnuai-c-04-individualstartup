@@ -16,8 +16,7 @@ npm run build:sidecar
 
 The npm script builds the sidecar and installs it beside the Rust CLI
 executables at `src-tauri/target/debug/cadastrophe-structural-anchor`, which is
-the default lookup path used by `cadastrophe-evaluate-structural` and
-`cadastrophe-finalize`.
+the default lookup path used by `cadastrophe-finalize`.
 
 Equivalent manual CMake build:
 

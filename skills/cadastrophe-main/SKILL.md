@@ -1,33 +1,26 @@
 ---
 name: cadastrophe-main
-description: Generate, render, iterate, and export CAD models through the Cadastrophe Milestone 3 CLI workflow and review UI. Use when Codex needs to turn a natural language CAD request into OpenSCAD source for openscad-wasm, commit a CadModelPlan, apply source, render previews, finalize artifacts, respond to structural/VLM failure reports, or hand a rendered artifact contract to the dedicated cadastrophe-vlm-judge subagent.
+description: Generate and iterate CAD model code through the Cadastrophe app-owned workflow. Use when Codex needs to turn a natural language CAD request into a CadModelPlan plus OpenSCAD source for openscad-wasm, apply source, finalize app-owned evaluation, respond to structural/VLM failure reports, or hand a rendered artifact contract to the dedicated cadastrophe-vlm-judge subagent.
 ---
 
 # Cadastrophe Main
 
 Use this skill to drive the Cadastrophe text-to-CAD workflow from the agent side.
 Cadastrophe owns canonical session state in the Tauri/Rust backend, SQLite
-workflow tables, revision/artifact storage, preview rendering, finalization, and
-run-event persistence. The main modeling agent owns planning, source generation,
-runtime repair, and outer-loop refinement.
+workflow tables, revision/artifact storage, preview rendering, export,
+structural evaluation, VLM result recording, finalization, and run-event
+persistence. The main modeling agent owns planning, source generation, runtime
+repair, and outer-loop refinement.
 
 ## Agent Surface
-
-Milestone 3 exposes agent tools as executable CLIs, not an MCP server. All
-commands use JSON output by default, support `--pretty` only for human
-inspection, and support `--app-data-dir <dir>` for fixtures or tests.
 
 Use these exact command names:
 
 - `cadastrophe-session-current`: inspect current session id, active revision, selected runtime, and app data path.
 - `cadastrophe-session-state --session <id>`: inspect session/revision/artifact/run/workflow state JSON.
 - `cadastrophe-plan-commit --session <id> --run <id> --plan <file>`: validate and persist a `CadModelPlan`.
-- `cadastrophe-source-apply --session <id> --run <id> --source <file> --language openscad`: append a source revision linked to the run.
-- `cadastrophe-preview-render --session <id> --revision <id>`: render preview and return diagnostics/artifact ids.
-- `cadastrophe-artifact-export --session <id> --revision <id> --format stl`: export an artifact when explicitly needed.
-- `cadastrophe-evaluate-structural --session <id> --revision <id> --plan <file>`: run the deterministic structural anchor directly when needed.
+- `cadastrophe-source-apply --session <id> --run <id> --source <file> --language openscad`: append a source revision linked to the run; the app renders preview/STL automatically and returns diagnostics.
 - `cadastrophe-finalize --session <id> --run <id> --revision <id>`: lock final artifacts, run structural anchor, render mandatory VLM image evidence, and either return a failure report or a pending VLM contract.
-- `cadastrophe-vlm-submit --session <id> --run <id> --artifact <id> --report <file>`: submit a VLM judge report and append outer-loop pass/fail history.
 
 Important CLI data fields include `nextAction`, `next_action`, `diagnostics`,
 `failureReport`, `failure_report`, `artifactPaths`, `contractType`,
@@ -39,19 +32,17 @@ status and JSON error envelopes as authoritative.
 1. Reuse the current UI-visible session when possible. Use `cadastrophe-session-current` or the provided session id.
 2. Inspect `cadastrophe-session-state --session <id>` before retrying, and carry the latest structural or VLM `failureReport`/`failure_report` into the next attempt.
 3. Create a `CadModelPlan` JSON file and commit it with `cadastrophe-plan-commit --session <id> --run <run_id> --plan <file>`.
-4. Do not apply source, render, evaluate structural state, finalize, or submit VLM until plan commit succeeds for the same run.
+4. Do not apply source or finalize until plan commit succeeds for the same run.
 5. Generate source for the selected runtime. Current primary support is OpenSCAD through `openscad-wasm`.
 6. Call `cadastrophe-source-apply --session <id> --run <run_id> --source <file> --language openscad`.
-7. Call `cadastrophe-preview-render --session <id> --revision <revision_id>`.
-8. If runtime diagnostics contain errors, explain the cause briefly, repair the source, then repeat source apply and preview render.
-9. When preview diagnostics pass, call `cadastrophe-finalize --session <id> --run <run_id> --revision <revision_id>`.
-10. If finalization returns a structural `failure_report` or `next_action` of `outer_loop_refine_source`, do not run VLM. Use that report for a new plan/source attempt.
-11. If finalization returns a `cadastrophe.vlm_judge.v1` contract, verify it includes `renderedImages.available: true` and a usable rendered PNG path, then hand that exact contract to a separate subagent using the `cadastrophe-vlm-judge` skill. Ask the subagent to return only strict JSON.
-12. Save the judge JSON to a file and call `cadastrophe-vlm-submit --session <id> --run <run_id> --artifact <artifact_id> --report <file>`.
-13. If VLM submit records failure, refine from the VLM failure report and repeat from plan commit. If it passes, finish with the final revision/artifact ids.
+7. Source apply triggers app-owned preview render and returns diagnostics. If runtime diagnostics contain errors, explain the cause briefly, repair the source, then repeat source apply.
+8. When preview diagnostics pass, call `cadastrophe-finalize --session <id> --run <run_id> --revision <revision_id>`.
+9. Finalize runs export, structural anchor, VLM evidence rendering, and pending VLM persistence. If finalization returns a structural `failure_report` or `next_action` of `outer_loop_refine_source`, use that report for a new plan/source attempt.
+10. If finalization returns a `cadastrophe.vlm_judge.v1` contract, verify it includes `renderedImages.available: true` and a usable rendered PNG path, then hand that exact contract to a separate subagent using the `cadastrophe-vlm-judge` skill. Ask the subagent to return only strict JSON.
+11. Return the strict VLM judge report as the assistant message. The app consumes the report automatically and records pass/fail workflow state.
+12. If the app-recorded VLM result fails, refine from the VLM failure report and repeat from plan commit. If it passes, finish with the final revision/artifact ids.
 
-RAG is optional for Milestone 3. Omitting RAG does not change the required
-Plan -> source apply -> preview render -> finalize -> structural/VLM sequence.
+Plan -> source apply -> app preview -> finalize -> app structural/VLM sequence.
 
 ## Plan Contract
 
@@ -113,14 +104,15 @@ finalization returns a contract with:
 
 Start a separate subagent with the `cadastrophe-vlm-judge` skill and pass the
 contract plus the user's original request. The subagent must return a strict
-`cadastrophe.vlm_judge_report.v1` JSON report. Submit that report through
-`cadastrophe-vlm-submit`; do not treat the visual result as accepted until the
-submit command records pass/fail in workflow state.
+`cadastrophe.vlm_judge_report.v1` JSON report. Return that report as the
+assistant message so the app can consume it and record pass/fail in workflow
+state.
 
 ## Completion Discipline
 
 A Cadastrophe run is not complete just because source was generated. Finish only
 after the persisted workflow has advanced through plan commit, source apply,
-preview render, finalization/structural anchor, and the required VLM submit when
-there is pending VLM. If any gate fails, preserve the machine-readable failure
-report and use it as the next outer-loop prompt context.
+app preview render, finalization/structural anchor, and the required app-owned
+VLM result recording when there is pending VLM. If any gate fails, preserve the
+machine-readable failure report and use it as the next outer-loop prompt
+context.

@@ -6,7 +6,7 @@ use serde_json::json;
 use std::path::PathBuf;
 
 #[test]
-fn prompt_requires_milestone_3_cli_workflow_order() {
+fn prompt_limits_agent_to_modeling_cli_surface() {
     let prompt = build_cad_prompt(&AgentAdapterRunInput {
         session_id: "session-1".to_string(),
         run_id: "run-1".to_string(),
@@ -32,9 +32,12 @@ fn prompt_requires_milestone_3_cli_workflow_order() {
         "cadastrophe-finalize --app-data-dir '/tmp/Cad App Data' --session session-1 --run run-1"
     ));
     assert!(prompt.contains("cadastrophe.vlm_judge.v1"));
-    assert!(prompt.contains(
-        "cadastrophe-vlm-submit --app-data-dir '/tmp/Cad App Data' --session session-1 --run run-1"
-    ));
+    assert!(prompt.contains("the app will consume it and record the VLM result automatically"));
+    assert!(prompt.contains("Do not call `cadastrophe-preview-render`"));
+    assert!(!prompt.contains("cadastrophe-preview-render --app-data-dir"));
+    assert!(!prompt.contains("cadastrophe-artifact-export --app-data-dir"));
+    assert!(!prompt.contains("cadastrophe-evaluate-structural --app-data-dir"));
+    assert!(!prompt.contains("cadastrophe-vlm-submit --app-data-dir"));
     assert!(prompt.contains("// @main_component <name>"));
     assert!(prompt.contains("latestWorkflowFailureReport"));
     assert!(prompt.contains("missing_support_tab"));

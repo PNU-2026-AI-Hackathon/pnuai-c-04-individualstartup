@@ -5,7 +5,7 @@
   "build": {
     "beforeDevCommand": "npm run dev:ui",
     "devUrl": "http://127.0.0.1:5173",
-    "beforeBuildCommand": "npm run build && npm run build:sidecar:release",
+    "beforeBuildCommand": "npm run build && npm run clean:obsolete-cli-tools && npm run build:sidecar:release",
     "frontendDist": "../dist/ui"
   },
   "app": {

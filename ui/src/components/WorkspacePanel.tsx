@@ -491,7 +491,6 @@ function workflowSteps(
     !isSourceFreeSession && (runtimeState === "failed" || runtimeState === "canceled");
   const hasPreview =
     Boolean(state.activeRevision?.artifacts.some((artifact) => artifact.kind === "preview-mesh")) ||
-    hasCompletedCommand(events, "cadastrophe-preview-render") ||
     hasCanonicalPreviewRuntime;
   const latestIteration = state.workflow.outerIterations.at(-1);
   const failureReason = latestFailure ? stringField(latestFailure, "reason") ?? stringField(latestFailure, "code") ?? "" : "";

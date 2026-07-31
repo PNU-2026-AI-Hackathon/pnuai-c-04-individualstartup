@@ -1,6 +1,5 @@
 mod artifacts;
 mod model_commands;
-mod openscad;
 mod session_commands;
 mod structural;
 mod support;
@@ -9,15 +8,14 @@ mod workflow_commands;
 mod workflow_support;
 
 use crate::protocol::{
-    CadAgentRunEventType, CadAgentRunStatus, CadArtifact, CadArtifactKind, CadExportResult,
-    CadModelPlan, CadSourceLanguage, CadWorkflowOuterIteration, CadWorkflowPendingVlm,
-    CadWorkflowPlan, ExportArtifactInput, PersistRuntimeArtifactInput, UpdateModelSourceInput,
+    CadAgentRunEventType, CadArtifact, CadArtifactKind, CadExportResult, CadModelPlan,
+    CadSourceLanguage, CadWorkflowOuterIteration, CadWorkflowPendingVlm, CadWorkflowPlan,
+    ExportArtifactInput, RenderPreviewInput, UpdateModelSourceInput,
 };
 use crate::session_repository::SqliteSessionRepository;
 use crate::session_service::SessionService;
 use crate::storage::{self, StorageLayout};
-use artifacts::{artifact_paths, base64_encode};
-use openscad::render_open_scad_wasm_cli;
+use artifacts::artifact_paths;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
@@ -29,7 +27,6 @@ use structural::{
 use support::*;
 use vlm::{
     build_vlm_contract, render_vlm_images_for_artifact, validate_vlm_contract,
-    validate_vlm_contract_value, validate_vlm_judge_report, vlm_failure_report,
 };
 
 pub fn session_current_main() -> i32 {
@@ -51,30 +48,8 @@ pub fn source_apply_main() -> i32 {
     run("cadastrophe-source-apply", model_commands::source_apply)
 }
 
-pub fn preview_render_main() -> i32 {
-    run("cadastrophe-preview-render", model_commands::preview_render)
-}
-
-pub fn artifact_export_main() -> i32 {
-    run(
-        "cadastrophe-artifact-export",
-        model_commands::artifact_export,
-    )
-}
-
-pub fn evaluate_structural_main() -> i32 {
-    run(
-        "cadastrophe-evaluate-structural",
-        workflow_commands::evaluate_structural,
-    )
-}
-
 pub fn finalize_main() -> i32 {
     run("cadastrophe-finalize", workflow_commands::finalize)
-}
-
-pub fn vlm_submit_main() -> i32 {
-    run("cadastrophe-vlm-submit", workflow_commands::vlm_submit)
 }
 
 fn run(

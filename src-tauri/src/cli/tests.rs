@@ -1,5 +1,5 @@
-use super::model_commands::{plan_commit, preview_render, source_apply};
-use super::workflow_commands::{finalize, vlm_submit};
+use super::model_commands::{plan_commit, source_apply};
+use super::workflow_commands::finalize;
 use super::*;
 use crate::protocol::CreateCadSessionInput;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -190,16 +190,7 @@ fn cli_workflow_persists_required_tool_event_order() {
         .as_str()
         .unwrap()
         .to_string();
-    preview_render(
-        &args([
-            ("session", &created.session_id),
-            ("run", &run.id),
-            ("revision", &revision_id),
-        ]),
-        &service,
-        &app_data_dir,
-    )
-    .unwrap();
+    assert_eq!(source_output.data["nextAction"].as_str(), Some("finalize"));
     let sidecar = fixture_sidecar(
         &app_data_dir,
         "structural-event-order-pass",
@@ -233,17 +224,20 @@ fn cli_workflow_persists_required_tool_event_order() {
         vec![
             "cadastrophe-plan-commit",
             "cadastrophe-source-apply",
-            "cadastrophe-preview-render",
-            "cadastrophe-evaluate-structural",
             "cadastrophe-finalize",
         ]
     );
+    assert!(state.agent_run_events.iter().any(|event| {
+        event.run_id == run.id
+            && event.event_type == CadAgentRunEventType::AgentToolCompleted
+            && event.payload.get("phase").and_then(Value::as_str) == Some("structural-anchor")
+    }));
     assert_eq!(state.workflow.plans.len(), 1);
     assert_eq!(state.workflow.pending_vlm.len(), 1);
 }
 
 #[test]
-fn preview_runtime_failure_records_source_repair_event_diagnostics() {
+fn source_apply_runtime_failure_records_source_repair_event_diagnostics() {
     let app_data_dir = temp_app_data_dir("preview-source-repair");
     let service = sqlite_service(&app_data_dir);
     let created = service
@@ -295,25 +289,14 @@ fn preview_runtime_failure_records_source_repair_event_diagnostics() {
         &app_data_dir,
     )
     .unwrap();
-    let revision_id = source_output.data["revisionId"].as_str().unwrap();
-    let preview_output = preview_render(
-        &args([
-            ("session", &created.session_id),
-            ("run", &run.id),
-            ("revision", revision_id),
-        ]),
-        &service,
-        &app_data_dir,
-    )
-    .unwrap();
 
-    assert_eq!(preview_output.data["next_action"].as_str(), None);
+    assert_eq!(source_output.data["next_action"].as_str(), None);
     assert_eq!(
-        preview_output.data["nextAction"].as_str(),
+        source_output.data["nextAction"].as_str(),
         Some("source_repair")
     );
     let state = service.get_session_state(&created.session_id).unwrap();
-    let preview_event = state
+    let source_apply_event = state
         .agent_run_events
         .iter()
         .rev()
@@ -321,17 +304,17 @@ fn preview_runtime_failure_records_source_repair_event_diagnostics() {
             event.run_id == run.id
                 && event.event_type == CadAgentRunEventType::AgentToolCompleted
                 && event.payload.get("command").and_then(Value::as_str)
-                    == Some("cadastrophe-preview-render")
+                    == Some("cadastrophe-source-apply")
         })
         .unwrap();
     assert_eq!(
-        preview_event
+        source_apply_event
             .payload
             .get("nextAction")
             .and_then(Value::as_str),
         Some("source_repair")
     );
-    assert!(preview_event
+    assert!(source_apply_event
         .payload
         .get("diagnostics")
         .and_then(|diagnostics| diagnostics.get("items"))
@@ -343,147 +326,11 @@ fn preview_runtime_failure_records_source_repair_event_diagnostics() {
         })));
 }
 
-#[cfg(unix)]
-#[test]
-fn vlm_submit_fail_and_pass_consume_pending_and_append_outer_iterations() {
-    let app_data_dir = temp_app_data_dir("vlm-submit");
-    let service = sqlite_service(&app_data_dir);
-    let failed = setup_pending_vlm(&service, &app_data_dir, "fail");
-    let fail_report = write_json_file(
-        &app_data_dir,
-        "vlm-fail.json",
-        &json!({
-            "contractType": "cadastrophe.vlm_judge_report.v1",
-            "runId": failed.run_id,
-            "artifactId": failed.artifact_id,
-            "score": 0.4,
-            "passed": false,
-            "findings": [{"severity": "error", "message": "Missing feature."}],
-            "failureReport": {
-                "contractType": "cadastrophe.failure_report.v1",
-                "reason": "missing_feature",
-                "nextAction": "outer_loop_refine_source"
-            }
-        }),
-    );
-
-    let fail_output = vlm_submit(
-        &args([
-            ("session", &failed.session_id),
-            ("run", &failed.run_id),
-            ("artifact", &failed.artifact_id),
-            ("report", fail_report.to_str().unwrap()),
-        ]),
-        &service,
-        &app_data_dir,
-    )
-    .unwrap();
-
-    assert_eq!(
-        fail_output.data["next_action"].as_str(),
-        Some("outer_loop_refine_source")
-    );
-    let failed_state = service.get_session_state(&failed.session_id).unwrap();
-    assert_eq!(failed_state.workflow.pending_vlm.len(), 0);
-    assert_eq!(failed_state.workflow.outer_iterations.len(), 1);
-    assert!(!failed_state.workflow.outer_iterations[0].passed);
-
-    let passed = setup_pending_vlm(&service, &app_data_dir, "pass");
-    let pass_report = write_json_file(
-        &app_data_dir,
-        "vlm-pass.json",
-        &json!({
-            "contractType": "cadastrophe.vlm_judge_report.v1",
-            "runId": passed.run_id,
-            "artifactId": passed.artifact_id,
-            "score": 0.95,
-            "passed": true,
-            "findings": []
-        }),
-    );
-
-    let pass_output = vlm_submit(
-        &args([
-            ("session", &passed.session_id),
-            ("run", &passed.run_id),
-            ("artifact", &passed.artifact_id),
-            ("report", pass_report.to_str().unwrap()),
-        ]),
-        &service,
-        &app_data_dir,
-    )
-    .unwrap();
-
-    assert_eq!(pass_output.data["next_action"].as_str(), Some("complete"));
-    let passed_state = service.get_session_state(&passed.session_id).unwrap();
-    let passed_iterations = passed_state
-        .workflow
-        .outer_iterations
-        .iter()
-        .filter(|iteration| iteration.run_id == passed.run_id)
-        .collect::<Vec<_>>();
-    assert_eq!(passed_iterations.len(), 1);
-    assert!(passed_iterations[0].passed);
-    let run = passed_state
-        .agent_runs
-        .iter()
-        .find(|run| run.id == passed.run_id)
-        .unwrap();
-    assert_eq!(run.status, CadAgentRunStatus::Completed);
-}
-
 #[derive(Debug)]
 struct Setup {
     session_id: String,
     run_id: String,
     revision_id: String,
-}
-
-#[derive(Debug)]
-struct PendingSetup {
-    session_id: String,
-    run_id: String,
-    artifact_id: String,
-}
-
-#[cfg(unix)]
-fn setup_pending_vlm(
-    service: &SessionService,
-    app_data_dir: &PathBuf,
-    suffix: &str,
-) -> PendingSetup {
-    let setup = setup_run_with_plan(service);
-    let sidecar = fixture_sidecar(
-        app_data_dir,
-        &format!("structural-pass-{suffix}"),
-        &structural_report_json(&setup.run_id, &setup.revision_id, true),
-    );
-    let renderer_sidecar =
-        fixture_renderer_sidecar(app_data_dir, &format!("renderer-pass-{suffix}"));
-    finalize(
-        &args([
-            ("session", &setup.session_id),
-            ("run", &setup.run_id),
-            ("revision", &setup.revision_id),
-            ("sidecar", sidecar.to_str().unwrap()),
-            ("renderer-sidecar", renderer_sidecar.to_str().unwrap()),
-        ]),
-        service,
-        app_data_dir,
-    )
-    .unwrap();
-    let state = service.get_session_state(&setup.session_id).unwrap();
-    let pending = state
-        .workflow
-        .pending_vlm
-        .iter()
-        .find(|pending| pending.run_id == setup.run_id)
-        .unwrap();
-    PendingSetup {
-        session_id: setup.session_id,
-        run_id: setup.run_id,
-        artifact_id: pending.artifact_id.clone(),
-    }
 }
 
 fn setup_run_with_plan(service: &SessionService) -> Setup {

@@ -138,36 +138,6 @@ impl SessionService {
         })
     }
 
-    pub fn record_runtime_diagnostics(
-        &self,
-        session_id: &str,
-        revision_id: &str,
-        diagnostics: CadDiagnostics,
-    ) -> Result<CadSessionState, String> {
-        let snapshot = {
-            let mut state = self.inner.lock().map_err(lock_error)?;
-            validate_revision_session(&state, session_id, revision_id)?;
-            let revision = require_revision_mut(&mut state, revision_id)?;
-            revision.diagnostics = diagnostics.clone();
-            let session = require_session_mut(&mut state, session_id)?;
-            session.status = if diagnostics.ok {
-                CadSessionStatus::Idle
-            } else {
-                CadSessionStatus::Failed
-            };
-            session.updated_at = timestamp();
-            rebuild_revision_summaries(&mut state, session_id);
-            self.persist_session_graph(&state, session_id)?;
-            build_state(&state, session_id)?
-        };
-        self.emit(
-            CadBridgeEventType::PreviewRendered,
-            session_id,
-            snapshot.clone(),
-        );
-        Ok(snapshot)
-    }
-
     pub fn update_parameters(
         &self,
         session_id: &str,
