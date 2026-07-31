@@ -76,10 +76,9 @@ CLI contract reminders:
 - Do not call `cadastrophe-preview-render`, `cadastrophe-artifact-export`, `cadastrophe-evaluate-structural`, or `cadastrophe-vlm-submit`; they are not part of the agent surface.
 
 Plan draft contract:
-- The plan file passed to `cadastrophe-plan-commit` must be a `CadModelPlanDraft`, not the full persisted `CadModelPlan`.
-- Include only `summary`, `mainComponent`, `supportingComponents`, and `expectedAspectRatio`.
+- The plan file passed to `cadastrophe-plan-commit` must be a `CadModelPlanDraft`.
+- Shape it with `summary`, `mainComponent`, `supportingComponents`, and `expectedAspectRatio`.
 - `mainComponent` and each supporting component use `name`, `purpose`, and optional `requiredFeatures`.
-- Do not include `schemaVersion`, `sourceLanguage`, or `runtimeConstraints`; the app generates those system-owned fields during plan commit.
 
 OpenSCAD constraints for the current Cadastrophe openscad-wasm runtime:
 - Use OpenSCAD CSG normally, including cube, sphere, cylinder, translate, rotate, union, and difference.

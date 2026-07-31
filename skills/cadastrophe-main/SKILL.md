@@ -18,7 +18,7 @@ Use these exact command names:
 
 - `cadastrophe-session-current`: inspect current session id, active revision, selected runtime, and app data path.
 - `cadastrophe-session-state --session <id>`: inspect session/revision/artifact/run/workflow state JSON.
-- `cadastrophe-plan-commit --session <id> --run <id> --plan <file>`: normalize a `CadModelPlanDraft` into the full persisted `CadModelPlan`, validate it, and persist it.
+- `cadastrophe-plan-commit --session <id> --run <id> --plan <file>`: commit a `CadModelPlanDraft` for the run.
 - `cadastrophe-source-apply --session <id> --run <id> --source <file> --language openscad`: append a source revision linked to the run; the app renders preview/STL automatically and returns diagnostics.
 - `cadastrophe-finalize --session <id> --run <id> --revision <id>`: lock final artifacts, run structural anchor, render mandatory VLM image evidence, and either return a failure report or a pending VLM contract.
 
@@ -52,18 +52,6 @@ The plan file authored by the agent must be runtime-neutral JSON shaped as `CadM
 - `mainComponent`: object with `name`, `purpose`, and optional `requiredFeatures`.
 - `supportingComponents`: array of component objects.
 - `expectedAspectRatio`: `{ "x": number, "y": number, "z": number, "tolerance": number }`.
-
-Do not include the full persisted `CadModelPlan` system-owned fields:
-
-- `schemaVersion`
-- `sourceLanguage`
-- `runtimeConstraints`
-
-`cadastrophe-plan-commit` generates those fields using the current app runtime policy:
-`schemaVersion: cad_model_plan.v1`, `sourceLanguage: openscad`,
-`runtimeConstraints.runtime: openscad-wasm`, policy-owned forbidden features,
-draft-derived/default required features, and `mainComponentAnnotation` generated
-from `mainComponent.name`.
 
 For OpenSCAD, include a source header matching the committed main component:
 
