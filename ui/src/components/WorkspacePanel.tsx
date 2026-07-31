@@ -459,7 +459,7 @@ function WorkflowProgressStrip({
     [latestRun?.id, state.agentRunEvents]
   );
   const latestWorkflow = latestRun ? workflowRunView(latestRun, events, state.workflow) : undefined;
-  const steps = workflowSteps(state, events, latestWorkflow?.latestFailure, Boolean(activeRun), runtimeState);
+  const steps = workflowSteps(state, latestWorkflow?.latestFailure, Boolean(activeRun), runtimeState);
 
   return (
     <section className="workflow-progress-strip" aria-label="Workflow progress">
@@ -476,7 +476,6 @@ function WorkflowProgressStrip({
 
 function workflowSteps(
   state: CadSessionState,
-  events: CadSessionState["agentRunEvents"],
   latestFailure: Record<string, unknown> | undefined,
   hasActiveRun: boolean,
   runtimeState: OpenscadRuntimeState
@@ -498,7 +497,6 @@ function workflowSteps(
   const vlmFailed = Boolean(latestFailure && failureReason.toLowerCase().includes("vlm"));
   const structuralPassed = Boolean(latestIteration && !structuralFailed) || state.workflow.pendingVlm.length > 0;
   const vlmPassed = state.workflow.outerIterations.some((iteration) => iteration.passed);
-  const finalized = vlmPassed || hasCompletedCommand(events, "cadastrophe-finalize");
 
   return [
     { label: "Plan", state: hasPlan ? "pass" : hasActiveRun ? "active" : "pending" },
@@ -520,16 +518,8 @@ function workflowSteps(
       label: "VLM",
       state: vlmFailed ? "fail" : vlmPassed ? "pass" : state.workflow.pendingVlm.length ? "active" : "pending"
     },
-    { label: "Finalized", state: finalized ? "pass" : vlmFailed || structuralFailed ? "fail" : "pending" }
+    { label: "Complete", state: vlmPassed ? "pass" : vlmFailed || structuralFailed ? "fail" : "pending" }
   ];
-}
-
-function hasCompletedCommand(events: CadSessionState["agentRunEvents"], command: string): boolean {
-  return events.some((event) => {
-    if (event.type !== "agent.tool.completed") return false;
-    const payloadCommand = stringField(event.payload, "command") ?? stringField(event.payload, "tool");
-    return payloadCommand?.startsWith(command) ?? false;
-  });
 }
 
 function stringField(value: Record<string, unknown>, key: string): string | undefined {
