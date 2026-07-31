@@ -101,7 +101,7 @@ export class TauriCadBackendClient implements CadBackendClient {
   }
 
   deleteSession(sessionId: string): Promise<DeleteCadSessionResult> {
-    return invokeCommand("delete_session", { sessionId });
+    return invokeCommand("delete_session", { input: { sessionId } });
   }
 
   duplicateSession(input: { sessionId: string; title?: string }): Promise<CreateCadSessionResult> {

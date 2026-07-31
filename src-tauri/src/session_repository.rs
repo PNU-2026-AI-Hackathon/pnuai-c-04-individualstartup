@@ -243,6 +243,25 @@ impl SessionRepository for SqliteSessionRepository {
         let transaction = connection
             .transaction()
             .map_err(|error| error.to_string())?;
+        let persisted_deleted_at: Option<Option<String>> = transaction
+            .query_row(
+                "SELECT deleted_at FROM sessions WHERE id = ?1",
+                params![session.id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        if persisted_deleted_at
+            .as_ref()
+            .and_then(|deleted_at| deleted_at.as_ref())
+            .is_some()
+            && session.deleted_at.is_none()
+        {
+            return Err(format!(
+                "CAD session has been deleted and cannot be saved from a stale process: {}",
+                session.id
+            ));
+        }
         transaction
             .execute(
                 r#"

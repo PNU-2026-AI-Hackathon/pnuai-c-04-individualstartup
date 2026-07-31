@@ -105,6 +105,12 @@ pub struct DuplicateCadSessionInput {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct DeleteCadSessionInput {
+    pub session_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteCadSessionResult {
     pub session_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]

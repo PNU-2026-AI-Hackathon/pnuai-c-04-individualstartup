@@ -93,10 +93,10 @@ fn archive_session(
 
 #[tauri::command]
 fn delete_session(
-    session_id: String,
+    input: DeleteCadSessionInput,
     state: State<'_, AppState>,
 ) -> Result<DeleteCadSessionResult, String> {
-    state.service.delete_session(&session_id)
+    state.service.delete_session(&input.session_id)
 }
 
 #[tauri::command]

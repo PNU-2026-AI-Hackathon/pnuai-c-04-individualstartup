@@ -348,6 +348,48 @@ fn sqlite_repository_persists_duplicate_archive_and_delete() {
 }
 
 #[test]
+fn sqlite_repository_rejects_stale_save_after_session_delete() {
+    let app_data_dir =
+        std::env::temp_dir().join(format!("cadastrophe-session-delete-stale-test-{}", uuid()));
+    let layout = StorageLayout::from_app_data_dir(app_data_dir);
+    storage::initialize_storage(&layout).unwrap();
+
+    let first_process = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout.clone())),
+    )
+    .unwrap();
+    let created = first_process
+        .create_session(CreateCadSessionInput {
+            title: Some("Delete target".to_string()),
+            selected_runtime: None,
+        })
+        .unwrap();
+
+    let stale_process = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout.clone())),
+    )
+    .unwrap();
+    assert_eq!(stale_process.list_sessions(false).unwrap().len(), 1);
+
+    first_process.delete_session(&created.session_id).unwrap();
+
+    let stale_error = stale_process
+        .mark_session_viewed(&created.session_id)
+        .expect_err("stale process must not resurrect a deleted session");
+    assert!(stale_error.contains("stale process"));
+
+    let reloaded = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout)),
+    )
+    .unwrap();
+    assert!(reloaded.list_sessions(true).unwrap().is_empty());
+    assert!(reloaded.get_session_state(&created.session_id).is_err());
+}
+
+#[test]
 fn sqlite_repository_persists_restore_summary_fields_and_artifact_count() {
     let app_data_dir =
         std::env::temp_dir().join(format!("cadastrophe-session-repo-test-{}", uuid()));

@@ -400,6 +400,10 @@ export interface DuplicateCadSessionInput {
   title?: string;
 }
 
+export interface DeleteCadSessionInput {
+  sessionId: string;
+}
+
 export interface DeleteCadSessionResult {
   sessionId: string;
   currentSessionId?: string;
