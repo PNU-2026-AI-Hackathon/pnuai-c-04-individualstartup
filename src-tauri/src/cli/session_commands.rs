@@ -31,9 +31,9 @@ pub(super) fn session_state(
     service: &SessionService,
     app_data_dir: &PathBuf,
 ) -> CliResult<CommandOutput> {
-    let session_id = args.required("session")?;
+    let session_id = resolve_session_id(args, service)?;
     let state = service
-        .get_session_state(session_id)
+        .get_session_state(&session_id)
         .map_err(CliError::not_found)?;
     Ok(CommandOutput::new(json!({
         "appDataDir": app_data_dir,

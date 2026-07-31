@@ -386,7 +386,7 @@ fn handle_inline_vlm_judge_report(
 fn submit_inline_vlm_judge_report(
     service: &SessionService,
     run: &CadAgentRun,
-    report: Value,
+    mut report: Value,
 ) -> Result<InlineVlmSubmission, String> {
     let state = service.get_session_state(&run.session_id)?;
     let pending = state
@@ -402,6 +402,15 @@ fn submit_inline_vlm_judge_report(
             )
         })?;
     validate_inline_vlm_report(&report, &run.id, &pending.artifact_id)?;
+    let report_object = report
+        .as_object_mut()
+        .ok_or_else(|| "VLM judge report must be a JSON object.".to_string())?;
+    report_object
+        .entry("runId".to_string())
+        .or_insert_with(|| Value::String(run.id.clone()));
+    report_object
+        .entry("artifactId".to_string())
+        .or_insert_with(|| Value::String(pending.artifact_id.clone()));
     let score = report
         .get("score")
         .and_then(Value::as_f64)
@@ -414,24 +423,16 @@ fn submit_inline_vlm_judge_report(
         .and_then(Value::as_bool)
         .ok_or_else(|| "VLM judge report missing boolean passed field.".to_string())?;
     let passed = judge_passed && score >= pending.pass_threshold;
-    let revision_id = pending
-        .contract
-        .get("revisionId")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let structural_report = pending
-        .contract
-        .get("structuralReport")
-        .cloned()
-        .unwrap_or_else(|| {
-            json!({
-                "contractType": "cadastrophe.structural_report.v1",
-                "runId": run.id,
-                "artifactId": pending.artifact_id,
-                "passed": true,
-                "checks": []
-            })
-        });
+    let revision_id = pending.revision_id.clone();
+    let structural_report = pending.structural_report.clone().unwrap_or_else(|| {
+        json!({
+            "contractType": "cadastrophe.structural_report.v1",
+            "runId": run.id,
+            "artifactId": pending.artifact_id,
+            "passed": true,
+            "checks": []
+        })
+    });
     let failure_report = if passed {
         None
     } else {
@@ -540,11 +541,19 @@ fn validate_inline_vlm_report(
     run_id: &str,
     artifact_id: &str,
 ) -> Result<(), String> {
-    if report.get("runId").and_then(Value::as_str) != Some(run_id) {
-        return Err("VLM judge report runId does not match pending VLM.".to_string());
+    if let Some(value) = report.get("runId") {
+        match value.as_str() {
+            Some(value) if value == run_id => {}
+            _ => return Err("VLM judge report runId does not match pending VLM.".to_string()),
+        }
     }
-    if report.get("artifactId").and_then(Value::as_str) != Some(artifact_id) {
-        return Err("VLM judge report artifactId does not match pending VLM.".to_string());
+    if let Some(value) = report.get("artifactId") {
+        match value.as_str() {
+            Some(value) if value == artifact_id => {}
+            _ => {
+                return Err("VLM judge report artifactId does not match pending VLM.".to_string())
+            }
+        }
     }
     Ok(())
 }

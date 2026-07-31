@@ -1,7 +1,8 @@
 use crate::protocol::{
-    CadModelPlan, CadModelPlanComponent, CadModelPlanDraft, CadModelRuntimeConstraints,
-    CadRuntimeKind, CadSourceLanguage,
+    CadAgentRun, CadAgentRunStatus, CadModelPlan, CadModelPlanComponent, CadModelPlanDraft,
+    CadModelRuntimeConstraints, CadRuntimeKind, CadSourceLanguage,
 };
+use crate::session_service::SessionService;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -53,6 +54,112 @@ impl ParsedArgs {
     pub(super) fn optional(&self, name: &str) -> Option<&str> {
         self.values.get(name).map(String::as_str)
     }
+}
+
+pub(super) fn resolve_session_id(args: &ParsedArgs, service: &SessionService) -> CliResult<String> {
+    if let Some(session_id) = args.optional("session") {
+        return Ok(session_id.to_string());
+    }
+    service
+        .get_current_session()
+        .map_err(CliError::storage)?
+        .session_id
+        .ok_or_else(|| {
+            CliError::precondition_failed(
+                "No current Cadastrophe session is selected. Open a session in the app or pass --session.",
+            )
+        })
+}
+
+pub(super) fn resolve_active_run_id(
+    args: &ParsedArgs,
+    service: &SessionService,
+    session_id: &str,
+) -> CliResult<String> {
+    if let Some(run_id) = args.optional("run") {
+        return Ok(run_id.to_string());
+    }
+    let state = service
+        .get_session_state(session_id)
+        .map_err(CliError::not_found)?;
+    let running = state
+        .agent_runs
+        .iter()
+        .filter(|run| run.status == CadAgentRunStatus::Running)
+        .collect::<Vec<_>>();
+    match running.as_slice() {
+        [run] => return Ok(run.id.clone()),
+        [] => {}
+        _ => {
+            return Err(CliError::precondition_failed(
+                "Multiple running agent runs exist for the current session. Pass --run explicitly.",
+            ))
+        }
+    }
+    let queued = state
+        .agent_runs
+        .iter()
+        .filter(|run| run.status == CadAgentRunStatus::Queued)
+        .collect::<Vec<_>>();
+    match queued.as_slice() {
+        [run] => Ok(run.id.clone()),
+        [] => Err(CliError::precondition_failed(
+            "No active agent run exists for the current session. Start a run in the app or pass --run.",
+        )),
+        _ => Err(CliError::precondition_failed(
+            "Multiple queued agent runs exist for the current session. Pass --run explicitly.",
+        )),
+    }
+}
+
+pub(super) fn resolve_active_revision_id(
+    args: &ParsedArgs,
+    service: &SessionService,
+    session_id: &str,
+) -> CliResult<String> {
+    if let Some(revision_id) = args.optional("revision") {
+        return Ok(revision_id.to_string());
+    }
+    service
+        .get_session_state(session_id)
+        .map_err(CliError::not_found)?
+        .session
+        .active_revision_id
+        .ok_or_else(|| {
+            CliError::precondition_failed(
+                "The current session has no active revision. Apply source first or pass --revision.",
+            )
+        })
+}
+
+pub(super) fn resolve_source_language(
+    args: &ParsedArgs,
+    service: &SessionService,
+    session_id: &str,
+) -> CliResult<CadSourceLanguage> {
+    if let Some(language) = args.optional("language") {
+        return parse_source_language(language);
+    }
+    let state = service
+        .get_session_state(session_id)
+        .map_err(CliError::not_found)?;
+    match state.session.selected_runtime {
+        CadRuntimeKind::OpenscadWasm => Ok(CadSourceLanguage::Openscad),
+        runtime => Err(CliError::precondition_failed(format!(
+            "No source language was provided and selected runtime {runtime:?} is not supported by the CLI."
+        ))),
+    }
+}
+
+pub(super) fn ensure_run_belongs_to_session(
+    service: &SessionService,
+    session_id: &str,
+    run_id: &str,
+) -> CliResult<CadAgentRun> {
+    service
+        .get_agent_run(session_id, run_id)
+        .map_err(CliError::not_found)?
+        .ok_or_else(|| CliError::not_found(format!("Agent run not found: {run_id}")))
 }
 
 pub(super) fn parse_args(args: impl Iterator<Item = String>) -> CliResult<ParsedArgs> {

@@ -663,27 +663,27 @@ impl AgentAdapter for InlineVlmReportAdapter {
             CadWorkflowPendingVlm {
                 run_id: input.run_id.clone(),
                 artifact_id: artifact.id.clone(),
+                revision_id: Some(revision_id.clone()),
                 contract: serde_json::json!({
                     "contractType": "cadastrophe.vlm_judge.v1",
-                    "runId": input.run_id,
-                    "revisionId": revision_id,
-                    "artifactId": artifact.id,
-                    "passThreshold": 0.8,
-                    "structuralReport": {
-                        "contractType": "cadastrophe.structural_report.v1",
-                        "runId": input.run_id,
-                        "artifactId": artifact.id,
-                        "passed": true
+                    "handoff": "VLM Judge Handoff needed.",
+                    "renderedImages": {
+                        "available": true,
+                        "path": "/tmp/fixture-render.png"
                     }
                 }),
                 pass_threshold: 0.8,
+                structural_report: Some(serde_json::json!({
+                    "contractType": "cadastrophe.structural_report.v1",
+                    "runId": input.run_id,
+                    "artifactId": artifact.id,
+                    "passed": true
+                })),
                 created_at: "2026-07-30T00:00:00.000Z".to_string(),
             },
         )?;
         let report = serde_json::json!({
             "contractType": "cadastrophe.vlm_judge_report.v1",
-            "runId": input.run_id,
-            "artifactId": artifact.id,
             "score": 0.91,
             "passed": true,
             "findings": [],

@@ -33,8 +33,12 @@ pub struct CadWorkflowOuterIteration {
 pub struct CadWorkflowPendingVlm {
     pub run_id: String,
     pub artifact_id: String,
+    #[serde(skip)]
+    pub revision_id: Option<String>,
     pub contract: Value,
     pub pass_threshold: f64,
+    #[serde(skip)]
+    pub structural_report: Option<Value>,
     pub created_at: String,
 }
 

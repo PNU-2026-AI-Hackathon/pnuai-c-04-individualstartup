@@ -10,9 +10,10 @@ pub(super) fn finalize(
     service: &SessionService,
     app_data_dir: &PathBuf,
 ) -> CliResult<CommandOutput> {
-    let session_id = args.required("session")?.to_string();
-    let run_id = args.required("run")?.to_string();
-    let revision_id = args.required("revision")?.to_string();
+    let session_id = resolve_session_id(args, service)?;
+    let run_id = resolve_active_run_id(args, service, &session_id)?;
+    ensure_run_belongs_to_session(service, &session_id, &run_id)?;
+    let revision_id = resolve_active_revision_id(args, service, &session_id)?;
     let pass_threshold =
         parse_optional_f64(args.optional("pass-threshold"), 0.8, "pass-threshold")?;
     if !(0.0..=1.0).contains(&pass_threshold) {
@@ -112,28 +113,15 @@ pub(super) fn finalize(
                 &final_artifact,
                 args.optional("renderer-sidecar"),
             )?;
-            let contract = build_vlm_contract(
-                &session_id,
-                &run_id,
-                &revision_id,
-                &workflow_plan.plan,
-                &final_artifact,
-                &rendered_images,
-                pass_threshold,
-                &evaluation.report,
-            )?;
-            validate_vlm_contract(
-                &contract,
-                &session_id,
-                &run_id,
-                &revision_id,
-                &final_artifact.id,
-            )?;
+            let contract = build_vlm_contract(&rendered_images)?;
+            validate_vlm_contract(&contract)?;
             let pending_vlm = CadWorkflowPendingVlm {
                 run_id: run_id.clone(),
                 artifact_id: final_artifact.id.clone(),
+                revision_id: Some(revision_id.clone()),
                 contract: contract.clone(),
                 pass_threshold,
+                structural_report: Some(evaluation.report.clone()),
                 created_at: timestamp(),
             };
             let workflow = service

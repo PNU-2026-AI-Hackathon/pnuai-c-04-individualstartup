@@ -6,8 +6,9 @@ pub(super) fn plan_commit(
     service: &SessionService,
     _app_data_dir: &PathBuf,
 ) -> CliResult<CommandOutput> {
-    let session_id = args.required("session")?.to_string();
-    let run_id = args.required("run")?.to_string();
+    let session_id = resolve_session_id(args, service)?;
+    let run_id = resolve_active_run_id(args, service, &session_id)?;
+    ensure_run_belongs_to_session(service, &session_id, &run_id)?;
     let plan_path = args.required_path("plan")?;
     let active_revision_id = service
         .get_session_state(&session_id)
@@ -65,13 +66,14 @@ pub(super) fn source_apply(
     service: &SessionService,
     _app_data_dir: &PathBuf,
 ) -> CliResult<CommandOutput> {
-    let session_id = args.required("session")?.to_string();
-    let run_id = args.required("run")?.to_string();
+    let session_id = resolve_session_id(args, service)?;
+    let run_id = resolve_active_run_id(args, service, &session_id)?;
+    ensure_run_belongs_to_session(service, &session_id, &run_id)?;
     let source_path = args.required_path("source")?;
-    let language = parse_source_language(args.required("language")?)?;
+    let language = resolve_source_language(args, service, &session_id)?;
     if language != CadSourceLanguage::Openscad {
         return Err(CliError::invalid_input(
-            "cadastrophe-source-apply currently supports --language openscad only.",
+            "cadastrophe-source-apply currently supports openscad source only.",
         ));
     }
     let parent_revision_id = service

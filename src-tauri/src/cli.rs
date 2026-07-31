@@ -25,9 +25,7 @@ use structural::{
     StructuralEvaluation,
 };
 use support::*;
-use vlm::{
-    build_vlm_contract, render_vlm_images_for_artifact, validate_vlm_contract,
-};
+use vlm::{build_vlm_contract, render_vlm_images_for_artifact, validate_vlm_contract};
 
 pub fn session_current_main() -> i32 {
     run(

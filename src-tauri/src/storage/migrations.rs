@@ -2,7 +2,7 @@ use super::StorageResult;
 use rusqlite::{params, Connection};
 
 #[cfg(test)]
-pub(super) const SCHEMA_VERSION: i64 = 3;
+pub(super) const SCHEMA_VERSION: i64 = 4;
 
 pub fn run_migrations(connection: &mut Connection) -> StorageResult<()> {
     connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -223,6 +223,18 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         value_json TEXT NOT NULL,
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       );
+    "#,
+    },
+    Migration {
+        version: 4,
+        name: "agent_owned_vlm_handoff_context",
+        sql: r#"
+      ALTER TABLE workflow_pending_vlm
+        ADD COLUMN revision_id TEXT REFERENCES revisions(id) ON DELETE SET NULL;
+      ALTER TABLE workflow_pending_vlm
+        ADD COLUMN structural_report_json TEXT;
+      CREATE INDEX idx_workflow_pending_vlm_revision
+        ON workflow_pending_vlm(revision_id);
     "#,
     },
 ];

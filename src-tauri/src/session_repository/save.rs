@@ -262,19 +262,28 @@ pub(super) fn save_workflow_pending_vlm(
         .execute(
             r#"
             INSERT INTO workflow_pending_vlm (
-              run_id, artifact_id, contract_json, pass_threshold, created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5)
+              run_id, artifact_id, revision_id, contract_json, pass_threshold, structural_report_json, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
             ON CONFLICT(run_id) DO UPDATE SET
               artifact_id = excluded.artifact_id,
+              revision_id = excluded.revision_id,
               contract_json = excluded.contract_json,
               pass_threshold = excluded.pass_threshold,
+              structural_report_json = excluded.structural_report_json,
               created_at = excluded.created_at
             "#,
             params![
                 pending_vlm.run_id,
                 pending_vlm.artifact_id,
+                pending_vlm.revision_id,
                 serde_json::to_string(&pending_vlm.contract).map_err(|error| error.to_string())?,
                 pending_vlm.pass_threshold,
+                pending_vlm
+                    .structural_report
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|error| error.to_string())?,
                 pending_vlm.created_at,
             ],
         )

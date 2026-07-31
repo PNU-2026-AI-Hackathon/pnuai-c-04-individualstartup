@@ -116,12 +116,21 @@ fn finalize_structural_pass_creates_pending_vlm_contract() {
         Some(true)
     );
     assert_eq!(
-        output.data["vlmContract"]["renderedImages"]["format"].as_str(),
-        Some("png")
+        output.data["vlmContract"]["handoff"].as_str(),
+        Some("VLM Judge Handoff needed.")
     );
+    assert!(output.data["vlmContract"].get("plan").is_none());
+    assert!(output.data["vlmContract"].get("artifact").is_none());
+    assert!(output.data["vlmContract"].get("structuralReport").is_none());
+    assert!(output.data["vlmContract"].get("runId").is_none());
     let state = service.get_session_state(&setup.session_id).unwrap();
     assert_eq!(state.workflow.pending_vlm.len(), 1);
     assert_eq!(state.workflow.pending_vlm[0].run_id, setup.run_id);
+    assert_eq!(
+        state.workflow.pending_vlm[0].revision_id.as_deref(),
+        Some(setup.revision_id.as_str())
+    );
+    assert!(state.workflow.pending_vlm[0].structural_report.is_some());
     assert_eq!(state.workflow.outer_iterations.len(), 0);
     assert!(state
         .active_revision
@@ -140,6 +149,7 @@ fn cli_workflow_persists_required_tool_event_order() {
     let created = service
         .create_session(CreateCadSessionInput::default())
         .unwrap();
+    service.mark_session_viewed(&created.session_id).unwrap();
     let input_revision_id = created.state.session.active_revision_id.clone();
     let (run, _) = service
         .create_agent_run(
@@ -159,22 +169,13 @@ fn cli_workflow_persists_required_tool_event_order() {
     .unwrap();
 
     plan_commit(
-        &args([
-            ("session", &created.session_id),
-            ("run", &run.id),
-            ("plan", plan_path.to_str().unwrap()),
-        ]),
+        &args([("plan", plan_path.to_str().unwrap())]),
         &service,
         &app_data_dir,
     )
     .unwrap();
     let source_output = source_apply(
-        &args([
-            ("session", &created.session_id),
-            ("run", &run.id),
-            ("source", source_path.to_str().unwrap()),
-            ("language", "openscad"),
-        ]),
+        &args([("source", source_path.to_str().unwrap())]),
         &service,
         &app_data_dir,
     )
@@ -192,9 +193,6 @@ fn cli_workflow_persists_required_tool_event_order() {
     let renderer_sidecar = fixture_renderer_sidecar(&app_data_dir, "renderer-event-order");
     finalize(
         &args([
-            ("session", &created.session_id),
-            ("run", &run.id),
-            ("revision", &revision_id),
             ("sidecar", sidecar.to_str().unwrap()),
             ("renderer-sidecar", renderer_sidecar.to_str().unwrap()),
         ]),

@@ -241,11 +241,18 @@ fn sqlite_repository_restores_workflow_state_after_restart() {
             CadWorkflowPendingVlm {
                 run_id: run.id.clone(),
                 artifact_id: artifact.id.clone(),
+                revision_id: Some(updated.revision_id.clone()),
                 contract: serde_json::from_str(include_str!(
                     "../../../../fixtures/contracts/vlm_judge_contract.v1.json"
                 ))
                 .unwrap(),
                 pass_threshold: 0.8,
+                structural_report: Some(json!({
+                    "contractType": "cadastrophe.structural_report.v1",
+                    "runId": run.id,
+                    "artifactId": artifact.id,
+                    "passed": true
+                })),
                 created_at: "2026-07-29T00:00:02.000Z".to_string(),
             },
         )
@@ -475,8 +482,10 @@ fn workflow_service_rejects_cross_session_and_missing_references() {
             CadWorkflowPendingVlm {
                 run_id: run.id,
                 artifact_id: "missing-artifact".to_string(),
+                revision_id: None,
                 contract: json!({"contractType": "cadastrophe.vlm_judge.v1"}),
                 pass_threshold: 0.8,
+                structural_report: None,
                 created_at: "2026-07-29T00:00:02.000Z".to_string(),
             },
         )

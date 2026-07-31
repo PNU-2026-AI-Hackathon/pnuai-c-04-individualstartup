@@ -94,7 +94,7 @@ fn migration_runner_creates_schema_once() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(migration_count, 3);
+    assert_eq!(migration_count, 4);
     let migrations = connection
         .prepare("SELECT version, name FROM schema_migrations ORDER BY version")
         .unwrap()
@@ -109,15 +109,13 @@ fn migration_runner_creates_schema_once() {
         vec![
             (1, "milestone_2_1_initial_persistence_schema".to_string()),
             (2, "milestone_3_0_workflow_state_spine".to_string()),
-            (
-                3,
-                "milestone_4_0_first_run_and_title_source".to_string()
-            )
+            (3, "milestone_4_0_first_run_and_title_source".to_string()),
+            (4, "agent_owned_vlm_handoff_context".to_string())
         ]
     );
 
     let applied_versions = applied_schema_versions(&connection);
-    assert_eq!(applied_versions, vec![1, 2, SCHEMA_VERSION]);
+    assert_eq!(applied_versions, vec![1, 2, 3, SCHEMA_VERSION]);
     let mut connection = Connection::open(layout.database_path()).unwrap();
     run_migrations(&mut connection).unwrap();
     assert_eq!(applied_schema_versions(&connection), applied_versions);
@@ -151,7 +149,7 @@ fn milestone_3_and_4_migrations_upgrade_version_1_database_idempotently() {
     run_migrations(&mut connection).unwrap();
     run_migrations(&mut connection).unwrap();
 
-    assert_eq!(applied_schema_versions(&connection), vec![1, 2, 3]);
+    assert_eq!(applied_schema_versions(&connection), vec![1, 2, 3, 4]);
     for (table, expected_columns) in [
         (
             "workflow_plans",
@@ -182,8 +180,10 @@ fn milestone_3_and_4_migrations_upgrade_version_1_database_idempotently() {
             vec![
                 "run_id",
                 "artifact_id",
+                "revision_id",
                 "contract_json",
                 "pass_threshold",
+                "structural_report_json",
                 "created_at",
             ],
         ),
@@ -206,7 +206,9 @@ fn milestone_3_and_4_migrations_upgrade_version_1_database_idempotently() {
     let app_kv_columns = table_columns(&connection, "app_kv");
     for expected_column in ["key", "value_json", "updated_at"] {
         assert!(
-            app_kv_columns.iter().any(|column| column == expected_column),
+            app_kv_columns
+                .iter()
+                .any(|column| column == expected_column),
             "missing app_kv.{expected_column}"
         );
     }

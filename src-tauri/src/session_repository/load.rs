@@ -432,7 +432,9 @@ pub(super) fn load_workflow_pending_vlm(
             SELECT workflow_pending_vlm.run_id, workflow_pending_vlm.artifact_id,
                    workflow_pending_vlm.contract_json,
                    workflow_pending_vlm.pass_threshold,
-                   workflow_pending_vlm.created_at
+                   workflow_pending_vlm.created_at,
+                   workflow_pending_vlm.revision_id,
+                   workflow_pending_vlm.structural_report_json
             FROM workflow_pending_vlm
             INNER JOIN agent_runs ON agent_runs.id = workflow_pending_vlm.run_id
             INNER JOIN sessions ON sessions.id = agent_runs.session_id
@@ -444,12 +446,20 @@ pub(super) fn load_workflow_pending_vlm(
     let rows = statement
         .query_map([], |row| {
             let contract_json: String = row.get(2)?;
+            let structural_report_json: Option<String> = row.get(6)?;
             Ok(CadWorkflowPendingVlm {
                 run_id: row.get(0)?,
                 artifact_id: row.get(1)?,
+                revision_id: row.get(5)?,
                 contract: serde_json::from_str(&contract_json)
                     .map_err(|error| to_rusqlite_error(error.to_string()))?,
                 pass_threshold: row.get(3)?,
+                structural_report: structural_report_json
+                    .map(|value| {
+                        serde_json::from_str(&value)
+                            .map_err(|error| to_rusqlite_error(error.to_string()))
+                    })
+                    .transpose()?,
                 created_at: row.get(4)?,
             })
         })

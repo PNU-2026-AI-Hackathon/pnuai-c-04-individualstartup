@@ -1,5 +1,5 @@
 use crate::cli::artifacts::{artifact_filesystem_path, base64_encode, ok_cli_diagnostics};
-use crate::cli::support::{require_contract_type, validate_plan, CliError, CliResult};
+use crate::cli::support::{require_contract_type, CliError, CliResult};
 use crate::protocol::{CadArtifact, CadArtifactKind, CadModelPlan, PersistRuntimeArtifactInput};
 use crate::session_service::SessionService;
 use serde_json::{json, Value};
@@ -246,159 +246,39 @@ fn is_positive_json_number(value: Option<&Value>) -> bool {
         .is_some_and(|value| value.is_finite() && value > 0.0)
 }
 
-pub(super) fn build_vlm_contract(
-    session_id: &str,
-    run_id: &str,
-    revision_id: &str,
-    plan: &CadModelPlan,
-    artifact: &CadArtifact,
-    rendered_image: &CadArtifact,
-    pass_threshold: f64,
-    structural_report: &Value,
-) -> CliResult<Value> {
-    let metadata = artifact.metadata.as_ref();
-    let relative_path = metadata
-        .and_then(|metadata| metadata.get("relativePath"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            CliError::invalid_input("Final artifact metadata is missing relativePath.")
-        })?;
-    let sha256 = metadata
-        .and_then(|metadata| metadata.get("sha256"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| CliError::invalid_input("Final artifact metadata is missing sha256."))?;
+pub(super) fn build_vlm_contract(rendered_image: &CadArtifact) -> CliResult<Value> {
     let image_metadata = rendered_image.metadata.as_ref();
-    let image_relative_path = image_metadata
-        .and_then(|metadata| metadata.get("relativePath"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            CliError::invalid_input("Rendered image artifact metadata is missing relativePath.")
-        })?;
     let image_path = image_metadata
         .and_then(|metadata| metadata.get("path"))
         .and_then(Value::as_str)
         .ok_or_else(|| {
             CliError::invalid_input("Rendered image artifact metadata is missing path.")
         })?;
-    let image_sha256 = image_metadata
-        .and_then(|metadata| metadata.get("sha256"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            CliError::invalid_input("Rendered image artifact metadata is missing sha256.")
-        })?;
-    let view_mode = image_metadata
-        .and_then(|metadata| metadata.get("viewMode"))
-        .cloned()
-        .unwrap_or_else(|| json!("9-view"));
-    let views = image_metadata
-        .and_then(|metadata| metadata.get("views"))
-        .cloned()
-        .unwrap_or_else(|| json!([]));
     Ok(json!({
         "contractType": "cadastrophe.vlm_judge.v1",
-        "sessionId": session_id,
-        "runId": run_id,
-        "revisionId": revision_id,
-        "artifactId": artifact.id,
-        "passThreshold": pass_threshold,
-        "prompt": "Judge whether the final CAD artifact visually satisfies the committed CadModelPlan.",
-        "plan": plan,
-        "artifact": {
-            "format": artifact.format,
-            "relativePath": relative_path,
-            "sha256": sha256,
-            "bytes": artifact.bytes.unwrap_or(0),
-            "uri": artifact.uri
-        },
+        "handoff": "VLM Judge Handoff needed.",
         "renderedImages": {
             "available": true,
-            "artifactId": rendered_image.id,
-            "format": rendered_image.format,
-            "relativePath": image_relative_path,
-            "path": image_path,
-            "sha256": image_sha256,
-            "bytes": rendered_image.bytes.unwrap_or(0),
-            "viewMode": view_mode,
-            "views": views
+            "path": image_path
         },
-        "structuralReport": structural_report
     }))
 }
 
-pub(super) fn validate_vlm_contract(
-    contract: &Value,
-    session_id: &str,
-    run_id: &str,
-    revision_id: &str,
-    artifact_id: &str,
-) -> CliResult<()> {
+pub(super) fn validate_vlm_contract(contract: &Value) -> CliResult<()> {
     validate_vlm_contract_value(contract)?;
-    for (field, expected) in [
-        ("sessionId", session_id),
-        ("runId", run_id),
-        ("revisionId", revision_id),
-        ("artifactId", artifact_id),
-    ] {
-        if contract.get(field).and_then(Value::as_str) != Some(expected) {
-            return Err(CliError::invalid_input(format!(
-                "VLM judge contract {field} does not match expected value."
-            )));
-        }
-    }
     Ok(())
 }
 
 pub(super) fn validate_vlm_contract_value(contract: &Value) -> CliResult<()> {
     require_contract_type(contract, "cadastrophe.vlm_judge.v1", "VLM judge contract")?;
-    for field in ["sessionId", "runId", "revisionId", "artifactId", "prompt"] {
-        if contract
-            .get(field)
-            .and_then(Value::as_str)
-            .is_none_or(str::is_empty)
-        {
-            return Err(CliError::invalid_input(format!(
-                "VLM judge contract missing non-empty {field}."
-            )));
-        }
-    }
-    let threshold = contract
-        .get("passThreshold")
-        .and_then(Value::as_f64)
-        .ok_or_else(|| CliError::invalid_input("VLM judge contract missing passThreshold."))?;
-    if !(0.0..=1.0).contains(&threshold) {
+    if contract
+        .get("handoff")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
         return Err(CliError::invalid_input(
-            "VLM judge contract passThreshold must be between 0.0 and 1.0.",
+            "VLM judge contract missing non-empty handoff.",
         ));
-    }
-    let plan: CadModelPlan = serde_json::from_value(
-        contract
-            .get("plan")
-            .cloned()
-            .ok_or_else(|| CliError::invalid_input("VLM judge contract missing plan."))?,
-    )
-    .map_err(|error| {
-        CliError::invalid_input(format!("VLM judge contract plan is invalid: {error}"))
-    })?;
-    validate_plan(&plan)?;
-    let artifact = contract
-        .get("artifact")
-        .and_then(Value::as_object)
-        .ok_or_else(|| CliError::invalid_input("VLM judge contract missing artifact object."))?;
-    if artifact.get("format").and_then(Value::as_str) != Some("stl") {
-        return Err(CliError::invalid_input(
-            "VLM judge contract artifact.format must be stl.",
-        ));
-    }
-    for field in ["relativePath", "sha256"] {
-        if artifact
-            .get(field)
-            .and_then(Value::as_str)
-            .is_none_or(str::is_empty)
-        {
-            return Err(CliError::invalid_input(format!(
-                "VLM judge contract artifact missing non-empty {field}."
-            )));
-        }
     }
     let rendered_images = contract
         .get("renderedImages")
@@ -411,29 +291,13 @@ pub(super) fn validate_vlm_contract_value(contract: &Value) -> CliResult<()> {
             "VLM judge contract renderedImages.available must be true.",
         ));
     }
-    if rendered_images.get("format").and_then(Value::as_str) != Some("png") {
-        return Err(CliError::invalid_input(
-            "VLM judge contract renderedImages.format must be png.",
-        ));
-    }
-    for field in ["artifactId", "relativePath", "path", "sha256", "viewMode"] {
-        if rendered_images
-            .get(field)
-            .and_then(Value::as_str)
-            .is_none_or(str::is_empty)
-        {
-            return Err(CliError::invalid_input(format!(
-                "VLM judge contract renderedImages missing non-empty {field}."
-            )));
-        }
-    }
     if rendered_images
-        .get("views")
-        .and_then(Value::as_array)
-        .is_none_or(Vec::is_empty)
+        .get("path")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
     {
         return Err(CliError::invalid_input(
-            "VLM judge contract renderedImages.views must not be empty.",
+            "VLM judge contract renderedImages missing non-empty path.",
         ));
     }
     Ok(())

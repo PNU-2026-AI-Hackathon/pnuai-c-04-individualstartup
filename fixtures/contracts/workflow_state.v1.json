@@ -61,9 +61,11 @@
       "artifactId": "artifact-fixture-stl",
       "contract": {
         "contractType": "cadastrophe.vlm_judge.v1",
-        "runId": "run-fixture-1",
-        "artifactId": "artifact-fixture-stl",
-        "passThreshold": 0.8
+        "handoff": "VLM Judge Handoff needed.",
+        "renderedImages": {
+          "available": true,
+          "path": "/absolute/path/render-grid.png"
+        }
       },
       "passThreshold": 0.8,
       "createdAt": "2026-07-29T00:00:02.000Z"

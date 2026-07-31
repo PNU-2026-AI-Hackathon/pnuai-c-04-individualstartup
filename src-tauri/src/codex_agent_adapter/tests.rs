@@ -24,13 +24,19 @@ fn prompt_limits_agent_to_modeling_cli_surface() {
     });
 
     assert!(prompt.contains("--app-data-dir '/tmp/Cad App Data'"));
-    assert!(prompt.contains(
-            "cadastrophe-plan-commit --app-data-dir '/tmp/Cad App Data' --session session-1 --run run-1"
-        ));
+    assert!(
+        prompt.contains("cadastrophe-plan-commit --app-data-dir '/tmp/Cad App Data' --plan <file>")
+    );
     assert!(prompt.contains("Do not call `cadastrophe-source-apply`"));
-    assert!(prompt.contains(
-        "cadastrophe-finalize --app-data-dir '/tmp/Cad App Data' --session session-1 --run run-1"
-    ));
+    assert!(prompt.contains("cadastrophe-finalize --app-data-dir '/tmp/Cad App Data'"));
+    assert!(prompt
+        .contains("cadastrophe-source-apply --app-data-dir '/tmp/Cad App Data' --source <file>"));
+    assert!(!prompt.contains("--session session-1"));
+    assert!(!prompt.contains("--run run-1"));
+    assert!(!prompt.contains("--language openscad"));
+    assert!(!prompt.contains("--revision <revision_id>"));
+    assert!(!prompt.contains("sessionId: session-1"));
+    assert!(!prompt.contains("runId: run-1"));
     assert!(prompt.contains("cadastrophe.vlm_judge.v1"));
     assert!(prompt.contains("the app will consume it and record the VLM result automatically"));
     assert!(prompt.contains("Do not call `cadastrophe-preview-render`"));

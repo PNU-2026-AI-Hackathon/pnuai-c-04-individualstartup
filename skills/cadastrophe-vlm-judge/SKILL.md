@@ -1,6 +1,6 @@
 ---
 name: cadastrophe-vlm-judge
-description: Visually judge a Cadastrophe CAD artifact from a VLM judge contract in a dedicated subagent, using rendered image evidence and returning only the strict JSON report. Use only when the parent agent provides a Cadastrophe visual judge contract with the natural language request, CAD plan or source summary, artifact paths, rendered image paths, and pass threshold.
+description: Visually judge a Cadastrophe CAD artifact from a minimal VLM handoff in a dedicated subagent, using rendered image evidence and returning only the strict JSON report. Use only when the parent agent provides a Cadastrophe VLM handoff, rendered image path, and the natural language request.
 ---
 
 # Cadastrophe VLM Judge
@@ -11,60 +11,31 @@ modify files, call modeling tools, update sessions, or repair source.
 
 Return only the required JSON object.
 
-## Required Contract
+## Required Handoff
 
-Expect a contract shaped like this:
+Expect a minimal handoff shaped like this:
 
 ```json
 {
   "contractType": "cadastrophe.vlm_judge.v1",
-  "sessionId": "session-id",
-  "runId": "run-id",
-  "revisionId": "revision-id",
-  "artifactId": "final-stl-artifact-id",
-  "passThreshold": 0.8,
-  "prompt": "Judge whether the final CAD artifact visually satisfies the committed CadModelPlan.",
-  "plan": {
-    "schemaVersion": "cad_model_plan.v1",
-    "summary": "brief modeling intent",
-    "mainComponent": {
-      "name": "base",
-      "purpose": "rectangular base"
-    },
-    "supportingComponents": [],
-    "expectedAspectRatio": { "x": 1, "y": 1, "z": 0.4, "tolerance": 0.2 },
-    "sourceLanguage": "openscad",
-    "runtimeConstraints": { "runtime": "openscad-wasm" }
-  },
-  "artifact": {
-    "format": "stl",
-    "relativePath": "artifacts/session/revision/model.stl",
-    "sha256": "...",
-    "bytes": 12345
-  },
+  "handoff": "VLM Judge Handoff needed.",
   "renderedImages": {
     "available": true,
-    "artifactId": "render-grid-artifact-id",
-    "format": "png",
-    "relativePath": "artifacts/session/revision/render-grid.png",
-    "path": "/absolute/path/render-grid.png",
-    "sha256": "...",
-    "bytes": 23456,
-    "viewMode": "9-view",
-    "views": ["Front-Left-Top", "Front", "Front-Right-Top", "Left", "Top", "Right", "Bottom", "Back", "Back-Right-Top"]
+    "path": "/absolute/path/render-grid.png"
   }
 }
 ```
 
-If the contract lacks usable rendered image evidence, return a failing report
+The parent must also provide the user's original CAD request. If the handoff
+lacks usable rendered image evidence, return a failing report
 explaining that the visual artifact is missing. Do not invent a render pipeline
 unless the parent explicitly provides one.
 
 ## Judgment Procedure
 
 1. Inspect the rendered image path in `renderedImages.path` first.
-2. Enumerate every visible component, using names from `plan.mainComponent` and `plan.supportingComponents` when possible.
-3. Compare visible components against the request and plan. Look for missing parts, wrong counts, wrong placement, implausible proportions, and visible contradictions.
+2. Enumerate every visible component using names from the user's request when possible.
+3. Compare visible components against the request. Look for missing parts, wrong counts, wrong placement, implausible proportions, and visible contradictions.
 4. Check inter-view consistency when multiple labeled views are present.
 5. Score structure, components, and proportions using the rubric below.
 6. Return only JSON.
@@ -93,7 +64,8 @@ Proportions:
 - 3: Natural and consistent with the request.
 
 Set `score` to `composite / 9.0`. Set `passed` to true only when
-`score >= passThreshold` and no major requested feature is visibly missing.
+`score >= 0.8` and no major requested feature is visibly missing. The app may
+apply its own persisted threshold again when it consumes the report.
 
 ## Output
 
@@ -102,8 +74,6 @@ Return exactly this JSON shape:
 ```json
 {
   "contractType": "cadastrophe.vlm_judge_report.v1",
-  "runId": "run-id",
-  "artifactId": "final-stl-artifact-id",
   "score": 0.89,
   "passed": true,
   "findings": [
@@ -134,11 +104,11 @@ Rules:
 
 - Output no prose outside the JSON object.
 - `contractType` must be exactly `cadastrophe.vlm_judge_report.v1`.
-- `runId` and `artifactId` must exactly match the contract.
+- If the handoff includes `runId` or `artifactId`, echo them exactly. If it does not, omit them; the app owns pending VLM state and will attach the IDs.
 - `score` must be a number from `0.0` to `1.0`.
 - `composite` must equal `structure + components + proportions`.
 - `score` must equal `composite / 9.0`, rounded only as needed.
-- `passed` must be consistent with `passThreshold`.
+- `passed` must be consistent with the default `0.8` threshold.
 - Mention every major requested component in `enumeration`, including absent components.
 - Keep `diagnostic` actionable for the modeling agent.
 - If `passed` is false, include a non-null `failureReport` with `contractType: "cadastrophe.failure_report.v1"`, a concrete `reason`, and `nextAction: "outer_loop_refine_source"`.

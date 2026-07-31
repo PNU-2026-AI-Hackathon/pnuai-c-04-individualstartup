@@ -17,10 +17,10 @@ repair, and outer-loop refinement.
 Use these exact command names:
 
 - `cadastrophe-session-current`: inspect current session id, active revision, selected runtime, and app data path.
-- `cadastrophe-session-state --session <id>`: inspect session/revision/artifact/run/workflow state JSON.
-- `cadastrophe-plan-commit --session <id> --run <id> --plan <file>`: commit a `CadModelPlanDraft` for the run.
-- `cadastrophe-source-apply --session <id> --run <id> --source <file> --language openscad`: append a source revision linked to the run; the app renders preview/STL automatically and returns diagnostics.
-- `cadastrophe-finalize --session <id> --run <id> --revision <id>`: lock final artifacts, run structural anchor, render mandatory VLM image evidence, and either return a failure report or a pending VLM contract.
+- `cadastrophe-session-state`: inspect the current session/revision/artifact/run/workflow state JSON.
+- `cadastrophe-plan-commit --plan <file>`: commit a `CadModelPlanDraft` for the active run.
+- `cadastrophe-source-apply --source <file>`: append OpenSCAD source for the active run; the app renders preview/STL automatically and returns diagnostics.
+- `cadastrophe-finalize`: lock final artifacts for the active revision/run, run structural anchor, render mandatory VLM image evidence, and either return a failure report or a pending VLM handoff.
 
 Important CLI data fields include `nextAction`, `next_action`, `diagnostics`,
 `failureReport`, `failure_report`, `artifactPaths`, `contractType`,
@@ -29,16 +29,16 @@ status and JSON error envelopes as authoritative.
 
 ## Required Workflow
 
-1. Reuse the current UI-visible session when possible. Use `cadastrophe-session-current` or the provided session id.
-2. Inspect `cadastrophe-session-state --session <id>` before retrying, and carry the latest structural or VLM `failureReport`/`failure_report` into the next attempt.
-3. Create a `CadModelPlanDraft` JSON file and commit it with `cadastrophe-plan-commit --session <id> --run <run_id> --plan <file>`.
+1. Reuse the current UI-visible session. Use `cadastrophe-session-current` only when you need to inspect app routing state.
+2. Inspect `cadastrophe-session-state` before retrying, and carry the latest structural or VLM `failureReport`/`failure_report` into the next attempt.
+3. Create a `CadModelPlanDraft` JSON file and commit it with `cadastrophe-plan-commit --plan <file>`.
 4. Do not apply source or finalize until plan commit succeeds for the same run.
 5. Generate source for the selected runtime. Current primary support is OpenSCAD through `openscad-wasm`.
-6. Call `cadastrophe-source-apply --session <id> --run <run_id> --source <file> --language openscad`.
+6. Call `cadastrophe-source-apply --source <file>`.
 7. Source apply triggers app-owned preview render and returns diagnostics. If runtime diagnostics contain errors, explain the cause briefly, repair the source, then repeat source apply.
-8. When preview diagnostics pass, call `cadastrophe-finalize --session <id> --run <run_id> --revision <revision_id>`.
+8. When preview diagnostics pass, call `cadastrophe-finalize`.
 9. Finalize runs export, structural anchor, VLM evidence rendering, and pending VLM persistence. If finalization returns a structural `failure_report` or `next_action` of `outer_loop_refine_source`, use that report for a new plan/source attempt.
-10. If finalization returns a `cadastrophe.vlm_judge.v1` contract, verify it includes `renderedImages.available: true` and a usable rendered PNG path, then hand that exact contract to a separate subagent using the `cadastrophe-vlm-judge` skill. Ask the subagent to return only strict JSON.
+10. If finalization returns a `cadastrophe.vlm_judge.v1` handoff, verify it includes `renderedImages.available: true` and a usable rendered PNG path, then hand the handoff, image path, and original user request to a separate subagent using the `cadastrophe-vlm-judge` skill. Ask the subagent to return only strict JSON.
 11. Return the strict VLM judge report as the assistant message. The app consumes the report automatically and records pass/fail workflow state.
 12. If the app-recorded VLM result fails, refine from the VLM failure report and repeat from plan commit. If it passes, finish with the final revision/artifact ids.
 
@@ -77,31 +77,22 @@ height = 12; // @param min=4 max=80 step=1 label=Height
 ## VLM Handoff
 
 The main agent must not perform independent VLM judgment. Only hand off when
-finalization returns a contract with:
+finalization returns a minimal handoff with:
 
 ```json
 {
   "contractType": "cadastrophe.vlm_judge.v1",
-  "artifactId": "final-stl-artifact-id",
-  "passThreshold": 0.8,
-  "artifact": {
-    "format": "stl",
-    "relativePath": "artifacts/session/revision/final.stl",
-    "sha256": "..."
-  },
+  "handoff": "VLM Judge Handoff needed.",
   "renderedImages": {
     "available": true,
-    "format": "png",
-    "path": "/absolute/path/render-grid.png",
-    "viewMode": "9-view",
-    "views": ["Front-Left-Top", "Front", "Front-Right-Top", "Left", "Top", "Right", "Bottom", "Back", "Back-Right-Top"]
+    "path": "/absolute/path/render-grid.png"
   }
 }
 ```
 
 Start a separate subagent with the `cadastrophe-vlm-judge` skill and pass the
-contract plus the user's original request. The subagent must return a strict
-`cadastrophe.vlm_judge_report.v1` JSON report. Return that report as the
+handoff, rendered image path, and user's original request. The subagent must
+return a strict `cadastrophe.vlm_judge_report.v1` JSON report. Return that report as the
 assistant message so the app can consume it and record pass/fail in workflow
 state.
 
