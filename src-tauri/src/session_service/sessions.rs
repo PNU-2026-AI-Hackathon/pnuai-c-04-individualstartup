@@ -265,9 +265,17 @@ impl SessionService {
 
     pub fn delete_session(&self, session_id: &str) -> Result<DeleteCadSessionResult, String> {
         let deleted_at = timestamp();
+        eprintln!(
+            "[cadastrophe:delete-session] service delete started session_id={} deleted_at={}",
+            session_id, deleted_at
+        );
         let current_session_id = {
             let mut state = self.inner.lock().map_err(lock_error)?;
             require_session(&state, session_id)?;
+            eprintln!(
+                "[cadastrophe:delete-session] service session found session_id={}",
+                session_id
+            );
             state.sessions.remove(session_id);
             state.messages.remove(session_id);
             state.conversation.remove(session_id);
@@ -291,6 +299,12 @@ impl SessionService {
                 .filter(|revision| revision.session_id == session_id)
                 .map(|revision| revision.id.clone())
                 .collect();
+            eprintln!(
+                "[cadastrophe:delete-session] service removing related state session_id={} run_count={} revision_count={}",
+                session_id,
+                run_ids.len(),
+                revision_ids.len()
+            );
             for revision_id in &revision_ids {
                 state.revisions.remove(revision_id);
             }
@@ -307,6 +321,10 @@ impl SessionService {
             state.current_interactive_session_id.clone()
         };
         self.repository.delete_session(session_id, &deleted_at)?;
+        eprintln!(
+            "[cadastrophe:delete-session] service delete persisted session_id={} current_session_id={:?}",
+            session_id, current_session_id
+        );
         Ok(DeleteCadSessionResult {
             session_id: session_id.to_string(),
             current_session_id,

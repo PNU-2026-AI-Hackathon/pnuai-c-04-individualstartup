@@ -139,7 +139,14 @@ export function SessionBrowser({
                   {session.archived ? <ArchiveRestore size={16} /> : <Archive size={16} />}
                   {session.archived ? "Unarchive" : "Archive"}
                 </button>
-                <button onClick={() => onDelete(session.id)} disabled={busy} title="Delete session">
+                <button
+                  onClick={() => {
+                    console.info("[cadastrophe:delete-session] browser delete clicked", { sessionId: session.id });
+                    onDelete(session.id);
+                  }}
+                  disabled={busy}
+                  title="Delete session"
+                >
                   <Trash2 size={16} /> Delete
                 </button>
               </div>

@@ -205,6 +205,7 @@ export function SessionRail({
                         <button
                           role="menuitem"
                           onClick={() => {
+                            console.info("[cadastrophe:delete-session] rail delete clicked", { sessionId: session.id });
                             setOpenMenuSessionId(null);
                             onDelete(session.id);
                           }}

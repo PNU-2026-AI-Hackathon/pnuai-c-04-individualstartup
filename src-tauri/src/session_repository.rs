@@ -456,12 +456,16 @@ impl SessionRepository for SqliteSessionRepository {
 
     fn delete_session(&self, session_id: &str, deleted_at: &str) -> SessionRepositoryResult<()> {
         let connection = self.connection()?;
-        connection
+        let changed_rows = connection
             .execute(
                 "UPDATE sessions SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2",
                 params![deleted_at, session_id],
             )
             .map_err(|error| error.to_string())?;
+        eprintln!(
+            "[cadastrophe:delete-session] sqlite delete update finished session_id={} deleted_at={} changed_rows={}",
+            session_id, deleted_at, changed_rows
+        );
         Ok(())
     }
 

@@ -40,6 +40,17 @@ button:disabled {
   cursor: not-allowed;
 }
 
+button.danger {
+  border-color: #b9605f;
+  background: #fff3f2;
+  color: #8a2f2d;
+}
+
+button.danger:hover:not(:disabled) {
+  border-color: #a33a38;
+  background: #ffe8e6;
+}
+
 input,
 textarea {
   width: 100%;
@@ -172,6 +183,71 @@ textarea {
 
 .warning span {
   flex: 1;
+}
+
+.confirm-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(23, 32, 38, 0.36);
+}
+
+.confirm-dialog {
+  display: grid;
+  width: min(100%, 380px);
+  gap: 10px;
+  border: 1px solid #c8d1da;
+  border-radius: 8px;
+  padding: 12px;
+  background: #ffffff;
+  box-shadow: 0 18px 44px rgba(23, 32, 38, 0.22);
+}
+
+.confirm-dialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.confirm-dialog h2,
+.confirm-dialog p {
+  margin: 0;
+}
+
+.confirm-dialog h2 {
+  font-size: 16px;
+}
+
+.confirm-dialog p {
+  overflow-wrap: anywhere;
+  font-weight: 700;
+}
+
+.confirm-dialog code {
+  overflow-wrap: anywhere;
+  border: 1px solid #e3e8ed;
+  border-radius: 6px;
+  padding: 6px;
+  background: #f7fafc;
+  color: #5f6f7e;
+  font-size: 12px;
+}
+
+.confirm-dialog header button {
+  width: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .connection {

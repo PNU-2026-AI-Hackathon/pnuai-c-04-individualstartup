@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Menu } from "lucide-react";
+import { Menu, Trash2, X } from "lucide-react";
 import type {
   CadMesh,
   CadDiagnostics,
@@ -82,6 +82,7 @@ export function App() {
   const [sessionList, setSessionList] = useState<CadSessionListItem[]>([]);
   const [locallyDeletedSessionIds, setLocallyDeletedSessionIds] = useState<Set<string>>(new Set());
   const locallyDeletedSessionIdsRef = useRef<Set<string>>(new Set());
+  const [pendingDeleteSessionId, setPendingDeleteSessionId] = useState<string | null>(null);
   const [sessionSearchFields, setSessionSearchFields] = useState<string[]>([]);
   const [integrityResult, setIntegrityResult] = useState<VerifyArtifactFilesResult | null>(null);
   const [hiddenStarterSessionIds, setHiddenStarterSessionIds] = useState<Set<string>>(() =>
@@ -107,6 +108,15 @@ export function App() {
     () => filterSessionsByDeletedIds(sessionList, locallyDeletedSessionIds),
     [locallyDeletedSessionIds, sessionList]
   );
+  const pendingDeleteSession = pendingDeleteSessionId
+    ? sessionList.find((session) => session.id === pendingDeleteSessionId) ??
+      (state?.session.id === pendingDeleteSessionId
+        ? {
+            id: state.session.id,
+            title: state.session.title
+          }
+        : undefined)
+    : undefined;
   const showStarterOverlay = Boolean(
     state &&
     !hiddenStarterSessionIds.has(state.session.id) &&
@@ -550,28 +560,56 @@ export function App() {
     });
   }
 
-  async function deleteSession(sessionId: string) {
-    if (!window.confirm("Delete this session and its local management data?")) return;
+  function requestDeleteSession(sessionId: string) {
+    setPendingDeleteSessionId(sessionId);
+  }
+
+  async function confirmDeleteSession() {
+    if (!pendingDeleteSessionId) return;
+    const sessionId = pendingDeleteSessionId;
+    setPendingDeleteSessionId(null);
+    console.info("[cadastrophe:delete-session] handler entered", { sessionId });
     markSessionLocallyDeleted(sessionId);
+    console.info("[cadastrophe:delete-session] marked locally deleted", { sessionId });
     setSessionList((sessions) => sessions.filter((session) => session.id !== sessionId));
+    console.info("[cadastrophe:delete-session] filtered session list optimistically", { sessionId });
     await runBusy(async () => {
+      console.info("[cadastrophe:delete-session] invoking backend delete", { sessionId });
       const deleted = await backend.deleteSession(sessionId).catch(async (caught) => {
+        console.error("[cadastrophe:delete-session] backend delete failed", { sessionId, error: caught });
         restoreLocallyDeletedSession(sessionId);
-        await refreshSessionList().catch(() => undefined);
+        console.warn("[cadastrophe:delete-session] restored local delete marker after backend failure", { sessionId });
+        await refreshSessionList().catch((refreshError) => {
+          console.error("[cadastrophe:delete-session] refresh after delete failure also failed", {
+            sessionId,
+            error: refreshError
+          });
+        });
         throw caught;
       });
+      console.info("[cadastrophe:delete-session] backend delete succeeded", { sessionId, deleted });
       setOpenedArtifactPath(null);
       await refreshSessionList();
+      console.info("[cadastrophe:delete-session] refreshed session list after delete", { sessionId });
       if (state?.session.id !== sessionId) {
+        console.info("[cadastrophe:delete-session] deleted session was not active session", {
+          sessionId,
+          activeSessionId: state?.session.id
+        });
         return;
       }
       const nextSessionId =
         deleted.currentSessionId ??
         filterLocallyDeletedSessions((await backend.listSessions({ includeArchived: false })).sessions)[0]?.id;
+      console.info("[cadastrophe:delete-session] resolved replacement session", { sessionId, nextSessionId });
       if (nextSessionId) {
         const nextState = await loadSession(nextSessionId, { forceSource: true });
         await backend.markSessionViewed(nextSessionId);
         navigateTo(view, nextState.session.id);
+        console.info("[cadastrophe:delete-session] navigated to replacement session", {
+          sessionId,
+          nextSessionId
+        });
         return;
       }
       const created = await backend.createSession({ title: "Cadastrophe review" });
@@ -579,6 +617,10 @@ export function App() {
       await backend.markSessionViewed(created.sessionId);
       await refreshSessionList();
       navigateTo(view, created.sessionId);
+      console.info("[cadastrophe:delete-session] created replacement session", {
+        sessionId,
+        createdSessionId: created.sessionId
+      });
     });
   }
 
@@ -863,12 +905,50 @@ export function App() {
         onArchiveChange={setSessionArchived}
         onRename={renameSession}
         onDuplicate={duplicateSession}
-        onDelete={deleteSession}
+        onDelete={requestDeleteSession}
         onNavigate={navigateTo}
         onClose={() => setSessionRailOpen(false)}
       />
       {sessionRailOpen ? (
         <button className="rail-backdrop" aria-label="Close session rail" onClick={() => setSessionRailOpen(false)} />
+      ) : null}
+      {pendingDeleteSessionId ? (
+        <div className="confirm-dialog-backdrop" role="presentation" onMouseDown={() => setPendingDeleteSessionId(null)}>
+          <section
+            aria-labelledby="delete-session-title"
+            aria-modal="true"
+            className="confirm-dialog"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setPendingDeleteSessionId(null);
+            }}
+            onMouseDown={(event) => event.stopPropagation()}
+            role="dialog"
+            tabIndex={-1}
+          >
+            <header>
+              <h2 id="delete-session-title">Delete session?</h2>
+              <button
+                aria-label="Cancel delete session"
+                autoFocus
+                disabled={busy}
+                onClick={() => setPendingDeleteSessionId(null)}
+                title="Cancel delete session"
+              >
+                <X size={16} />
+              </button>
+            </header>
+            <p>{pendingDeleteSession?.title ?? "Untitled CAD session"}</p>
+            <code>{pendingDeleteSessionId}</code>
+            <div className="confirm-dialog-actions">
+              <button disabled={busy} onClick={() => setPendingDeleteSessionId(null)} title="Cancel delete session">
+                Cancel
+              </button>
+              <button className="danger" disabled={busy} onClick={confirmDeleteSession} title="Delete session">
+                <Trash2 size={16} /> Delete
+              </button>
+            </div>
+          </section>
+        </div>
       ) : null}
 
       <div className="workspace-main">
@@ -955,7 +1035,7 @@ export function App() {
             onArchiveChange={setSessionArchived}
             onRename={renameSession}
             onDuplicate={duplicateSession}
-            onDelete={deleteSession}
+            onDelete={requestDeleteSession}
           />
         ) : null}
 

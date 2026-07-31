@@ -96,6 +96,10 @@ fn delete_session(
     input: DeleteCadSessionInput,
     state: State<'_, AppState>,
 ) -> Result<DeleteCadSessionResult, String> {
+    eprintln!(
+        "[cadastrophe:delete-session] tauri command received session_id={}",
+        input.session_id
+    );
     state.service.delete_session(&input.session_id)
 }
 
