@@ -207,11 +207,17 @@ export interface CadModelAspectRatio {
   tolerance: number;
 }
 
+export interface CadModelPlanDraftAspectRatio {
+  x: number;
+  y: number;
+  z: number;
+}
+
 export interface CadModelPlanDraft {
   summary: string;
   mainComponent: CadModelPlanComponent;
   supportingComponents: CadModelPlanComponent[];
-  expectedAspectRatio: CadModelAspectRatio;
+  expectedAspectRatio: CadModelPlanDraftAspectRatio;
 }
 
 export interface CadModelRuntimeConstraints {

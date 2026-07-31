@@ -12,6 +12,7 @@ const APP_IDENTIFIER: &str = "dev.cadastrophe.desktop";
 const PLAN_SCHEMA_VERSION: &str = "cad_model_plan.v1";
 const PLAN_FORBIDDEN_FEATURES: &[&str] = &["external_file_include"];
 const PLAN_DEFAULT_REQUIRED_FEATURE: &str = "main_component_annotation";
+const PLAN_DEFAULT_ASPECT_RATIO_TOLERANCE: f64 = 0.25;
 const PLAN_SYSTEM_OWNED_FIELDS: &[&str] =
     &["schemaVersion", "sourceLanguage", "runtimeConstraints"];
 
@@ -371,11 +372,6 @@ fn validate_plan_draft(draft: &CadModelPlanDraft) -> CliResult<()> {
             return Err(CliError::invalid_input(format!("{name} must be positive.")));
         }
     }
-    if !ratio.tolerance.is_finite() || ratio.tolerance < 0.0 {
-        return Err(CliError::invalid_input(
-            "expectedAspectRatio.tolerance must be zero or positive.",
-        ));
-    }
     Ok(())
 }
 
@@ -409,7 +405,12 @@ fn normalize_plan_draft(draft: CadModelPlanDraft) -> CadModelPlan {
         summary: draft.summary,
         main_component: draft.main_component,
         supporting_components: draft.supporting_components,
-        expected_aspect_ratio: draft.expected_aspect_ratio,
+        expected_aspect_ratio: crate::protocol::CadModelAspectRatio {
+            x: draft.expected_aspect_ratio.x,
+            y: draft.expected_aspect_ratio.y,
+            z: draft.expected_aspect_ratio.z,
+            tolerance: PLAN_DEFAULT_ASPECT_RATIO_TOLERANCE,
+        },
         source_language: CadSourceLanguage::Openscad,
         runtime_constraints: CadModelRuntimeConstraints {
             runtime: CadRuntimeKind::OpenscadWasm,

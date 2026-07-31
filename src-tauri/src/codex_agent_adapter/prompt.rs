@@ -79,6 +79,7 @@ Plan draft contract:
 - The plan file passed to `cadastrophe-plan-commit` must be a `CadModelPlanDraft`.
 - Shape it with `summary`, `mainComponent`, `supportingComponents`, and `expectedAspectRatio`.
 - `mainComponent` and each supporting component use `name`, `purpose`, and optional `requiredFeatures`.
+- `expectedAspectRatio` uses `x`, `y`, and `z`.
 
 OpenSCAD constraints for the current Cadastrophe openscad-wasm runtime:
 - Use OpenSCAD CSG normally, including cube, sphere, cylinder, translate, rotate, union, and difference.

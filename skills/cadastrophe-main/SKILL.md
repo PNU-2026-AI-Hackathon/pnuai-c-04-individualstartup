@@ -51,7 +51,7 @@ The plan file authored by the agent must be runtime-neutral JSON shaped as `CadM
 - `summary`: concise model intent.
 - `mainComponent`: object with `name`, `purpose`, and optional `requiredFeatures`.
 - `supportingComponents`: array of component objects.
-- `expectedAspectRatio`: `{ "x": number, "y": number, "z": number, "tolerance": number }`.
+- `expectedAspectRatio`: `{ "x": number, "y": number, "z": number }`.
 
 For OpenSCAD, include a source header matching the committed main component:
 

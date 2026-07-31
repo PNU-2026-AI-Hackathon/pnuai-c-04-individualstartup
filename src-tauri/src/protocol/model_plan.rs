@@ -20,12 +20,20 @@ pub struct CadModelAspectRatio {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CadModelPlanDraftAspectRatio {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CadModelPlanDraft {
     pub summary: String,
     pub main_component: CadModelPlanComponent,
     #[serde(default)]
     pub supporting_components: Vec<CadModelPlanComponent>,
-    pub expected_aspect_ratio: CadModelAspectRatio,
+    pub expected_aspect_ratio: CadModelPlanDraftAspectRatio,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]

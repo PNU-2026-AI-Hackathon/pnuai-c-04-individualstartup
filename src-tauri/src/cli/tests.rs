@@ -274,6 +274,10 @@ fn plan_commit_normalizes_draft_contract_to_full_workflow_plan() {
         output.data["plan"]["runtimeConstraints"]["mainComponentAnnotation"].as_str(),
         Some("// @main_component wall_bracket")
     );
+    assert_eq!(
+        output.data["plan"]["expectedAspectRatio"]["tolerance"].as_f64(),
+        Some(0.25)
+    );
     assert!(
         output.data["plan"]["runtimeConstraints"]["forbiddenFeatures"]
             .as_array()
@@ -353,6 +357,43 @@ fn plan_commit_rejects_agent_authored_runtime_policy() {
     assert_eq!(error.code, "invalid_input");
     assert!(error.message.contains("system-owned runtime policy"));
     assert!(error.message.contains("runtimeConstraints"));
+    let state = service.get_session_state(&created.session_id).unwrap();
+    assert!(state.workflow.plans.is_empty());
+}
+
+#[test]
+fn plan_commit_rejects_agent_authored_aspect_ratio_tolerance() {
+    let app_data_dir = temp_app_data_dir("plan-tolerance-rejection");
+    let service = sqlite_service(&app_data_dir);
+    let created = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let (run, _) = service
+        .create_agent_run(
+            &created.session_id,
+            "Create a wall bracket.".to_string(),
+            created.state.session.active_revision_id.clone(),
+            Some("test".to_string()),
+            None,
+        )
+        .unwrap();
+    let mut draft_plan = draft_plan_value();
+    draft_plan["expectedAspectRatio"]["tolerance"] = json!(0.25);
+    let plan_path = write_json_file(&app_data_dir, "draft-plan-with-tolerance.json", &draft_plan);
+
+    let error = plan_commit(
+        &args([
+            ("session", &created.session_id),
+            ("run", &run.id),
+            ("plan", plan_path.to_str().unwrap()),
+        ]),
+        &service,
+        &app_data_dir,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "invalid_input");
+    assert!(error.message.contains("tolerance"));
     let state = service.get_session_state(&created.session_id).unwrap();
     assert!(state.workflow.plans.is_empty());
 }
@@ -639,8 +680,7 @@ fn draft_plan_value() -> Value {
         "expectedAspectRatio": {
             "x": 3.0,
             "y": 1.0,
-            "z": 2.0,
-            "tolerance": 0.25
+            "z": 2.0
         }
     })
 }
