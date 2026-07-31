@@ -156,13 +156,12 @@ fn sqlite_repository_restores_workflow_state_after_restart() {
     let created = service
         .create_session(CreateCadSessionInput::default())
         .unwrap();
-    let root_revision_id = created.state.session.active_revision_id.clone().unwrap();
     let updated = service
         .update_model_source(UpdateModelSourceInput {
             session_id: created.session_id.clone(),
             source_language: CadSourceLanguage::Openscad,
             source: "// @main_component wall_bracket\ncube([30, 10, 20]);".to_string(),
-            parent_revision_id: Some(root_revision_id),
+            parent_revision_id: None,
             parameters: None,
         })
         .unwrap();
@@ -441,8 +440,8 @@ fn workflow_service_rejects_cross_session_and_missing_references() {
     let second = service
         .create_session(CreateCadSessionInput::default())
         .unwrap();
-    let first_revision_id = first.state.session.active_revision_id.clone().unwrap();
-    let second_revision_id = second.state.session.active_revision_id.clone().unwrap();
+    let first_revision_id = create_test_revision(&service, &first.session_id, "cube([2, 2, 2]);");
+    let second_revision_id = create_test_revision(&service, &second.session_id, "cube([3, 3, 3]);");
     let (run, _) = service
         .create_agent_run(
             &first.session_id,

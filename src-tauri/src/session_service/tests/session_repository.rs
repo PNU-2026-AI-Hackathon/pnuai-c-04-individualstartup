@@ -40,13 +40,9 @@ fn sqlite_repository_restores_current_session_and_session_index() {
     let state = current.state.expect("current session state");
     assert_eq!(state.session.title.as_deref(), Some("Persisted title"));
     assert_eq!(state.session.title_source, CadSessionTitleSource::User);
-    assert_eq!(
-        state
-            .active_revision
-            .as_ref()
-            .map(|revision| revision.source.as_str()),
-        Some(DEFAULT_SAMPLE_SOURCE)
-    );
+    assert!(state.session.active_revision_id.is_none());
+    assert!(state.active_revision.is_none());
+    assert!(state.session.revisions.is_empty());
     assert_eq!(reloaded.list_sessions(false).unwrap().len(), 1);
 }
 
@@ -68,14 +64,9 @@ fn first_run_boot_creates_example_once_and_persists_completion() {
     assert!(first.created_session);
     assert!(first.should_use_example_session);
     assert!(first.should_auto_render);
-    assert_eq!(
-        first
-            .state
-            .active_revision
-            .as_ref()
-            .map(|revision| revision.source.as_str()),
-        Some(DEFAULT_SAMPLE_SOURCE)
-    );
+    assert!(first.state.session.active_revision_id.is_none());
+    assert!(first.state.active_revision.is_none());
+    assert!(first.state.session.revisions.is_empty());
     assert_eq!(first.state.session.title_source, CadSessionTitleSource::System);
 
     let second = service.boot_session().unwrap();
@@ -215,7 +206,7 @@ fn session_list_returns_active_revision_summary_and_searches_title_source_conver
         Some("Bracket Assembly")
     );
     assert!(listed.sessions[0].active_revision.is_some());
-    assert_eq!(listed.sessions[0].revision_count, 2);
+    assert_eq!(listed.sessions[0].revision_count, 1);
     assert_eq!(listed.sessions[0].archived, false);
 
     let conversation_match = service
@@ -310,15 +301,9 @@ fn sqlite_repository_persists_duplicate_archive_and_delete() {
     assert!(sessions
         .iter()
         .any(|session| session.title.as_deref() == Some("Copy")));
-    assert_eq!(
-        reloaded
-            .get_session_state(&duplicated.session_id)
-            .unwrap()
-            .active_revision
-            .as_ref()
-            .map(|revision| revision.source.as_str()),
-        Some(DEFAULT_SAMPLE_SOURCE)
-    );
+    let duplicated_state = reloaded.get_session_state(&duplicated.session_id).unwrap();
+    assert!(duplicated_state.session.active_revision_id.is_none());
+    assert!(duplicated_state.active_revision.is_none());
 
     reloaded
         .archive_session(ArchiveCadSessionInput {
@@ -404,7 +389,16 @@ fn sqlite_repository_persists_restore_summary_fields_and_artifact_count() {
     let created = service
         .create_session(CreateCadSessionInput::default())
         .unwrap();
-    let root_revision_id = created.state.session.active_revision_id.clone().unwrap();
+    let root = service
+        .update_model_source(UpdateModelSourceInput {
+            session_id: created.session_id.clone(),
+            source_language: CadSourceLanguage::Openscad,
+            source: "cube([8, 8, 2]);".to_string(),
+            parent_revision_id: None,
+            parameters: None,
+        })
+        .unwrap();
+    let root_revision_id = root.revision_id.clone();
     let updated = service
         .update_model_source(UpdateModelSourceInput {
             session_id: created.session_id.clone(),

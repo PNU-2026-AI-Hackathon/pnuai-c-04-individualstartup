@@ -1,5 +1,5 @@
 use crate::protocol::*;
-use crate::runtime::{extract_open_scad_parameters, ok_diagnostics, DEFAULT_SAMPLE_SOURCE};
+use crate::runtime::{extract_open_scad_parameters, ok_diagnostics};
 #[cfg(test)]
 use crate::session_repository::InMemorySessionRepository;
 use crate::session_repository::{SessionRepository, SessionRepositorySnapshot};

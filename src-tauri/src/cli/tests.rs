@@ -15,16 +15,16 @@ fn finalize_requires_committed_plan() {
     let created = service
         .create_session(CreateCadSessionInput::default())
         .unwrap();
+    let revision_id = create_test_revision(&service, &created.session_id);
     let (run, _) = service
         .create_agent_run(
             &created.session_id,
             "create model".to_string(),
-            None,
+            Some(revision_id.clone()),
             Some("test".to_string()),
             None,
         )
         .unwrap();
-    let revision_id = created.state.session.active_revision_id.clone().unwrap();
 
     let error = finalize(
         &args([
@@ -490,7 +490,7 @@ fn setup_run_with_plan(service: &SessionService) -> Setup {
     let created = service
         .create_session(CreateCadSessionInput::default())
         .unwrap();
-    let input_revision_id = created.state.session.active_revision_id.clone();
+    let input_revision_id = Some(create_test_revision(service, &created.session_id));
     let (run, _) = service
         .create_agent_run(
             &created.session_id,
@@ -537,6 +537,19 @@ fn setup_run_with_plan(service: &SessionService) -> Setup {
         run_id: run.id,
         revision_id: source_result.revision_id,
     }
+}
+
+fn create_test_revision(service: &SessionService, session_id: &str) -> String {
+    service
+        .update_model_source(UpdateModelSourceInput {
+            session_id: session_id.to_string(),
+            source_language: CadSourceLanguage::Openscad,
+            source: "cube([2, 2, 2]);".to_string(),
+            parent_revision_id: None,
+            parameters: None,
+        })
+        .unwrap()
+        .revision_id
 }
 
 fn sqlite_service(app_data_dir: &PathBuf) -> SessionService {

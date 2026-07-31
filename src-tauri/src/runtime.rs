@@ -1,14 +1,5 @@
 use crate::protocol::{CadDiagnostics, CadParameter, CadParameterValue};
 
-pub const DEFAULT_SAMPLE_SOURCE: &str = r#"width = 32; // @param min=8 max=80 step=1 label=Width
-depth = 24; // @param min=8 max=80 step=1 label=Depth
-height = 12; // @param min=4 max=60 step=1 label=Height
-
-cube([width, depth, height]);
-translate([24, 0, height]) cylinder(h=height * 2, r=6);
-translate([-24, 0, 12]) sphere(r=8);
-"#;
-
 pub fn extract_open_scad_parameters(source: &str) -> Vec<CadParameter> {
     source
         .lines()

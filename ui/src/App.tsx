@@ -61,6 +61,7 @@ export function App() {
   const latestSessionIdRef = useRef<string | undefined>(undefined);
   const latestSessionUpdatedAtRef = useRef<string | undefined>(undefined);
   const autoRenderedSessionIdsRef = useRef<Set<string>>(new Set());
+  const starterPreviewRenderedSessionIdsRef = useRef<Set<string>>(new Set());
   const [mesh, setMesh] = useState<CadMesh | null>(null);
   const [runtimeState, setRuntimeState] = useState<OpenscadRuntimeState>("idle");
   const [draftParameters, setDraftParameters] = useState<CadParameter[] | null>(null);
@@ -104,6 +105,7 @@ export function App() {
   const previewArtifact = activeRevision?.artifacts.find((artifact) => artifact.kind === "preview-mesh");
   const activeAgentRun = state?.agentRuns.find((run) => isActiveRunStatus(run.status));
   const sessionArchived = Boolean(state?.session.archivedAt);
+  const isStarterSession = Boolean(state && isStarterSessionState(state));
   const visibleSessionList = useMemo(
     () => filterSessionsByDeletedIds(sessionList, locallyDeletedSessionIds),
     [locallyDeletedSessionIds, sessionList]
@@ -251,6 +253,15 @@ export function App() {
     if (!showStarterOverlay || !state?.activeRevision?.runLinks.some((link) => link.role === "output")) return;
     dismissStarterOverlay(state.session.id);
   }, [showStarterOverlay, state?.activeRevision?.id, state?.session.id]);
+
+  useEffect(() => {
+    if (!state?.session.id || !isStarterSession || sessionArchived) return;
+    if (starterPreviewRenderedSessionIdsRef.current.has(state.session.id)) return;
+    renderStarterPreview(state.session.id).catch((caught) => {
+      if (isOpenScadRenderCanceled(caught)) return;
+      setError(errorMessage(caught));
+    });
+  }, [isStarterSession, sessionArchived, state?.session.id]);
 
   useEffect(() => {
     if (!state?.session.id || !draftParameters || sessionArchived) return;
@@ -693,9 +704,9 @@ export function App() {
     persistIfClean: boolean;
     generation?: number;
   }) {
-    if (!state?.activeRevision) return;
+    if (!state) return;
     const sessionId = state.session.id;
-    const revisionId = state.activeRevision.id;
+    const revisionId = state.activeRevision?.id ?? EMPTY_DRAFT_REVISION_ID;
     const renderGeneration = sessionRenderGenerationRef.current;
     const renderSource = sourceRef.current;
     const renderParameters = currentDraftParameters();
@@ -722,7 +733,7 @@ export function App() {
     previewCacheRef.current = rendered;
     setMesh(rendered.mesh);
     setDraftDiagnostics(rendered.diagnostics);
-    if (!persistIfClean || sourceDirtyRef.current) return;
+    if (!state.activeRevision || !persistIfClean || sourceDirtyRef.current) return;
     const persisted = await persistPreviewMesh(sessionId, revisionId, rendered);
     if (await isCurrentRenderTarget(renderRequest, renderGeneration)) {
       applySessionSnapshot(persisted.state);
@@ -809,6 +820,30 @@ export function App() {
     }
   }
 
+  async function renderStarterPreview(sessionId: string) {
+    starterPreviewRenderedSessionIdsRef.current.add(sessionId);
+    const renderGeneration = sessionRenderGenerationRef.current;
+    const renderRequest = await renderRequestFor(
+      sessionId,
+      STARTER_PREVIEW_REVISION_ID,
+      STARTER_SAMPLE_SOURCE,
+      []
+    );
+    if (!isCurrentStarterPreviewTarget(sessionId, renderGeneration)) return;
+    try {
+      const rendered = await renderOpenScadInWorker(
+        renderRequest,
+        setRuntimeStateForStarterTarget(sessionId, renderGeneration)
+      );
+      if (!isCurrentStarterPreviewTarget(sessionId, renderGeneration)) return;
+      setMesh(rendered.mesh);
+    } catch (caught) {
+      if (isOpenScadRenderCanceled(caught)) return;
+      if (!isCurrentStarterPreviewTarget(sessionId, renderGeneration)) return;
+      throw caught;
+    }
+  }
+
   async function runBusy(work: () => Promise<void>) {
     setBusy(true);
     setError(null);
@@ -858,10 +893,30 @@ export function App() {
   }
 
   function isCurrentRenderGeneration(request: OpenscadRenderRequest, generation: number): boolean {
+    const currentRevisionId = sourceRevisionIdRef.current ?? EMPTY_DRAFT_REVISION_ID;
     return (
       sessionRenderGenerationRef.current === generation &&
       latestSessionIdRef.current === request.sessionId &&
-      sourceRevisionIdRef.current === request.revisionId
+      currentRevisionId === request.revisionId
+    );
+  }
+
+  function setRuntimeStateForStarterTarget(
+    sessionId: string,
+    generation: number
+  ): (nextState: OpenscadRuntimeState) => void {
+    return (nextState) => {
+      if (!isCurrentStarterPreviewTarget(sessionId, generation)) return;
+      setRuntimeState(nextState);
+    };
+  }
+
+  function isCurrentStarterPreviewTarget(sessionId: string, generation: number): boolean {
+    return (
+      sessionRenderGenerationRef.current === generation &&
+      latestSessionIdRef.current === sessionId &&
+      sourceRevisionIdRef.current === undefined &&
+      !sourceDirtyRef.current
     );
   }
 
@@ -1002,6 +1057,7 @@ export function App() {
             busy={busy}
             sessionArchived={sessionArchived}
             source={source}
+            starterSource={isStarterSession ? STARTER_SAMPLE_SOURCE : undefined}
             sourceDirty={sourceDirty}
             showStarterOverlay={showStarterOverlay}
             activeRevision={activeDraftRevision}
@@ -1071,6 +1127,16 @@ export function App() {
 }
 
 const STARTER_OVERLAY_KEY = "cadastrophe.hiddenStarterOverlaySessions";
+const EMPTY_DRAFT_REVISION_ID = "__empty-draft__";
+const STARTER_PREVIEW_REVISION_ID = "__starter-preview__";
+const STARTER_SAMPLE_SOURCE = `width = 32; // @param min=8 max=80 step=1 label=Width
+depth = 24; // @param min=8 max=80 step=1 label=Depth
+height = 12; // @param min=4 max=60 step=1 label=Height
+
+cube([width, depth, height]);
+translate([24, 0, height]) cylinder(h=height * 2, r=6);
+translate([-24, 0, 12]) sphere(r=8);
+`;
 
 function loadHiddenStarterSessionIds(): Set<string> {
   try {
@@ -1086,12 +1152,23 @@ function saveHiddenStarterSessionIds(sessionIds: Set<string>) {
 }
 
 function isStarterSessionHeuristic(state: CadSessionState): boolean {
+  if (isStarterSessionState(state)) return true;
   return (
     state.conversation.length === 0 &&
     state.agentRuns.length === 0 &&
     state.session.revisions.length <= 1 &&
     Boolean(state.activeRevision?.source.trim()) &&
     (state.session.title === "Cadastrophe review" || !state.session.title)
+  );
+}
+
+function isStarterSessionState(state: CadSessionState): boolean {
+  return (
+    state.conversation.length === 0 &&
+    state.agentRuns.length === 0 &&
+    state.session.revisions.length === 0 &&
+    !state.session.activeRevisionId &&
+    !state.activeRevision
   );
 }
 

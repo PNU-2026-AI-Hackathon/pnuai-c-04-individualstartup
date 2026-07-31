@@ -55,14 +55,8 @@ impl SessionService {
             state
                 .agent_run_events
                 .insert(session_id.clone(), Vec::new());
+            self.persist_session_graph(&state, &session_id)?;
         }
-        self.update_model_source(UpdateModelSourceInput {
-            session_id: session_id.clone(),
-            source_language: CadSourceLanguage::Openscad,
-            source: DEFAULT_SAMPLE_SOURCE.to_string(),
-            parent_revision_id: None,
-            parameters: None,
-        })?;
         let state = self.get_session_state(&session_id)?;
         self.emit(
             CadBridgeEventType::SessionCreated,

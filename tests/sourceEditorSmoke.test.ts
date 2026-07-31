@@ -28,6 +28,27 @@ test("source editor click and focus keep the workspace mounted", async () => {
   harness.cleanup();
 });
 
+test("starter source is displayed as overlay while the editable source stays empty", async () => {
+  const starterSource = "cube([1, 1, 1]);";
+  const harness = mountWorkspace({
+    sessionId: "empty-starter",
+    source: "",
+    starterSource,
+    showStarterOverlay: true
+  });
+
+  assert.equal(harness.sourceEditor().value, "");
+  assert.equal(
+    harness.container.querySelector(".source-starter-overlay")?.textContent,
+    starterSource
+  );
+
+  await clickAndFocus(harness.sourceEditor());
+
+  assert.equal(harness.sourceEditor().value, "");
+  harness.cleanup();
+});
+
 test("source editor click after session switch uses the new editor instance", async () => {
   const dismissedSessions: string[] = [];
   const harness = mountWorkspace({
@@ -97,6 +118,7 @@ test("source editor focus handler failures stay local to the editor pane", async
 type WorkspaceHarnessOptions = {
   sessionId: string;
   source: string;
+  starterSource?: string;
   runtimeState?: OpenscadRuntimeState;
   showStarterOverlay?: boolean;
   onDismissStarterOverlay?: () => void;
@@ -189,6 +211,7 @@ function workspaceProps(options: WorkspaceHarnessOptions, handlers: WorkspaceHan
     busy: false,
     sessionArchived: false,
     source: options.source,
+    starterSource: options.starterSource,
     sourceDirty: false,
     showStarterOverlay: Boolean(options.showStarterOverlay),
     activeRevision: state.activeRevision,

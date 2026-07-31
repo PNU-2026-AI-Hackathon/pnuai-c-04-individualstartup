@@ -19,13 +19,12 @@ fn sqlite_restart_restores_session_revision_artifacts_conversation_and_runs_toge
         })
         .unwrap();
     service.mark_session_viewed(&created.session_id).unwrap();
-    let root_revision_id = created.state.session.active_revision_id.clone().unwrap();
     let updated = service
         .update_model_source(UpdateModelSourceInput {
             session_id: created.session_id.clone(),
             source_language: CadSourceLanguage::Openscad,
             source: "sphere(r = 5);".to_string(),
-            parent_revision_id: Some(root_revision_id.clone()),
+            parent_revision_id: None,
             parameters: None,
         })
         .unwrap();
@@ -133,7 +132,7 @@ fn sqlite_repository_recovers_interrupted_missing_corrupt_and_unknown_persistenc
     let created = service
         .create_session(CreateCadSessionInput::default())
         .unwrap();
-    let revision_id = created.state.session.active_revision_id.clone().unwrap();
+    let revision_id = create_test_revision(&service, &created.session_id, "cube([4, 4, 4]);");
     let (export, _) = service
         .export_artifact(ExportArtifactInput {
             session_id: created.session_id.clone(),

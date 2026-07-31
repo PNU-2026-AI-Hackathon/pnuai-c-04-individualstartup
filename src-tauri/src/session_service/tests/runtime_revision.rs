@@ -8,8 +8,9 @@ fn serializes_camel_case_state() {
         .create_session(CreateCadSessionInput::default())
         .unwrap();
     let value = serde_json::to_value(created.state).unwrap();
-    assert!(value["session"]["activeRevisionId"].is_string());
-    assert!(value["activeRevision"]["sourceLanguage"].is_string());
+    assert!(value["session"]["activeRevisionId"].is_null());
+    assert!(value["activeRevision"].is_null());
+    assert!(value["session"]["revisions"].as_array().unwrap().is_empty());
 }
 
 #[test]
@@ -131,7 +132,7 @@ fn revision_switch_restore_and_parameters_use_immutable_snapshots() {
     let created = service
         .create_session(CreateCadSessionInput::default())
         .unwrap();
-    let root_revision_id = created.state.session.active_revision_id.clone().unwrap();
+    let root_revision_id = create_test_revision(&service, &created.session_id, "cube([2, 2, 2]);");
     let parameterized = service
         .update_model_source(UpdateModelSourceInput {
             session_id: created.session_id.clone(),
@@ -205,12 +206,7 @@ fn export_artifact_uses_session_revision_artifact_layout() {
     let created = service
         .create_session(CreateCadSessionInput::default())
         .unwrap();
-    let revision_id = created
-        .state
-        .session
-        .active_revision_id
-        .clone()
-        .expect("session has initial revision");
+    let revision_id = create_test_revision(&service, &created.session_id, "cube([4, 4, 4]);");
 
     let (export, _) = service
         .export_artifact(ExportArtifactInput {

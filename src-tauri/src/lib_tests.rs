@@ -342,12 +342,22 @@ async fn gateway_consumes_inline_vlm_judge_report_without_showing_raw_json() {
     let created = service
         .create_session(CreateCadSessionInput::default())
         .unwrap();
+    let revision_id = service
+        .update_model_source(UpdateModelSourceInput {
+            session_id: created.session_id.clone(),
+            source_language: CadSourceLanguage::Openscad,
+            source: "cube([2, 2, 2]);".to_string(),
+            parent_revision_id: None,
+            parameters: None,
+        })
+        .unwrap()
+        .revision_id;
 
     let started = gateway
         .start_run(CreateAgentRunInput {
             session_id: created.session_id.clone(),
             prompt: "return inline vlm report".to_string(),
-            revision_id: created.state.session.active_revision_id.clone(),
+            revision_id: Some(revision_id),
             retry_of_run_id: None,
         })
         .unwrap();

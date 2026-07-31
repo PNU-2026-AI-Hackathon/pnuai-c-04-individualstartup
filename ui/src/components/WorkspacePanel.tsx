@@ -31,6 +31,7 @@ type WorkspacePanelProps = {
   busy: boolean;
   sessionArchived: boolean;
   source: string;
+  starterSource?: string;
   sourceDirty: boolean;
   showStarterOverlay: boolean;
   activeRevision?: CadRevision;
@@ -58,6 +59,7 @@ export function WorkspacePanel({
   busy,
   sessionArchived,
   source,
+  starterSource,
   sourceDirty,
   showStarterOverlay,
   activeRevision,
@@ -149,6 +151,7 @@ export function WorkspacePanel({
               sessionId={state.session.id}
               revisionId={activeRevision?.id}
               source={source}
+              starterSource={starterSource}
               showStarterOverlay={showStarterOverlay}
               readOnly={sessionArchived}
               onDismissStarterOverlay={onDismissStarterOverlay}
@@ -261,6 +264,7 @@ function SourceEditor({
   sessionId,
   revisionId,
   source,
+  starterSource,
   showStarterOverlay,
   readOnly,
   onDismissStarterOverlay,
@@ -269,6 +273,7 @@ function SourceEditor({
   sessionId: string;
   revisionId?: string;
   source: string;
+  starterSource?: string;
   showStarterOverlay: boolean;
   readOnly: boolean;
   onDismissStarterOverlay: () => void;
@@ -321,7 +326,7 @@ function SourceEditor({
         spellCheck={false}
       />
       {showStarterOverlay ? (
-        <pre className="source-starter-overlay" aria-hidden="true">{source}</pre>
+        <pre className="source-starter-overlay" aria-hidden="true">{starterSource ?? source}</pre>
       ) : null}
     </div>
   );

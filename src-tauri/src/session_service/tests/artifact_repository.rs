@@ -16,7 +16,7 @@ fn sqlite_repository_restores_artifact_manifest_after_restart() {
         .create_session(CreateCadSessionInput::default())
         .unwrap();
     service.mark_session_viewed(&created.session_id).unwrap();
-    let revision_id = created.state.session.active_revision_id.clone().unwrap();
+    let revision_id = create_test_revision(&service, &created.session_id, "cube([4, 4, 4]);");
     let (export, _) = service
         .export_artifact(ExportArtifactInput {
             session_id: created.session_id.clone(),
@@ -96,10 +96,11 @@ fn sqlite_repository_marks_missing_artifacts_on_startup_and_verify() {
     let created = service
         .create_session(CreateCadSessionInput::default())
         .unwrap();
+    let revision_id = create_test_revision(&service, &created.session_id, "cube([4, 4, 4]);");
     let (export, _) = service
         .export_artifact(ExportArtifactInput {
             session_id: created.session_id.clone(),
-            revision_id: created.state.session.active_revision_id.clone(),
+            revision_id: Some(revision_id),
             format: "metadata".to_string(),
         })
         .unwrap();
