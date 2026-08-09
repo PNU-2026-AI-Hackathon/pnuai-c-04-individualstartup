@@ -225,8 +225,8 @@ npm run build:tauri
 
 | 이름 | 역할 | 연락처 |
 | --- | --- | --- |
-| 김성욱 | 팀장, 서비스 기획, PM | [GitHub @gyuun](https://github.com/gyuun) |
-| 김태균 | 백엔드, 하네스 개발 | [GitHub @wannabidr](https://github.com/wannabidr) |
+| 김성욱 | 팀장, 서비스 기획, PM | [GitHub @wannabidr](https://github.com/wannabidr) |
+| 김태균 | 백엔드, 하네스 개발 | [GitHub @gyuun](https://github.com/gyuun) |
 | 권혜원 | UX/UI 설계, 프론트엔드 개발 | [GitHub @hyerom](https://github.com/hyerom) |
 
 ## 7. 해커톤 참여 후기
