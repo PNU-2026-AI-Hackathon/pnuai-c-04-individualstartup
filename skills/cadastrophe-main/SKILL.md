@@ -16,11 +16,16 @@ repair, and outer-loop refinement.
 
 Use these exact command names:
 
-- `cadastrophe-session-current`: inspect current session id, active revision, selected runtime, and app data path.
-- `cadastrophe-session-state`: inspect the current session/revision/artifact/run/workflow state JSON.
-- `cadastrophe-plan-commit --plan <file>`: commit a `CadModelPlanDraft` for the active run.
-- `cadastrophe-source-apply --source <file>`: append OpenSCAD source for the active run; the app renders preview/STL automatically and returns diagnostics.
-- `cadastrophe-finalize`: lock final artifacts for the active revision/run, run structural anchor, render mandatory VLM image evidence, and either return a failure report or a pending VLM handoff.
+- `cadastrophe-session-current`: manually inspect UI routing state. Never use its result as automated run scope.
+- `cadastrophe-session-state --app-data-dir <dir> --session <session-id> --run <run-id>`: inspect the immutable session/run state JSON.
+- `cadastrophe-plan-commit --app-data-dir <dir> --session <session-id> --run <run-id> [--revision <revision-id>] --plan <file>`: commit a `CadModelPlanDraft`.
+- `cadastrophe-source-apply --app-data-dir <dir> --session <session-id> --run <run-id> [--revision <revision-id>] --source <file>`: append OpenSCAD source; the app renders preview/STL automatically and returns diagnostics.
+- `cadastrophe-finalize --app-data-dir <dir> --session <session-id> --run <run-id> --revision <revision-id>`: lock final artifacts, run structural anchor, render mandatory VLM image evidence, and either return a failure report or a pending VLM handoff.
+
+For every automated command, use the exact `appDataDir`, `sessionId`, and
+`runId` supplied by the run prompt. When a command targets an existing
+revision, also pass its exact `revisionId`. Do not infer any identifier from the
+current UI session or active revision.
 
 Important CLI data fields include `nextAction`, `next_action`, `diagnostics`,
 `failureReport`, `failure_report`, `artifactPaths`, `contractType`,
@@ -29,14 +34,14 @@ status and JSON error envelopes as authoritative.
 
 ## Required Workflow
 
-1. Reuse the current UI-visible session. Use `cadastrophe-session-current` only when you need to inspect app routing state.
-2. Inspect `cadastrophe-session-state` before retrying, and carry the latest structural or VLM `failureReport`/`failure_report` into the next attempt.
-3. Create a `CadModelPlanDraft` JSON file and commit it with `cadastrophe-plan-commit --plan <file>`.
+1. Use the immutable app-data/session/run scope supplied by the run prompt. `cadastrophe-session-current` is only for a human manually exploring app routing and must not establish automated run scope.
+2. Inspect `cadastrophe-session-state` with exact `--app-data-dir`, `--session`, and `--run` arguments before retrying, and carry the latest structural or VLM `failureReport`/`failure_report` into the next attempt.
+3. Create a `CadModelPlanDraft` JSON file and commit it with exact app-data/session/run scope and `--revision` when targeting the input revision.
 4. Do not apply source or finalize until plan commit succeeds for the same run.
 5. Generate source for the selected runtime. Current primary support is OpenSCAD through `openscad-wasm`.
-6. Call `cadastrophe-source-apply --source <file>`.
+6. Call source apply with exact app-data/session/run scope and `--revision` when targeting the input revision.
 7. Source apply triggers app-owned preview render and returns diagnostics. If runtime diagnostics contain errors, explain the cause briefly, repair the source, then repeat source apply.
-8. When preview diagnostics pass, call `cadastrophe-finalize`.
+8. When preview diagnostics pass, call finalize with exact app-data/session/run scope and the revision returned by source apply.
 9. Finalize runs export, structural anchor, VLM evidence rendering, and pending VLM persistence. If finalization returns a structural `failure_report` or `next_action` of `outer_loop_refine_source`, use that report for a new plan/source attempt.
 10. If finalization returns a `cadastrophe.vlm_judge.v1` handoff, verify it includes `renderedImages.available: true` and a usable rendered PNG path, then hand the handoff, image path, and original user request to a separate subagent using the `cadastrophe-vlm-judge` skill. Ask the subagent to return only strict JSON.
 11. Return the strict VLM judge report as the assistant message. The app consumes the report automatically and records pass/fail workflow state.

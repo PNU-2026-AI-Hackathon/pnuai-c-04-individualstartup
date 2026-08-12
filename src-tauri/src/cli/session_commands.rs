@@ -32,6 +32,9 @@ pub(super) fn session_state(
     app_data_dir: &PathBuf,
 ) -> CliResult<CommandOutput> {
     let session_id = resolve_session_id(args, service)?;
+    if let Some(run_id) = args.optional("run") {
+        ensure_run_belongs_to_session(service, &session_id, run_id)?;
+    }
     let state = service
         .get_session_state(&session_id)
         .map_err(CliError::not_found)?;
