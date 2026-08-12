@@ -1,5 +1,6 @@
 pub mod agent_adapter;
 mod agent_gateway;
+pub mod agent_thread_manager;
 pub mod cli;
 pub mod codex_agent_adapter;
 pub mod codex_process_client;
@@ -23,6 +24,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 struct AppState {
     service: Arc<SessionService>,
     gateway: Arc<AgentGateway>,
+    codex_adapter: Arc<CodexAgentAdapter>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -268,8 +270,35 @@ fn cleanup_orphan_artifacts(
         .cleanup_orphan_artifacts(input.unwrap_or_default())
 }
 
+#[tauri::command]
+async fn start_new_agent_conversation(
+    input: StartNewAgentConversationInput,
+    state: State<'_, AppState>,
+) -> Result<StartNewAgentConversationResult, String> {
+    state
+        .codex_adapter
+        .start_new_conversation(&input.session_id)
+        .await
+}
+
+#[tauri::command]
+fn get_agent_session_diagnostics(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<CadAgentSessionDiagnostics, String> {
+    state.service.agent_session_diagnostics(&session_id)
+}
+
+#[tauri::command]
+fn cleanup_agent_transport_events(
+    input: CadAgentTransportCleanupInput,
+    state: State<'_, AppState>,
+) -> Result<CadAgentTransportCleanupResult, String> {
+    state.service.cleanup_agent_transport_events(input)
+}
+
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir().map_err(|error| {
                 format!("Failed to resolve Cadastrophe app data directory: {error}")
@@ -286,10 +315,22 @@ pub fn run() {
                 )
                 .map_err(|error| format!("Failed to load Cadastrophe sessions: {error}"))?,
             );
-            let adapter: Arc<dyn AgentAdapter> = Arc::new(CodexAgentAdapter::from_env());
+            let codex_adapter = Arc::new(
+                CodexAgentAdapter::from_env(Arc::clone(&service))
+                    .map_err(|error| format!("Failed to initialize Codex adapter: {error}"))?,
+            );
+            let adapter: Arc<dyn AgentAdapter> = codex_adapter.clone();
             let gateway = Arc::new(AgentGateway::new(Arc::clone(&service), adapter));
             forward_bridge_events(app.handle().clone(), Arc::clone(&service));
-            app.manage(AppState { service, gateway });
+            forward_agent_stream_events(app.handle().clone(), Arc::clone(&service));
+            gateway
+                .recover_startup_runs()
+                .map_err(|error| format!("Failed to start agent run recovery: {error}"))?;
+            app.manage(AppState {
+                service,
+                gateway,
+                codex_adapter,
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -320,17 +361,58 @@ pub fn run() {
             reveal_artifact,
             delete_artifact,
             verify_artifact_files,
-            cleanup_orphan_artifacts
+            cleanup_orphan_artifacts,
+            start_new_agent_conversation,
+            get_agent_session_diagnostics,
+            cleanup_agent_transport_events
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Cadastrophe Tauri app");
+        .build(tauri::generate_context!())
+        .expect("error while building Cadastrophe Tauri app");
+
+    app.run(|app_handle, event| {
+        if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+            let adapter = Arc::clone(&app_handle.state::<AppState>().codex_adapter);
+            if let Err(error) = tauri::async_runtime::block_on(adapter.shutdown()) {
+                eprintln!("[cadastrophe:shutdown] failed to stop Codex app-server: {error}");
+            }
+        }
+    });
 }
 
 fn forward_bridge_events(app: AppHandle, service: Arc<SessionService>) {
     let mut receiver = service.subscribe();
     tauri::async_runtime::spawn(async move {
-        while let Ok(event) = receiver.recv().await {
-            let _ = app.emit("cad_bridge_event", event);
+        loop {
+            match receiver.recv().await {
+                Ok(event) => {
+                    if let Err(error) = app.emit("cad_bridge_event", event) {
+                        eprintln!("[cadastrophe:bridge] emit failed: {error}");
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                    eprintln!("[cadastrophe:bridge] receiver lagged by {count} events");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+}
+
+fn forward_agent_stream_events(app: AppHandle, service: Arc<SessionService>) {
+    let mut receiver = service.subscribe_agent_stream();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match receiver.recv().await {
+                Ok(event) => {
+                    if let Err(error) = app.emit("agent_stream_event", event) {
+                        eprintln!("[cadastrophe:agent-stream] emit failed: {error}");
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                    eprintln!("[cadastrophe:agent-stream] receiver lagged by {count} events");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
         }
     });
 }

@@ -1,8 +1,13 @@
 use crate::agent_adapter::{AgentAdapter, AgentAdapterEvent, AgentAdapterRunInput};
+use crate::agent_thread_manager::{
+    AgentThreadManager, AgentThreadManagerConfig, RecoveredTurnStatus, StartManagedTurn,
+};
 use crate::codex_process_client::{CodexProcessClient, CodexProcessConfig};
-use crate::protocol::CadConversationRole;
-use serde_json::{json, Value};
+use crate::notification_router::RoutedNotification;
+use crate::session_service::SessionService;
+use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -15,20 +20,45 @@ use events::{extract_text, CodexEventCollector};
 use prompt::{build_cad_prompt, build_thread_start_params, build_turn_start_params};
 
 pub struct CodexAgentAdapter {
-    client: CodexProcessClient,
+    threads: AgentThreadManager,
+    process_client: CodexProcessClient,
     turn_timeout: Duration,
 }
 
 impl CodexAgentAdapter {
-    pub fn new(client: CodexProcessClient) -> Self {
-        Self {
-            client,
+    pub fn new(service: Arc<SessionService>, client: CodexProcessClient) -> Result<Self, String> {
+        Ok(Self {
+            threads: AgentThreadManager::new(
+                service,
+                client.clone(),
+                AgentThreadManagerConfig::default(),
+            )
+            .map_err(|error| error.to_string())?,
+            process_client: client,
             turn_timeout: duration_from_env("CADASTROPHE_CODEX_TURN_TIMEOUT_SECS", 900),
-        }
+        })
     }
 
-    pub fn from_env() -> Self {
-        Self::new(CodexProcessClient::new(CodexProcessConfig::default()))
+    pub fn from_env(service: Arc<SessionService>) -> Result<Self, String> {
+        Self::new(
+            service,
+            CodexProcessClient::new(CodexProcessConfig::default()),
+        )
+    }
+
+    pub async fn start_new_conversation(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::protocol::StartNewAgentConversationResult, String> {
+        let cwd = codex_cwd()?;
+        self.threads
+            .start_new_conversation(session_id, build_thread_start_params(&cwd))
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn shutdown(&self) -> Result<(), String> {
+        self.process_client.shutdown().await
     }
 }
 
@@ -39,35 +69,32 @@ impl AgentAdapter for CodexAgentAdapter {
     }
 
     async fn run(&self, input: AgentAdapterRunInput) -> Result<Vec<AgentAdapterEvent>, String> {
-        self.client.initialize().await?;
-        let mut notifications = self.client.subscribe_notifications();
-        let cwd = codex_cwd();
-        let thread = self
-            .client
-            .request("thread/start", build_thread_start_params(&cwd))
-            .await?;
-        let thread_id = thread
-            .get("thread")
-            .and_then(|thread| thread.get("id"))
-            .and_then(Value::as_str)
-            .ok_or_else(|| "Codex thread/start response did not include thread.id.".to_string())?;
+        let cwd = codex_cwd()?;
         let prompt = build_cad_prompt(&input);
-        let turn_input = build_turn_start_params(thread_id, &prompt, &cwd, &input.app_data_dir);
-        let turn = self.client.request("turn/start", turn_input).await?;
-        let turn_id = turn
-            .get("turn")
-            .and_then(|turn| turn.get("id"))
-            .and_then(Value::as_str)
-            .ok_or_else(|| "Codex turn/start response did not include turn.id.".to_string())?
-            .to_string();
+        let replacement_context = format!(
+            "The previous Codex thread could not be loaded. Continue this Cadastrophe session using the immutable scope --session '{}' --run '{}'. Re-read the persisted session/revision/workflow state before making changes.",
+            input.session_id, input.run_id
+        );
+        let mut turn = self
+            .threads
+            .start_turn(StartManagedTurn {
+                session_id: input.session_id.clone(),
+                run_id: input.run_id.clone(),
+                thread_start_params: build_thread_start_params(&cwd),
+                turn_start_params: build_turn_start_params(&prompt, &cwd, &input.app_data_dir),
+                replacement_context: Some(replacement_context),
+            })
+            .await
+            .map_err(|error| error.to_string())?;
 
         let mut events = Vec::new();
+        let execution: Result<(), String> = async {
         input.emit_event(
             &mut events,
             AgentAdapterEvent::RunMetadata {
                 external_agent: Some("codex".to_string()),
-                external_thread_id: Some(thread_id.to_string()),
-                external_turn_id: Some(turn_id.clone()),
+                external_thread_id: Some(turn.external_thread_id.clone()),
+                external_turn_id: Some(turn.external_turn_id.clone()),
             },
         )?;
         input.emit_event(
@@ -76,99 +103,199 @@ impl AgentAdapter for CodexAgentAdapter {
                 name: "codex_turn".to_string(),
             },
         )?;
-        input.emit_event(
-            &mut events,
-            AgentAdapterEvent::Progress {
-                label: "Codex turn started".to_string(),
-                message: Some("Waiting for Codex workflow events.".to_string()),
-                metadata: Some(serde_json::Map::from_iter([
-                    (
-                        "codexThreadId".to_string(),
-                        Value::String(thread_id.to_string()),
-                    ),
-                    ("codexTurnId".to_string(), Value::String(turn_id.clone())),
-                ])),
-            },
-        )?;
+
         let mut collector = CodexEventCollector::default();
         let capture = timeout(self.turn_timeout, async {
-            while let Ok(notification) = notifications.recv().await {
-                collector.ingest(&notification, &input, &mut events)?;
-                let method = notification
-                    .get("method")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                if method == "turn/failed" || method == "error" {
-                    return Err(
-                        extract_text(notification.get("params").unwrap_or(&Value::Null))
-                            .unwrap_or_else(|| "Codex turn failed.".to_string()),
-                    );
-                }
-                if method == "turn/completed" {
-                    return Ok(());
+            loop {
+                let Some(notification) = turn.notifications.recv().await else {
+                    return Err("__codex_connection_closed__".to_string());
+                };
+                assert_turn_identity(&turn.external_thread_id, &turn.external_turn_id, &notification)?;
+                collector.ingest(&notification, &turn.agent_thread_id, &input, &mut events)?;
+                if let Some(terminal) = terminal_result(&notification)? {
+                    return terminal;
                 }
             }
-            Err("Codex app-server notification stream closed before turn completion.".to_string())
         })
         .await;
-        capture.map_err(|_| {
-            let client = self.client.clone();
-            let thread_id = thread_id.to_string();
-            let turn_id = turn_id.clone();
-            tokio::spawn(async move {
-                let _ = client
-                    .request(
-                        "turn/interrupt",
-                        json!({ "threadId": thread_id, "turnId": turn_id }),
-                    )
-                    .await;
-            });
-            format!(
-                "Timed out waiting {} seconds for Codex turn completion.",
-                self.turn_timeout.as_secs()
-            )
-        })??;
 
-        let assistant_text = collector.assistant_text();
-        input.emit_event(
-            &mut events,
-            AgentAdapterEvent::MessageCreated {
-                role: CadConversationRole::Assistant,
-                content: if assistant_text.trim().is_empty() {
-                    "Codex workflow turn completed.".to_string()
-                } else {
-                    assistant_text.trim().to_string()
-                },
-                metadata: Some(serde_json::Map::from_iter([(
-                    "codexThreadId".to_string(),
-                    Value::String(thread_id.to_string()),
-                )])),
-            },
-        )?;
+        match capture {
+            Ok(Err(error)) if error == "__codex_connection_closed__" => {
+                let reconciliation = self
+                    .threads
+                    .reconcile_after_connection_loss(&turn.session_id, &turn.run_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                match reconciliation.status {
+                    RecoveredTurnStatus::Completed => {}
+                    RecoveredTurnStatus::Failed { message } => return Err(message),
+                    RecoveredTurnStatus::Interrupted => {
+                        return Err("Codex turn was interrupted during connection recovery.".to_string())
+                    }
+                    RecoveredTurnStatus::InProgress | RecoveredTurnStatus::NotFound => {
+                        return Err("Codex turn outcome remains unknown after connection recovery.".to_string())
+                    }
+                }
+            }
+            Ok(result) => result?,
+            Err(_) => {
+                let interrupted = self
+                    .threads
+                    .interrupt_and_reconcile(&mut turn)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                for notification in interrupted.observed_notifications {
+                    assert_turn_identity(
+                        &turn.external_thread_id,
+                        &turn.external_turn_id,
+                        &notification,
+                    )?;
+                    collector.ingest(
+                        &notification,
+                        &turn.agent_thread_id,
+                        &input,
+                        &mut events,
+                    )?;
+                }
+                match interrupted.reconciliation.status {
+                    RecoveredTurnStatus::Completed => {}
+                    RecoveredTurnStatus::Failed { message } => return Err(message),
+                    RecoveredTurnStatus::Interrupted => {
+                        return Err(format!(
+                            "Codex turn timed out after {} seconds and was interrupted.",
+                            self.turn_timeout.as_secs()
+                        ))
+                    }
+                    RecoveredTurnStatus::InProgress => {
+                        return Err("Codex turn remains in progress after timeout interrupt and history reconciliation.".to_string())
+                    }
+                    RecoveredTurnStatus::NotFound => {
+                        return Err("Codex turn outcome is unknown after timeout interrupt and history reconciliation.".to_string())
+                    }
+                }
+            }
+        }
+
+        if !collector.has_completed_agent_message() {
+            let reconciliation = self
+                .threads
+                .reconcile_run(&turn.session_id, &turn.run_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            match reconciliation.status {
+                RecoveredTurnStatus::Completed if !reconciliation.messages.is_empty() => {}
+                RecoveredTurnStatus::Completed => {
+                    return Err("Codex turn completed without an agent message, and thread history contained no completed agent message.".to_string())
+                }
+                RecoveredTurnStatus::Failed { message } => return Err(message),
+                RecoveredTurnStatus::Interrupted => {
+                    return Err("Codex turn history reported interruption after terminal notification.".to_string())
+                }
+                RecoveredTurnStatus::InProgress | RecoveredTurnStatus::NotFound => {
+                    return Err("Codex terminal notification could not be reconciled with thread history.".to_string())
+                }
+            }
+        }
+        collector.finalize_legacy_messages(&input, &mut events)?;
         input.emit_event(
             &mut events,
             AgentAdapterEvent::ToolCompleted {
                 name: "codex_turn".to_string(),
             },
         )?;
-        Ok(events)
+        Ok(())
+        }.await;
+        let cleanup = self
+            .threads
+            .finish_turn(&mut turn)
+            .map_err(|error| error.to_string());
+        match (execution, cleanup) {
+            (Ok(()), Ok(())) => Ok(events),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(()), Err(cleanup_error)) => Err(cleanup_error),
+            (Err(error), Err(cleanup_error)) => Err(format!(
+                "{error} Additionally, Codex turn cleanup failed: {cleanup_error}"
+            )),
+        }
+    }
+
+    async fn interrupt_run(&self, session_id: &str, run_id: &str) -> Result<(), String> {
+        self.threads
+            .interrupt_run_and_reconcile(session_id, run_id)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn reconcile_run(&self, session_id: &str, run_id: &str) -> Result<(), String> {
+        self.threads
+            .reconcile_run(session_id, run_id)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 }
 
-fn codex_cwd() -> PathBuf {
-    std::env::var("CADASTROPHE_CODEX_CWD")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."))
+fn assert_turn_identity(
+    thread_id: &str,
+    turn_id: &str,
+    notification: &RoutedNotification,
+) -> Result<(), String> {
+    if notification.identifiers.thread_id.as_deref() != Some(thread_id)
+        || notification.identifiers.turn_id.as_deref() != Some(turn_id)
+    {
+        return Err(format!(
+            "Routed Codex notification identity did not match collector route {thread_id}/{turn_id}."
+        ));
+    }
+    Ok(())
+}
+
+fn terminal_result(
+    notification: &RoutedNotification,
+) -> Result<Option<Result<(), String>>, String> {
+    match notification.method.as_str() {
+        "turn/completed" => match notification
+            .raw
+            .pointer("/params/turn/status")
+            .and_then(Value::as_str)
+        {
+            Some("completed") => Ok(Some(Ok(()))),
+            Some("failed") => Ok(Some(Err(notification
+                .raw
+                .pointer("/params/turn/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("Codex turn failed.")
+                .to_string()))),
+            Some("interrupted") => Ok(Some(Err("Codex turn was interrupted.".to_string()))),
+            Some(status) => Err(format!("Unsupported terminal Codex turn status: {status}.")),
+            None => Err("Codex turn/completed notification omitted turn.status.".to_string()),
+        },
+        "turn/failed" => Ok(Some(Err(extract_text(
+            notification.raw.get("params").unwrap_or(&Value::Null),
+        )
+        .unwrap_or_else(|| "Codex turn failed.".to_string())))),
+        "turn/interrupted" => Ok(Some(Err("Codex turn was interrupted.".to_string()))),
+        _ => Ok(None),
+    }
+}
+
+fn codex_cwd() -> Result<PathBuf, String> {
+    if let Ok(value) = std::env::var("CADASTROPHE_CODEX_CWD") {
+        if value.trim().is_empty() {
+            return Err("CADASTROPHE_CODEX_CWD cannot be empty when set.".to_string());
+        }
+        return Ok(PathBuf::from(value));
+    }
+    std::env::current_dir().map_err(|error| format!("Failed to resolve current directory: {error}"))
 }
 
 fn duration_from_env(name: &str, default_secs: u64) -> Duration {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|seconds| *seconds > 0)
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(default_secs))
+    match std::env::var(name) {
+        Ok(value) => match value.parse::<u64>() {
+            Ok(seconds) if seconds > 0 => Duration::from_secs(seconds),
+            _ => panic!("{name} must be a positive integer number of seconds."),
+        },
+        Err(std::env::VarError::NotPresent) => Duration::from_secs(default_secs),
+        Err(error) => panic!("Failed to read {name}: {error}"),
+    }
 }
