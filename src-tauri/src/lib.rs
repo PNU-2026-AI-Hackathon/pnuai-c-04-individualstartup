@@ -3,6 +3,7 @@ mod agent_gateway;
 pub mod cli;
 pub mod codex_agent_adapter;
 pub mod codex_process_client;
+pub mod notification_router;
 pub mod protocol;
 mod runtime;
 mod session_repository;
