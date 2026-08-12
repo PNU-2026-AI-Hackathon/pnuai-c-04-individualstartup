@@ -1,4 +1,5 @@
 use super::model_commands::{plan_commit, source_apply};
+use super::session_commands::session_state;
 use super::workflow_commands::finalize;
 use super::*;
 use crate::protocol::{CadModelPlan, CreateCadSessionInput};
@@ -6,6 +7,89 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+
+#[test]
+fn plan_commit_honors_explicit_run_revision_after_ui_active_revision_changes() {
+    let app_data_dir = temp_app_data_dir("explicit-plan-revision-scope");
+    let service = sqlite_service(&app_data_dir);
+    let created = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let input_revision_id = create_test_revision(&service, &created.session_id);
+    let (run, _) = service
+        .create_agent_run(
+            &created.session_id,
+            "scoped plan".to_string(),
+            Some(input_revision_id.clone()),
+            Some("test".to_string()),
+            None,
+        )
+        .unwrap();
+    let _unrelated_active = service
+        .update_model_source(UpdateModelSourceInput {
+            session_id: created.session_id.clone(),
+            source_language: CadSourceLanguage::Openscad,
+            source: "sphere(r = 2);".to_string(),
+            parent_revision_id: Some(input_revision_id.clone()),
+            parameters: None,
+        })
+        .unwrap();
+    let plan_path = write_json_file(&app_data_dir, "scoped-plan.json", &draft_plan_value());
+
+    let output = plan_commit(
+        &args([
+            ("session", &created.session_id),
+            ("run", &run.id),
+            ("revision", &input_revision_id),
+            ("plan", plan_path.to_str().unwrap()),
+        ]),
+        &service,
+        &app_data_dir,
+    )
+    .unwrap();
+    assert_eq!(output.data["revisionId"], input_revision_id);
+
+    let error = plan_commit(
+        &args([
+            ("session", &created.session_id),
+            ("run", &run.id),
+            ("plan", plan_path.to_str().unwrap()),
+        ]),
+        &service,
+        &app_data_dir,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "precondition_failed");
+    assert!(error.message.contains("not an input or output revision"));
+}
+
+#[test]
+fn session_state_rejects_run_from_another_session() {
+    let app_data_dir = temp_app_data_dir("session-state-run-scope");
+    let service = sqlite_service(&app_data_dir);
+    let first = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let second = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let (run, _) = service
+        .create_agent_run(
+            &first.session_id,
+            "first session".to_string(),
+            None,
+            Some("test".to_string()),
+            None,
+        )
+        .unwrap();
+    let error = session_state(
+        &args([("session", &second.session_id), ("run", &run.id)]),
+        &service,
+        &app_data_dir,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "not_found");
+}
 
 #[cfg(unix)]
 #[test]

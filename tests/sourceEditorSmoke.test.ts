@@ -278,7 +278,8 @@ function workspaceProps(options: WorkspaceHarnessOptions, handlers: WorkspaceHan
     onActivateRevision: () => undefined,
     onRestoreRevision: () => undefined,
     onExport: () => undefined,
-    onOpenFullHistory: () => undefined
+    onOpenFullHistory: () => undefined,
+    onStartNewConversation: () => undefined
   };
 }
 
@@ -306,6 +307,7 @@ function emptyState(sessionId: string): CadSessionState {
     activeRevision: undefined,
     messages: [],
     conversation: [],
+    agentThreads: [],
     agentRuns: [],
     agentRunEvents: [],
     workflow: {
@@ -326,7 +328,8 @@ function workflowStateWithPendingVlm(): CadSessionState {
     status: "running",
     prompt: "Create a cube.",
     createdAt: now,
-    updatedAt: now
+    updatedAt: now,
+    recoveryStatus: "none"
   }];
   state.agentRunEvents = [{
     id: "event-1",
@@ -429,6 +432,7 @@ function sampleState(sessionId: string, source: string): CadSessionState {
     activeRevision: revision,
     messages: [],
     conversation: [],
+    agentThreads: [],
     agentRuns: [],
     agentRunEvents: [],
     workflow: {

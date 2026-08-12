@@ -197,7 +197,12 @@ pub(super) fn load_conversation_messages(
             SELECT conversation_messages.id, conversation_messages.session_id,
                    conversation_messages.revision_id, conversation_messages.run_id,
                    conversation_messages.role, conversation_messages.content,
-                   conversation_messages.created_at, conversation_messages.metadata_json
+                   conversation_messages.created_at, conversation_messages.metadata_json,
+                   conversation_messages.external_thread_id,
+                   conversation_messages.external_turn_id,
+                   conversation_messages.external_item_id,
+                   conversation_messages.phase, conversation_messages.sequence,
+                   conversation_messages.is_final
             FROM conversation_messages
             INNER JOIN sessions ON sessions.id = conversation_messages.session_id
             WHERE sessions.deleted_at IS NULL
@@ -209,6 +214,7 @@ pub(super) fn load_conversation_messages(
         .query_map([], |row| {
             let role: String = row.get(4)?;
             let metadata_json: Option<String> = row.get(7)?;
+            let phase: Option<String> = row.get(11)?;
             Ok(CadConversationMessage {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
@@ -217,6 +223,16 @@ pub(super) fn load_conversation_messages(
                 role: from_db_text(&role).map_err(to_rusqlite_error)?,
                 content: row.get(5)?,
                 created_at: row.get(6)?,
+                external_thread_id: row.get(8)?,
+                external_turn_id: row.get(9)?,
+                external_item_id: row.get(10)?,
+                phase: phase
+                    .map(|phase| from_db_text(&phase).map_err(to_rusqlite_error))
+                    .transpose()?,
+                sequence: row
+                    .get::<_, Option<i64>>(12)?
+                    .map(|value| value.max(0) as u64),
+                is_final: row.get::<_, i64>(13)? != 0,
                 metadata: optional_metadata(metadata_json).map_err(to_rusqlite_error)?,
             })
         })
@@ -232,6 +248,58 @@ pub(super) fn load_conversation_messages(
     Ok(messages)
 }
 
+pub(super) fn load_agent_threads(
+    connection: &Connection,
+) -> SessionRepositoryResult<HashMap<String, Vec<CadAgentThread>>> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT agent_threads.id, agent_threads.session_id,
+                   agent_threads.external_agent, agent_threads.external_thread_id,
+                   agent_threads.status, agent_threads.connection_generation,
+                   agent_threads.created_at, agent_threads.updated_at,
+                   agent_threads.last_resumed_at, agent_threads.archived_at,
+                   agent_threads.replaced_by_id, agent_threads.metadata_json
+            FROM agent_threads
+            INNER JOIN sessions ON sessions.id = agent_threads.session_id
+            WHERE sessions.deleted_at IS NULL
+            ORDER BY agent_threads.created_at ASC, agent_threads.id ASC
+            "#,
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            let status: String = row.get(4)?;
+            let metadata_json: Option<String> = row.get(11)?;
+            Ok(CadAgentThread {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                external_agent: row.get(2)?,
+                external_thread_id: row.get(3)?,
+                status: from_db_text(&status).map_err(to_rusqlite_error)?,
+                connection_generation: row
+                    .get::<_, Option<i64>>(5)?
+                    .map(|value| value.max(0) as u64),
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+                last_resumed_at: row.get(8)?,
+                archived_at: row.get(9)?,
+                replaced_by_id: row.get(10)?,
+                metadata: optional_metadata(metadata_json).map_err(to_rusqlite_error)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    let mut threads: HashMap<String, Vec<CadAgentThread>> = HashMap::new();
+    for row in rows {
+        let thread = row.map_err(|error| error.to_string())?;
+        threads
+            .entry(thread.session_id.clone())
+            .or_default()
+            .push(thread);
+    }
+    Ok(threads)
+}
+
 pub(super) fn load_agent_runs(
     connection: &Connection,
 ) -> SessionRepositoryResult<HashMap<String, Vec<CadAgentRun>>> {
@@ -243,7 +311,8 @@ pub(super) fn load_agent_runs(
                    agent_runs.created_at, agent_runs.updated_at, agent_runs.started_at,
                    agent_runs.completed_at, agent_runs.error, agent_runs.active_step,
                    agent_runs.external_agent, agent_runs.external_thread_id,
-                   agent_runs.external_turn_id
+                   agent_runs.external_turn_id, agent_runs.agent_thread_id,
+                   agent_runs.connection_generation, agent_runs.recovery_status
             FROM agent_runs
             INNER JOIN sessions ON sessions.id = agent_runs.session_id
             WHERE sessions.deleted_at IS NULL
@@ -254,6 +323,7 @@ pub(super) fn load_agent_runs(
     let rows = statement
         .query_map([], |row| {
             let status: String = row.get(4)?;
+            let recovery_status: String = row.get(17)?;
             Ok(CadAgentRun {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
@@ -268,8 +338,13 @@ pub(super) fn load_agent_runs(
                 error: row.get(10)?,
                 active_step: row.get(11)?,
                 external_agent: row.get(12)?,
+                agent_thread_id: row.get(15)?,
                 external_thread_id: row.get(13)?,
                 external_turn_id: row.get(14)?,
+                connection_generation: row
+                    .get::<_, Option<i64>>(16)?
+                    .map(|value| value.max(0) as u64),
+                recovery_status: from_db_text(&recovery_status).map_err(to_rusqlite_error)?,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -279,6 +354,54 @@ pub(super) fn load_agent_runs(
         runs.entry(run.session_id.clone()).or_default().push(run);
     }
     Ok(runs)
+}
+
+pub(super) fn load_agent_transport_events(
+    connection: &Connection,
+) -> SessionRepositoryResult<HashMap<String, Vec<CadAgentTransportEvent>>> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT agent_transport_events.id, agent_transport_events.session_id,
+                   agent_transport_events.run_id, agent_transport_events.agent_thread_id,
+                   agent_transport_events.external_turn_id,
+                   agent_transport_events.external_item_id, agent_transport_events.method,
+                   agent_transport_events.sequence, agent_transport_events.payload_json,
+                   agent_transport_events.created_at
+            FROM agent_transport_events
+            INNER JOIN sessions ON sessions.id = agent_transport_events.session_id
+            WHERE sessions.deleted_at IS NULL
+            ORDER BY agent_transport_events.sequence ASC, agent_transport_events.id ASC
+            "#,
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            let payload_json: String = row.get(8)?;
+            Ok(CadAgentTransportEvent {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                run_id: row.get(2)?,
+                agent_thread_id: row.get(3)?,
+                external_turn_id: row.get(4)?,
+                external_item_id: row.get(5)?,
+                method: row.get(6)?,
+                sequence: row.get::<_, i64>(7)?.max(0) as u64,
+                payload: serde_json::from_str(&payload_json)
+                    .map_err(|error| to_rusqlite_error(error.to_string()))?,
+                created_at: row.get(9)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    let mut events: HashMap<String, Vec<CadAgentTransportEvent>> = HashMap::new();
+    for row in rows {
+        let event = row.map_err(|error| error.to_string())?;
+        events
+            .entry(event.session_id.clone())
+            .or_default()
+            .push(event);
+    }
+    Ok(events)
 }
 
 pub(super) fn load_agent_run_events(

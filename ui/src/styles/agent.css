@@ -17,14 +17,46 @@
   cursor: pointer;
 }
 
-.agent-debug-menu button {
+.agent-debug-popover {
   position: absolute;
   top: 32px;
   right: 0;
   z-index: 5;
+  display: grid;
+  gap: 8px;
+  width: min(520px, 80vw);
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid #c8d1da;
+  border-radius: 6px;
+  padding: 10px;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgb(21 42 53 / 14%);
+}
+
+.agent-debug-popover button {
   min-height: 30px;
   justify-content: flex-start;
   font-size: 12px;
+}
+
+.agent-diagnostics {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.agent-diagnostics > div {
+  display: grid;
+  gap: 2px;
+  border-top: 1px solid #e3e8ed;
+  padding-top: 6px;
+}
+
+.agent-diagnostics code {
+  overflow-wrap: anywhere;
+  white-space: normal;
+  color: #4f5f6f;
 }
 
 .active-step {
@@ -321,6 +353,46 @@
   border-color: #d6c6aa;
   border-bottom-left-radius: 4px;
   background: #fffaf1;
+}
+
+.conversation-streaming {
+  border-style: dashed;
+}
+
+.conversation-streaming p::after {
+  content: "";
+  display: inline-block;
+  width: 0.45em;
+  height: 1em;
+  margin-left: 3px;
+  background: #216a6b;
+  vertical-align: -0.15em;
+  animation: agent-stream-cursor 900ms steps(2, jump-none) infinite;
+}
+
+.agent-stream-commentary {
+  border: 1px solid #d8e1e8;
+  border-radius: 6px;
+  padding: 8px;
+  background: #f7fafc;
+  color: #4f5f6f;
+  font-size: 12px;
+}
+
+.agent-stream-commentary summary {
+  cursor: pointer;
+  color: #172026;
+  font-weight: 700;
+}
+
+.agent-stream-commentary p {
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+@keyframes agent-stream-cursor {
+  50% { opacity: 0; }
 }
 
 .agent-workspace .conversation-user span,

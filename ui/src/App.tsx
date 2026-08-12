@@ -48,10 +48,17 @@ import {
   type OpenscadRuntimeState
 } from "./runtime/openscadRuntime";
 import { applyParameterValuesToSource, parameterHashInput, updateParameterDraft } from "./runtime/parameterDraft";
+import {
+  createAgentStreamState,
+  reconcileAgentStreamSnapshot,
+  reduceAgentStreamEvent,
+  streamingItems
+} from "./runtime/agentStream";
 
 export function App() {
   const backend = useMemo(() => createCadBackendClient(), []);
   const [state, setState] = useState<CadSessionState | null>(null);
+  const [agentStreamState, setAgentStreamState] = useState(() => createAgentStreamState(""));
   const [source, setSource] = useState("");
   const [sourceDirty, setSourceDirty] = useState(false);
   const [sourceConflict, setSourceConflict] = useState(false);
@@ -146,6 +153,7 @@ export function App() {
       }
       latestSessionIdRef.current = nextState.session.id;
       latestSessionUpdatedAtRef.current = nextState.session.updatedAt;
+      setAgentStreamState((current) => reconcileAgentStreamSnapshot(current, nextState));
       setState(nextState);
       if (options.forceSource || !sourceDirtyRef.current) {
         setSource(nextState.activeRevision?.source ?? "");
@@ -215,6 +223,7 @@ export function App() {
         }
       },
       onSnapshot: applySessionSnapshot,
+      onStream: (event) => setAgentStreamState((current) => reduceAgentStreamEvent(current, event)),
       onError: (caught) => setError(errorMessage(caught))
     });
     return unsubscribe;
@@ -354,6 +363,15 @@ export function App() {
       });
       if (!promptOverride) setAgentPrompt("");
       await loadSession(state.session.id);
+    });
+  }
+
+  async function startNewAgentConversation() {
+    if (!state || sessionArchived || activeAgentRun) return;
+    await runBusy(async () => {
+      await resyncIfDisconnected();
+      const result = await backend.startNewAgentConversation(state.session.id);
+      applySessionSnapshot(result.state);
     });
   }
 
@@ -1063,12 +1081,14 @@ export function App() {
             activeRevision={activeDraftRevision}
             activeRun={activeAgentRun}
             agentPrompt={agentPrompt}
+            agentStreams={streamingItems(agentStreamState)}
             onRenderPreview={renderPreview}
             onSaveSource={saveSource}
             onEditSource={editSource}
             onDismissStarterOverlay={dismissStarterOverlay}
             onPromptChange={setAgentPrompt}
             onStartRun={() => startAgentRun()}
+            onStartNewConversation={startNewAgentConversation}
             onRetryRun={(run) => startAgentRun(run.prompt, run.id)}
             onCancelRun={cancelAgentRun}
             onUpdateParameter={updateParameter}

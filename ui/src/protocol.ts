@@ -30,6 +30,25 @@ export type CadAgentRunStatus =
   | "failed"
   | "cancelled";
 
+export type CadAgentRecoveryStatus =
+  | "none"
+  | "reconciling"
+  | "resumed"
+  | "recovered_from_history"
+  | "orphaned_thread"
+  | "unknown_outcome";
+
+export type CadAgentThreadStatus =
+  | "starting"
+  | "ready"
+  | "active"
+  | "not_loaded"
+  | "failed"
+  | "archived"
+  | "replaced"
+  | "legacy"
+  | "orphaned";
+
 export type CadAgentRunEventType =
   | "agent.run.created"
   | "agent.run.updated"
@@ -161,7 +180,34 @@ export interface CadConversationMessage {
   content: string;
   createdAt: string;
   runId?: string;
+  externalThreadId?: string;
+  externalTurnId?: string;
+  externalItemId?: string;
+  phase?: CadAgentMessagePhase;
+  sequence?: number;
+  isFinal?: boolean;
   metadata?: Record<string, unknown>;
+}
+
+export type CadAgentMessagePhase = "commentary" | "final_answer";
+
+/**
+ * Ephemeral text transport emitted separately from durable session snapshots.
+ *
+ * Backend contract: `completed` may only be true after the completed item has
+ * been committed to `conversation` and its authoritative snapshot has been
+ * emitted. `sequence` is monotonically increasing within a streamed item.
+ */
+export interface CadAgentStreamEvent {
+  sessionId: string;
+  runId: string;
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  phase: CadAgentMessagePhase;
+  delta: string;
+  sequence: number;
+  completed: boolean;
 }
 
 export interface CadAgentRun {
@@ -178,8 +224,68 @@ export interface CadAgentRun {
   error?: string;
   activeStep?: string;
   externalAgent?: string;
+  agentThreadId?: string;
   externalThreadId?: string;
   externalTurnId?: string;
+  connectionGeneration?: number;
+  recoveryStatus: CadAgentRecoveryStatus;
+}
+
+export interface CadAgentThread {
+  id: string;
+  sessionId: string;
+  externalAgent: string;
+  externalThreadId: string;
+  status: CadAgentThreadStatus;
+  connectionGeneration?: number;
+  createdAt: string;
+  updatedAt: string;
+  lastResumedAt?: string;
+  archivedAt?: string;
+  replacedById?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CadAgentRunDiagnostic {
+  runId: string;
+  status: CadAgentRunStatus;
+  recoveryStatus: CadAgentRecoveryStatus;
+  agentThreadId?: string;
+  externalThreadId?: string;
+  externalTurnId?: string;
+  connectionGeneration?: number;
+  lastError?: string;
+  updatedAt: string;
+}
+
+export interface CadAgentThreadDiagnostic {
+  thread: CadAgentThread;
+  runs: CadAgentRunDiagnostic[];
+}
+
+export interface CadAgentSessionDiagnostics {
+  sessionId: string;
+  archived: boolean;
+  threads: CadAgentThreadDiagnostic[];
+  unboundRuns: CadAgentRunDiagnostic[];
+  transportEventCount: number;
+}
+
+export interface StartNewAgentConversationResult {
+  archivedThread?: CadAgentThread;
+  activeThread: CadAgentThread;
+  state: CadSessionState;
+}
+
+export interface CadAgentTransportCleanupInput {
+  sessionId?: string;
+  createdBefore?: string;
+  maxEventsPerSession?: number;
+}
+
+export interface CadAgentTransportCleanupResult {
+  deletedCount: number;
+  deletedEventIds: string[];
 }
 
 export interface CadAgentRunEvent {
@@ -320,6 +426,7 @@ export interface CadSessionState {
   activeRevision?: CadRevision;
   messages: CadUserMessage[];
   conversation: CadConversationMessage[];
+  agentThreads: CadAgentThread[];
   agentRuns: CadAgentRun[];
   agentRunEvents: CadAgentRunEvent[];
   workflow: CadWorkflowState;

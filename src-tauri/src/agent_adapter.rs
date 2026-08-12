@@ -67,6 +67,32 @@ pub enum AgentAdapterEvent {
         content: String,
         metadata: Option<serde_json::Map<String, serde_json::Value>>,
     },
+    AgentMessageDelta {
+        external_thread_id: String,
+        external_turn_id: String,
+        external_item_id: String,
+        phase: crate::protocol::CadConversationPhase,
+        delta: String,
+        sequence: u64,
+    },
+    AgentMessageCompleted {
+        external_thread_id: String,
+        external_turn_id: String,
+        external_item_id: String,
+        phase: crate::protocol::CadConversationPhase,
+        content: String,
+        sequence: u64,
+        is_final: bool,
+        metadata: Option<serde_json::Map<String, serde_json::Value>>,
+    },
+    TransportNotification {
+        agent_thread_id: String,
+        external_turn_id: String,
+        external_item_id: Option<String>,
+        method: String,
+        sequence: u64,
+        payload: serde_json::Value,
+    },
     ToolStarted {
         name: String,
     },
@@ -91,4 +117,18 @@ pub trait AgentAdapter: Send + Sync {
     }
 
     async fn run(&self, input: AgentAdapterRunInput) -> Result<Vec<AgentAdapterEvent>, String>;
+
+    async fn interrupt_run(&self, session_id: &str, run_id: &str) -> Result<(), String> {
+        Err(format!(
+            "Agent {} does not support interrupting run {session_id}/{run_id}.",
+            self.external_agent()
+        ))
+    }
+
+    async fn reconcile_run(&self, session_id: &str, run_id: &str) -> Result<(), String> {
+        Err(format!(
+            "Agent {} does not support history reconciliation for run {session_id}/{run_id}.",
+            self.external_agent()
+        ))
+    }
 }

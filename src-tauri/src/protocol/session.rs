@@ -79,6 +79,7 @@ pub struct CadSessionState {
     pub active_revision: Option<CadRevision>,
     pub messages: Vec<CadUserMessage>,
     pub conversation: Vec<CadConversationMessage>,
+    pub agent_threads: Vec<CadAgentThread>,
     pub agent_runs: Vec<CadAgentRun>,
     pub agent_run_events: Vec<CadAgentRunEvent>,
     pub workflow: CadWorkflowState,

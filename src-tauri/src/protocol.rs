@@ -6,6 +6,7 @@ mod commands;
 mod core;
 mod messages;
 mod model_plan;
+mod operations;
 mod session;
 mod workflow;
 
@@ -14,6 +15,7 @@ pub use commands::*;
 pub use core::*;
 pub use messages::*;
 pub use model_plan::*;
+pub use operations::*;
 pub use session::*;
 pub use workflow::*;
 

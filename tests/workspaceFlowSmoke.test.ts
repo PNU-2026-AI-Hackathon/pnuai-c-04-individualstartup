@@ -246,7 +246,8 @@ function workspaceProps(state: CadSessionState, exports: string[]) {
     onExport: (format: "stl" | "metadata", revisionId?: string) => {
       exports.push(`${format}:${revisionId ?? "none"}`);
     },
-    onOpenFullHistory: () => undefined
+    onOpenFullHistory: () => undefined,
+    onStartNewConversation: () => undefined
   };
 }
 
@@ -292,6 +293,7 @@ function sampleState(): CadSessionState {
     activeRevision: revision,
     messages: [],
     conversation: [],
+    agentThreads: [],
     agentRuns: [],
     agentRunEvents: [],
     workflow: { plans: [], outerIterations: [], pendingVlm: [] }

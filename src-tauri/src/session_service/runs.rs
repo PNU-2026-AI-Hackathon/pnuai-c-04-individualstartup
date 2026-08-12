@@ -1,6 +1,163 @@
 use super::*;
 
 impl SessionService {
+    pub fn create_agent_run_with_user_message(
+        &self,
+        session_id: &str,
+        prompt: String,
+        input_revision_id: Option<String>,
+        external_agent: Option<String>,
+        retry_of_run_id: Option<String>,
+        message_metadata: Option<Metadata>,
+    ) -> Result<(CadAgentRun, CadConversationMessage, CadSessionState), String> {
+        let prompt = prompt.trim().to_string();
+        if prompt.is_empty() {
+            return Err("Agent prompt cannot be empty.".to_string());
+        }
+        let run_id = uuid();
+        let message_id = uuid();
+        let (run, message, snapshot) =
+            {
+                let mut state = self.inner.lock().map_err(lock_error)?;
+                let session = require_session(&state, session_id)?;
+                let resolved_input_revision_id = input_revision_id
+                    .clone()
+                    .or_else(|| session.active_revision_id.clone());
+                if let Some(active) = state
+                    .agent_runs
+                    .get(session_id)
+                    .into_iter()
+                    .flatten()
+                    .find(|run| !is_terminal_run_status(&run.status))
+                {
+                    return Err(format!(
+                        "Session {session_id} already has an active agent run: {} ({:?}).",
+                        active.id, active.status
+                    ));
+                }
+                if let Some(revision_id) = &resolved_input_revision_id {
+                    let revision = require_revision(&state, revision_id)?;
+                    if revision.session_id != session_id {
+                        return Err(format!(
+                            "CAD revision {revision_id} does not belong to session {session_id}."
+                        ));
+                    }
+                }
+                if let Some(retry_of_run_id) = &retry_of_run_id {
+                    let retry_source_exists = state
+                        .agent_runs
+                        .get(session_id)
+                        .into_iter()
+                        .flatten()
+                        .any(|run| run.id == *retry_of_run_id);
+                    if !retry_source_exists {
+                        return Err(format!(
+                            "Retry source agent run not found: {retry_of_run_id}"
+                        ));
+                    }
+                }
+
+                let now = timestamp();
+                let run = CadAgentRun {
+                    id: run_id.clone(),
+                    session_id: session_id.to_string(),
+                    input_revision_id: resolved_input_revision_id.clone(),
+                    output_revision_id: None,
+                    status: CadAgentRunStatus::Queued,
+                    prompt: prompt.clone(),
+                    created_at: now.clone(),
+                    updated_at: now.clone(),
+                    started_at: None,
+                    completed_at: None,
+                    error: None,
+                    active_step: None,
+                    external_agent,
+                    agent_thread_id: None,
+                    external_thread_id: None,
+                    external_turn_id: None,
+                    connection_generation: None,
+                    recovery_status: CadAgentRecoveryStatus::None,
+                };
+                let message = CadConversationMessage {
+                    id: message_id.clone(),
+                    session_id: session_id.to_string(),
+                    revision_id: resolved_input_revision_id.clone(),
+                    role: CadConversationRole::User,
+                    content: prompt.clone(),
+                    created_at: now.clone(),
+                    run_id: Some(run_id.clone()),
+                    external_thread_id: None,
+                    external_turn_id: None,
+                    external_item_id: None,
+                    phase: None,
+                    sequence: None,
+                    is_final: true,
+                    metadata: message_metadata,
+                };
+                let event = CadAgentRunEvent {
+                    id: uuid(),
+                    session_id: session_id.to_string(),
+                    run_id: run_id.clone(),
+                    revision_id: resolved_input_revision_id.clone(),
+                    event_type: CadAgentRunEventType::AgentRunCreated,
+                    sequence: 1,
+                    created_at: now.clone(),
+                    payload: metadata_from_value(json!({
+                        "status": &run.status,
+                        "prompt": &run.prompt,
+                        "inputRevisionId": resolved_input_revision_id,
+                        "retryOfRunId": retry_of_run_id
+                    })),
+                    metadata: None,
+                };
+                let mut staged_session = session.clone();
+                if staged_session.title_source != CadSessionTitleSource::User {
+                    if let Some(proposed_title) = propose_session_title(&prompt) {
+                        if staged_session.title.as_deref() != Some(proposed_title.as_str()) {
+                            staged_session.title = Some(proposed_title);
+                            staged_session.title_source = CadSessionTitleSource::Agent;
+                        }
+                    }
+                }
+                staged_session.updated_at = now;
+
+                let (saved_message, saved_event) = self
+                    .repository
+                    .create_agent_run_with_user_message(&staged_session, &run, &message, &event)?;
+                let session = require_session_mut(&mut state, session_id)?;
+                *session = staged_session;
+                state
+                    .agent_runs
+                    .entry(session_id.to_string())
+                    .or_default()
+                    .push(run.clone());
+                state
+                    .agent_run_events
+                    .entry(session_id.to_string())
+                    .or_default()
+                    .push(saved_event);
+                state
+                    .conversation
+                    .entry(session_id.to_string())
+                    .or_default()
+                    .push(saved_message.clone());
+                rebuild_revision_summaries(&mut state, session_id);
+                let snapshot = build_state(&state, session_id)?;
+                (run, saved_message, snapshot)
+            };
+        self.emit(
+            CadBridgeEventType::AgentRunCreated,
+            session_id,
+            snapshot.clone(),
+        );
+        self.emit(
+            CadBridgeEventType::AgentMessageCreated,
+            session_id,
+            snapshot.clone(),
+        );
+        Ok((run, message, snapshot))
+    }
+
     pub fn create_agent_run(
         &self,
         session_id: &str,
@@ -16,6 +173,26 @@ impl SessionService {
                 let session = require_session(&state, session_id)?;
                 input_revision_id.or_else(|| session.active_revision_id.clone())
             };
+            if let Some(active) =
+                state
+                    .agent_runs
+                    .get(session_id)
+                    .into_iter()
+                    .flatten()
+                    .find(|run| {
+                        matches!(
+                            run.status,
+                            CadAgentRunStatus::Queued
+                                | CadAgentRunStatus::Running
+                                | CadAgentRunStatus::WaitingForUser
+                        )
+                    })
+            {
+                return Err(format!(
+                    "Session {session_id} already has an active agent run: {} ({:?}).",
+                    active.id, active.status
+                ));
+            }
             if let Some(revision_id) = &resolved_input_revision_id {
                 let revision = require_revision(&state, revision_id)?;
                 if revision.session_id != session_id {
@@ -52,8 +229,11 @@ impl SessionService {
                 error: None,
                 active_step: None,
                 external_agent,
+                agent_thread_id: None,
                 external_thread_id: None,
                 external_turn_id: None,
+                connection_generation: None,
+                recovery_status: CadAgentRecoveryStatus::None,
             };
             state
                 .agent_runs

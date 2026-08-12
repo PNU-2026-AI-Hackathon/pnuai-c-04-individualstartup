@@ -2,6 +2,179 @@ use super::*;
 use crate::agent_adapter::{AgentAdapterEvent, AgentAdapterRunInput};
 use base64::Engine;
 use std::sync::Mutex;
+use tokio::sync::Notify;
+
+#[test]
+fn transport_payload_policy_redacts_sensitive_keys_and_marks_truncation() {
+    let normalized = crate::agent_gateway::normalize_transport_payload(&serde_json::json!({
+        "result": { "accessToken": "secret-value", "environment": { "SAFE": "no" } },
+        "output": "x".repeat(5_000)
+    }));
+    assert_eq!(normalized["result"]["accessToken"], "[redacted]");
+    assert_eq!(normalized["result"]["environment"], "[redacted]");
+    assert_eq!(normalized["_cadastropheTransportPolicy"]["redacted"], true);
+    assert_eq!(normalized["_cadastropheTransportPolicy"]["truncated"], true);
+    assert!(normalized["output"]
+        .as_str()
+        .unwrap()
+        .ends_with("[truncated]"));
+}
+
+#[test]
+fn transport_payload_policy_removes_hidden_reasoning_and_user_prompt_content() {
+    let reasoning_delta = crate::agent_gateway::normalize_transport_payload(&serde_json::json!({
+        "method": "item/reasoning/textDelta",
+        "params": { "threadId": "thread-1", "turnId": "turn-1", "delta": "raw reasoning" }
+    }));
+    assert_eq!(reasoning_delta["params"]["delta"], "[redacted]");
+    assert_eq!(
+        reasoning_delta["_cadastropheTransportPolicy"]["redacted"],
+        true
+    );
+
+    let summary_delta = crate::agent_gateway::normalize_transport_payload(&serde_json::json!({
+        "method": "item/reasoning/summaryTextDelta",
+        "params": { "delta": "safe summary" }
+    }));
+    assert_eq!(summary_delta["params"]["delta"], "safe summary");
+
+    let reasoning = crate::agent_gateway::normalize_transport_payload(&serde_json::json!({
+        "method": "item/completed",
+        "params": { "item": {
+            "id": "reasoning-1",
+            "type": "reasoning",
+            "content": [{ "type": "reasoningText", "text": "hidden chain of thought" }],
+            "summary": ["public summary"]
+        } }
+    }));
+    assert_eq!(reasoning["params"]["item"]["content"], "[redacted]");
+    assert_eq!(
+        reasoning["params"]["item"]["summary"],
+        serde_json::json!(["public summary"])
+    );
+    assert_eq!(reasoning["_cadastropheTransportPolicy"]["redacted"], true);
+
+    let user_message = crate::agent_gateway::normalize_transport_payload(&serde_json::json!({
+        "method": "item/completed",
+        "params": { "item": {
+            "id": "user-1", "type": "userMessage", "content": "private prompt"
+        } }
+    }));
+    assert_eq!(user_message["params"]["item"]["content"], "[redacted]");
+
+    let agent_message = crate::agent_gateway::normalize_transport_payload(&serde_json::json!({
+        "method": "item/completed",
+        "params": { "item": {
+            "id": "assistant-1", "type": "agentMessage", "content": "public assistant diagnostic"
+        } }
+    }));
+    assert_eq!(
+        agent_message["params"]["item"]["content"],
+        "public assistant diagnostic"
+    );
+}
+
+#[test]
+fn completed_stream_event_follows_durable_agent_message_snapshot() {
+    let service = SessionService::new(
+        std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
+    );
+    let created = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let (run, _) = service
+        .create_agent_run(
+            &created.session_id,
+            "stream ordering".to_string(),
+            None,
+            Some("codex".to_string()),
+            None,
+        )
+        .unwrap();
+    let now = crate::session_service::timestamp();
+    let thread = CadAgentThread {
+        id: uuid::Uuid::new_v4().to_string(),
+        session_id: created.session_id.clone(),
+        external_agent: "codex".to_string(),
+        external_thread_id: "thread-order".to_string(),
+        status: CadAgentThreadStatus::Active,
+        connection_generation: Some(1),
+        created_at: now.clone(),
+        updated_at: now,
+        last_resumed_at: None,
+        archived_at: None,
+        replaced_by_id: None,
+        metadata: None,
+    };
+    service.upsert_agent_thread(thread.clone()).unwrap();
+    service
+        .bind_agent_run_to_thread(
+            &created.session_id,
+            &run.id,
+            &thread.id,
+            Some("turn-order".to_string()),
+            Some(1),
+            CadAgentRecoveryStatus::None,
+        )
+        .unwrap();
+    let mut bridge = service.subscribe();
+    let mut stream = service.subscribe_agent_stream();
+
+    crate::agent_gateway::apply_adapter_event(
+        &service,
+        &run,
+        AgentAdapterEvent::AgentMessageCompleted {
+            external_thread_id: "thread-order".to_string(),
+            external_turn_id: "turn-order".to_string(),
+            external_item_id: "item-order".to_string(),
+            phase: CadConversationPhase::FinalAnswer,
+            content: "Durable first.".to_string(),
+            sequence: 7,
+            is_final: true,
+            metadata: None,
+        },
+    )
+    .unwrap();
+
+    let snapshot = bridge.try_recv().unwrap();
+    assert!(snapshot.state.conversation.iter().any(|message| {
+        message.external_item_id.as_deref() == Some("item-order")
+            && message.content == "Durable first."
+    }));
+    let completed = stream.try_recv().unwrap();
+    assert!(completed.completed);
+    assert_eq!(completed.item_id, "item-order");
+}
+
+#[test]
+fn delete_session_rejects_nonterminal_agent_run_without_mutating_session() {
+    let service = SessionService::new(
+        std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
+    );
+    let created = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    service
+        .create_agent_run(
+            &created.session_id,
+            "still executing".to_string(),
+            created.state.session.active_revision_id.clone(),
+            Some("codex".to_string()),
+            None,
+        )
+        .unwrap();
+
+    let error = service.delete_session(&created.session_id).unwrap_err();
+    assert!(error.contains("active agent run"));
+    assert_eq!(
+        service
+            .get_session_state(&created.session_id)
+            .unwrap()
+            .session
+            .id,
+        created.session_id
+    );
+}
 
 #[test]
 fn gateway_start_run_is_safe_from_sync_tauri_command_context() {
@@ -215,6 +388,130 @@ async fn gateway_cancel_marks_running_run_cancelled() {
 }
 
 #[tokio::test]
+async fn gateway_cancel_after_external_turn_reconciles_and_terminal_outcome_wins() {
+    let service = Arc::new(SessionService::new(
+        std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
+    ));
+    let metadata_ready = Arc::new(Notify::new());
+    let release_run = Arc::new(Notify::new());
+    let gateway = AgentGateway::new(
+        Arc::clone(&service),
+        Arc::new(ControlledCancelAdapter {
+            service: Arc::clone(&service),
+            metadata_ready: Arc::clone(&metadata_ready),
+            release_run: Arc::clone(&release_run),
+            interrupt_should_fail: false,
+        }),
+    );
+    let created = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let started = gateway
+        .start_run(CreateAgentRunInput {
+            session_id: created.session_id.clone(),
+            prompt: "cancel after metadata".to_string(),
+            revision_id: created.state.session.active_revision_id.clone(),
+            retry_of_run_id: None,
+        })
+        .unwrap();
+    metadata_ready.notified().await;
+
+    let (returned, state) = gateway
+        .cancel_run(&created.session_id, &started.run.id)
+        .unwrap();
+    assert_eq!(returned.status, CadAgentRunStatus::Running);
+    assert_eq!(
+        returned.recovery_status,
+        CadAgentRecoveryStatus::Reconciling
+    );
+    assert_eq!(
+        state
+            .agent_runs
+            .iter()
+            .find(|run| run.id == started.run.id)
+            .unwrap()
+            .status,
+        CadAgentRunStatus::Running
+    );
+
+    let settled = wait_for_run_status_async(
+        &service,
+        &created.session_id,
+        &started.run.id,
+        CadAgentRunStatus::Cancelled,
+    )
+    .await;
+    let settled_run = settled
+        .agent_runs
+        .iter()
+        .find(|run| run.id == started.run.id)
+        .unwrap();
+    assert_eq!(
+        settled_run.recovery_status,
+        CadAgentRecoveryStatus::RecoveredFromHistory
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(
+        service
+            .get_agent_run(&created.session_id, &started.run.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        CadAgentRunStatus::Cancelled
+    );
+}
+
+#[tokio::test]
+async fn gateway_cancel_interrupt_failure_records_unknown_outcome() {
+    let service = Arc::new(SessionService::new(
+        std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
+    ));
+    let metadata_ready = Arc::new(Notify::new());
+    let release_run = Arc::new(Notify::new());
+    let gateway = AgentGateway::new(
+        Arc::clone(&service),
+        Arc::new(ControlledCancelAdapter {
+            service: Arc::clone(&service),
+            metadata_ready: Arc::clone(&metadata_ready),
+            release_run: Arc::clone(&release_run),
+            interrupt_should_fail: true,
+        }),
+    );
+    let created = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let started = gateway
+        .start_run(CreateAgentRunInput {
+            session_id: created.session_id.clone(),
+            prompt: "interrupt failure".to_string(),
+            revision_id: created.state.session.active_revision_id.clone(),
+            retry_of_run_id: None,
+        })
+        .unwrap();
+    metadata_ready.notified().await;
+    gateway
+        .cancel_run(&created.session_id, &started.run.id)
+        .unwrap();
+
+    let settled = wait_for_run_status_async(
+        &service,
+        &created.session_id,
+        &started.run.id,
+        CadAgentRunStatus::Failed,
+    )
+    .await;
+    let settled_run = settled
+        .agent_runs
+        .iter()
+        .find(|run| run.id == started.run.id)
+        .unwrap();
+    assert_eq!(
+        settled_run.recovery_status,
+        CadAgentRecoveryStatus::UnknownOutcome
+    );
+}
+
+#[tokio::test]
 async fn gateway_includes_latest_workflow_failure_report_in_retry_input() {
     let service = Arc::new(SessionService::new(
         std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
@@ -259,6 +556,17 @@ async fn gateway_includes_latest_workflow_failure_report_in_retry_input() {
                 passed: false,
                 created_at: "2026-07-29T00:00:00.000Z".to_string(),
             },
+        )
+        .unwrap();
+    service
+        .update_agent_run(
+            &created.session_id,
+            &failed_source_run.id,
+            Some(CadAgentRunStatus::Failed),
+            Some(None),
+            Some("outer loop refinement required".to_string()),
+            None,
+            None,
         )
         .unwrap();
 
@@ -389,7 +697,7 @@ async fn gateway_consumes_inline_vlm_judge_report_without_showing_raw_json() {
 }
 
 #[tokio::test]
-async fn gateway_serializes_runs_per_session() {
+async fn gateway_rejects_duplicate_active_run_in_same_session() {
     let service = Arc::new(SessionService::new(
         std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
     ));
@@ -405,14 +713,15 @@ async fn gateway_serializes_runs_per_session() {
             retry_of_run_id: None,
         })
         .unwrap();
-    let second = gateway
+    let error = gateway
         .start_run(CreateAgentRunInput {
             session_id: created.session_id.clone(),
             prompt: "second fast source".to_string(),
             revision_id: created.state.session.active_revision_id.clone(),
             retry_of_run_id: None,
         })
-        .unwrap();
+        .unwrap_err();
+    assert!(error.contains("already has an active agent run"));
 
     let _ = wait_for_run_status(
         &service,
@@ -420,12 +729,7 @@ async fn gateway_serializes_runs_per_session() {
         &first.run.id,
         CadAgentRunStatus::Completed,
     );
-    let state = wait_for_run_status(
-        &service,
-        &created.session_id,
-        &second.run.id,
-        CadAgentRunStatus::Completed,
-    );
+    let state = service.get_session_state(&created.session_id).unwrap();
     assert_eq!(
         state
             .agent_runs
@@ -435,21 +739,52 @@ async fn gateway_serializes_runs_per_session() {
             .status,
         CadAgentRunStatus::Completed
     );
-    assert_eq!(
-        state
-            .agent_runs
-            .iter()
-            .find(|run| run.id == second.run.id)
-            .unwrap()
-            .status,
-        CadAgentRunStatus::Completed
-    );
-    assert!(state
-        .active_revision
-        .as_ref()
-        .unwrap()
-        .source
-        .contains("second fast source"));
+    assert_eq!(state.agent_runs.len(), 1);
+}
+
+#[tokio::test]
+async fn gateway_allows_active_runs_in_distinct_sessions() {
+    let service = Arc::new(SessionService::new(
+        std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
+    ));
+    let gateway = AgentGateway::new(Arc::clone(&service), Arc::new(DelayedAdapter));
+    let first_session = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let second_session = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let first = gateway
+        .start_run(CreateAgentRunInput {
+            session_id: first_session.session_id.clone(),
+            prompt: "first session".to_string(),
+            revision_id: None,
+            retry_of_run_id: None,
+        })
+        .unwrap();
+    let second = gateway
+        .start_run(CreateAgentRunInput {
+            session_id: second_session.session_id.clone(),
+            prompt: "second session".to_string(),
+            revision_id: None,
+            retry_of_run_id: None,
+        })
+        .unwrap();
+
+    wait_for_run_status_async(
+        &service,
+        &first_session.session_id,
+        &first.run.id,
+        CadAgentRunStatus::Completed,
+    )
+    .await;
+    wait_for_run_status_async(
+        &service,
+        &second_session.session_id,
+        &second.run.id,
+        CadAgentRunStatus::Completed,
+    )
+    .await;
 }
 
 struct OutOfOrderAdapter;
@@ -461,6 +796,13 @@ struct SourceUpdateAdapter;
 struct FailingAdapter;
 
 struct DelayedAdapter;
+
+struct ControlledCancelAdapter {
+    service: Arc<SessionService>,
+    metadata_ready: Arc<Notify>,
+    release_run: Arc<Notify>,
+    interrupt_should_fail: bool,
+}
 
 fn wait_for_run_status(
     service: &SessionService,
@@ -589,6 +931,40 @@ impl AgentAdapter for DelayedAdapter {
             content: "Delayed run completed.".to_string(),
             metadata: None,
         }])
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentAdapter for ControlledCancelAdapter {
+    async fn run(&self, input: AgentAdapterRunInput) -> Result<Vec<AgentAdapterEvent>, String> {
+        input.emit_event(
+            &mut Vec::new(),
+            AgentAdapterEvent::RunMetadata {
+                external_agent: Some("codex".to_string()),
+                external_thread_id: Some("thread-cancel".to_string()),
+                external_turn_id: Some("turn-cancel".to_string()),
+            },
+        )?;
+        self.metadata_ready.notify_one();
+        self.release_run.notified().await;
+        Err("original run stopped after cancellation".to_string())
+    }
+
+    async fn interrupt_run(&self, session_id: &str, run_id: &str) -> Result<(), String> {
+        if self.interrupt_should_fail {
+            self.release_run.notify_one();
+            return Err("scripted interrupt failure".to_string());
+        }
+        self.service
+            .apply_agent_run_history_recovery(CadAgentRunHistoryRecoveryInput {
+                session_id: session_id.to_string(),
+                run_id: run_id.to_string(),
+                outcome: CadAgentRunHistoryOutcome::Interrupted {
+                    reason: "cancelled by test".to_string(),
+                },
+            })?;
+        self.release_run.notify_one();
+        Ok(())
     }
 }
 

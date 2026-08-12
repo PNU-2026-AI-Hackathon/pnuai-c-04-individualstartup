@@ -19,6 +19,7 @@ import type {
   CadSessionState
 } from "../protocol";
 import type { OpenscadRuntimeState } from "../runtime/openscadRuntime";
+import type { CadAgentStreamingItem } from "../runtime/agentStream";
 import { MeshPreview } from "../MeshPreview";
 import { AgentWorkspace } from "./AgentWorkspace";
 import { workflowRunView } from "./AgentWorkflow";
@@ -37,12 +38,14 @@ type WorkspacePanelProps = {
   activeRevision?: CadRevision;
   activeRun?: CadAgentRun;
   agentPrompt: string;
+  agentStreams?: CadAgentStreamingItem[];
   onRenderPreview: () => void | Promise<void>;
   onSaveSource: () => void | Promise<void>;
   onEditSource: (value: string) => void;
   onDismissStarterOverlay: () => void;
   onPromptChange: (value: string) => void;
   onStartRun: () => void | Promise<void>;
+  onStartNewConversation: () => void | Promise<void>;
   onRetryRun: (run: CadAgentRun) => void | Promise<void>;
   onCancelRun: (runId: string) => void | Promise<void>;
   onUpdateParameter: (parameter: CadParameter, value: CadParameter["value"]) => void | Promise<void>;
@@ -65,12 +68,14 @@ export function WorkspacePanel({
   activeRevision,
   activeRun,
   agentPrompt,
+  agentStreams = [],
   onRenderPreview,
   onSaveSource,
   onEditSource,
   onDismissStarterOverlay,
   onPromptChange,
   onStartRun,
+  onStartNewConversation,
   onRetryRun,
   onCancelRun,
   onUpdateParameter,
@@ -181,14 +186,17 @@ export function WorkspacePanel({
             <AgentWorkspace
               conversation={state.conversation}
               runs={state.agentRuns}
+              threads={state.agentThreads}
               events={state.agentRunEvents}
               workflow={state.workflow}
               prompt={agentPrompt}
               busy={busy}
               readOnly={sessionArchived}
               activeRun={activeRun}
+              streams={agentStreams}
               onPromptChange={onPromptChange}
               onStartRun={onStartRun}
+              onStartNewConversation={onStartNewConversation}
               onRetryRun={(run) => onRetryRun(run)}
               onCancelRun={onCancelRun}
               onOpenFullHistory={onOpenFullHistory}

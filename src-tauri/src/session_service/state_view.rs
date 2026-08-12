@@ -42,6 +42,11 @@ pub(super) fn build_state(
             .get(session_id)
             .cloned()
             .unwrap_or_default(),
+        agent_threads: state
+            .agent_threads
+            .get(session_id)
+            .cloned()
+            .unwrap_or_default(),
         agent_runs: state
             .agent_runs
             .get(session_id)

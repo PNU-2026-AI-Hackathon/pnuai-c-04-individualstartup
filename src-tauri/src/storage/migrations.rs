@@ -2,7 +2,7 @@ use super::StorageResult;
 use rusqlite::{params, Connection};
 
 #[cfg(test)]
-pub(super) const SCHEMA_VERSION: i64 = 4;
+pub(super) const SCHEMA_VERSION: i64 = 5;
 
 pub fn run_migrations(connection: &mut Connection) -> StorageResult<()> {
     connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -235,6 +235,264 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         ADD COLUMN structural_report_json TEXT;
       CREATE INDEX idx_workflow_pending_vlm_revision
         ON workflow_pending_vlm(revision_id);
+    "#,
+    },
+    Migration {
+        version: 5,
+        name: "persistent_agent_thread_graph",
+        sql: r#"
+      CREATE TABLE agent_threads (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        external_agent TEXT NOT NULL,
+        external_thread_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        connection_generation INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_resumed_at TEXT,
+        archived_at TEXT,
+        replaced_by_id TEXT,
+        metadata_json TEXT,
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY(replaced_by_id) REFERENCES agent_threads(id) ON DELETE SET NULL
+      );
+
+      ALTER TABLE agent_runs
+        ADD COLUMN agent_thread_id TEXT REFERENCES agent_threads(id) ON DELETE SET NULL;
+      ALTER TABLE agent_runs
+        ADD COLUMN connection_generation INTEGER;
+      ALTER TABLE agent_runs
+        ADD COLUMN recovery_status TEXT NOT NULL DEFAULT 'none';
+
+      ALTER TABLE conversation_messages ADD COLUMN external_thread_id TEXT;
+      ALTER TABLE conversation_messages ADD COLUMN external_turn_id TEXT;
+      ALTER TABLE conversation_messages ADD COLUMN external_item_id TEXT;
+      ALTER TABLE conversation_messages ADD COLUMN phase TEXT;
+      ALTER TABLE conversation_messages ADD COLUMN sequence INTEGER;
+      ALTER TABLE conversation_messages
+        ADD COLUMN is_final INTEGER NOT NULL DEFAULT 1 CHECK(is_final IN (0, 1));
+
+      CREATE TABLE agent_transport_events (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        run_id TEXT,
+        agent_thread_id TEXT,
+        external_turn_id TEXT,
+        external_item_id TEXT,
+        method TEXT NOT NULL,
+        sequence INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE,
+        FOREIGN KEY(agent_thread_id) REFERENCES agent_threads(id) ON DELETE SET NULL
+      );
+
+      CREATE TEMP TABLE legacy_thread_candidates AS
+      WITH grouped AS (
+        SELECT
+          session_id,
+          external_agent,
+          external_thread_id,
+          MIN(id) AS representative_run_id,
+          MAX(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS has_completed,
+          MAX(CASE WHEN status = 'completed' THEN updated_at ELSE '' END) AS completed_updated_at,
+          MAX(updated_at) AS latest_updated_at,
+          MIN(created_at) AS created_at
+        FROM agent_runs
+        WHERE external_agent IS NOT NULL AND external_agent <> ''
+          AND external_thread_id IS NOT NULL AND external_thread_id <> ''
+        GROUP BY session_id, external_agent, external_thread_id
+      ), external_ranked AS (
+        SELECT grouped.*,
+          ROW_NUMBER() OVER (
+            PARTITION BY external_agent, external_thread_id
+            ORDER BY has_completed DESC, completed_updated_at DESC,
+                     latest_updated_at DESC, session_id DESC
+          ) AS external_rank
+        FROM grouped
+      ), session_ranked AS (
+        SELECT external_ranked.*,
+          ROW_NUMBER() OVER (
+            PARTITION BY session_id, external_agent
+            ORDER BY has_completed DESC, completed_updated_at DESC,
+                     latest_updated_at DESC, external_thread_id DESC
+          ) AS session_rank
+        FROM external_ranked
+        WHERE external_rank = 1
+      )
+      SELECT
+        'legacy-thread:' || representative_run_id AS id,
+        session_id,
+        external_agent,
+        external_thread_id,
+        has_completed,
+        latest_updated_at,
+        created_at,
+        session_rank
+      FROM session_ranked;
+
+      INSERT INTO agent_threads (
+        id, session_id, external_agent, external_thread_id, status,
+        created_at, updated_at, archived_at, metadata_json
+      )
+      SELECT
+        id, session_id, external_agent, external_thread_id,
+        CASE WHEN session_rank = 1 THEN 'ready' ELSE 'legacy' END,
+        created_at, latest_updated_at,
+        CASE WHEN session_rank = 1 THEN NULL ELSE latest_updated_at END,
+        '{"migrationStatus":"legacy-backfill"}'
+      FROM legacy_thread_candidates;
+
+      UPDATE agent_threads AS legacy
+      SET replaced_by_id = (
+        SELECT active.id
+        FROM legacy_thread_candidates AS active
+        WHERE active.session_id = legacy.session_id
+          AND active.external_agent = legacy.external_agent
+          AND active.session_rank = 1
+      )
+      WHERE legacy.id IN (
+        SELECT id FROM legacy_thread_candidates WHERE session_rank <> 1
+      );
+
+      UPDATE agent_runs
+      SET agent_thread_id = (
+        SELECT candidate.id
+        FROM legacy_thread_candidates AS candidate
+        WHERE candidate.session_id = agent_runs.session_id
+          AND candidate.external_agent = agent_runs.external_agent
+          AND candidate.external_thread_id = agent_runs.external_thread_id
+      )
+      WHERE external_thread_id IS NOT NULL AND external_thread_id <> '';
+
+      UPDATE agent_runs
+      SET metadata_json = CASE
+        WHEN json_valid(metadata_json) THEN
+          json_set(metadata_json, '$.migrationStatus', 'unmapped')
+        ELSE json_object(
+          'migrationStatus', 'unmapped',
+          'legacyMetadataJson', metadata_json
+        )
+      END
+      WHERE external_thread_id IS NOT NULL AND external_thread_id <> ''
+        AND agent_thread_id IS NULL;
+
+      UPDATE conversation_messages
+      SET external_thread_id = (
+            SELECT external_thread_id FROM agent_runs
+            WHERE agent_runs.id = conversation_messages.run_id
+          ),
+          external_turn_id = (
+            SELECT external_turn_id FROM agent_runs
+            WHERE agent_runs.id = conversation_messages.run_id
+          )
+      WHERE run_id IS NOT NULL;
+
+      UPDATE conversation_messages
+      SET metadata_json = CASE
+        WHEN json_valid(metadata_json) THEN
+          json_set(metadata_json, '$.migrationStatus', 'unmapped')
+        ELSE json_object(
+          'migrationStatus', 'unmapped',
+          'legacyMetadataJson', metadata_json
+        )
+      END
+      WHERE run_id IS NOT NULL
+        AND (
+          external_thread_id IS NULL OR external_turn_id IS NULL
+          OR NOT EXISTS (
+            SELECT 1 FROM agent_runs
+            WHERE agent_runs.id = conversation_messages.run_id
+              AND agent_runs.agent_thread_id IS NOT NULL
+          )
+        );
+
+      DROP TABLE legacy_thread_candidates;
+
+      CREATE TRIGGER agent_runs_thread_session_insert
+      BEFORE INSERT ON agent_runs
+      WHEN NEW.agent_thread_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM agent_threads
+        WHERE id = NEW.agent_thread_id
+          AND session_id = NEW.session_id
+          AND external_agent IS NEW.external_agent
+          AND external_thread_id IS NEW.external_thread_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'agent run thread/session/external mapping mismatch');
+      END;
+
+      CREATE TRIGGER agent_runs_thread_session_update
+      BEFORE UPDATE OF agent_thread_id, session_id, external_agent, external_thread_id
+      ON agent_runs
+      WHEN NEW.agent_thread_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM agent_threads
+        WHERE id = NEW.agent_thread_id
+          AND session_id = NEW.session_id
+          AND external_agent IS NEW.external_agent
+          AND external_thread_id IS NEW.external_thread_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'agent run thread/session/external mapping mismatch');
+      END;
+
+      CREATE TRIGGER conversation_run_session_insert
+      BEFORE INSERT ON conversation_messages
+      WHEN NEW.run_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM agent_runs
+        WHERE id = NEW.run_id AND session_id = NEW.session_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'conversation run/session mismatch');
+      END;
+
+      CREATE TRIGGER conversation_run_session_update
+      BEFORE UPDATE OF run_id, session_id ON conversation_messages
+      WHEN NEW.run_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM agent_runs
+        WHERE id = NEW.run_id AND session_id = NEW.session_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'conversation run/session mismatch');
+      END;
+
+      CREATE TRIGGER agent_transport_graph_insert
+      BEFORE INSERT ON agent_transport_events
+      WHEN (NEW.run_id IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM agent_runs
+              WHERE id = NEW.run_id AND session_id = NEW.session_id
+            ))
+        OR (NEW.agent_thread_id IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM agent_threads
+              WHERE id = NEW.agent_thread_id AND session_id = NEW.session_id
+            ))
+      BEGIN
+        SELECT RAISE(ABORT, 'agent transport event graph mismatch');
+      END;
+
+      CREATE UNIQUE INDEX agent_threads_external_id_uq
+        ON agent_threads(external_agent, external_thread_id);
+      CREATE UNIQUE INDEX agent_threads_active_session_agent_uq
+        ON agent_threads(session_id, external_agent)
+        WHERE archived_at IS NULL AND replaced_by_id IS NULL;
+      CREATE INDEX idx_agent_threads_session_updated_at
+        ON agent_threads(session_id, updated_at);
+      CREATE INDEX idx_agent_runs_agent_thread
+        ON agent_runs(agent_thread_id);
+      CREATE INDEX idx_agent_runs_external_turn
+        ON agent_runs(external_thread_id, external_turn_id);
+      CREATE UNIQUE INDEX conversation_external_item_uq
+        ON conversation_messages(external_thread_id, external_turn_id, external_item_id)
+        WHERE external_item_id IS NOT NULL;
+      CREATE INDEX idx_conversation_run_sequence
+        ON conversation_messages(run_id, sequence);
+      CREATE UNIQUE INDEX agent_transport_events_run_sequence_uq
+        ON agent_transport_events(run_id, sequence)
+        WHERE run_id IS NOT NULL;
+      CREATE INDEX idx_agent_transport_events_thread_turn
+        ON agent_transport_events(agent_thread_id, external_turn_id, sequence);
     "#,
     },
 ];

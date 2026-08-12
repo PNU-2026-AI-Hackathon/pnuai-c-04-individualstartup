@@ -1,7 +1,11 @@
 import type {
   BootCadSessionResult,
   CadAgentRun,
+  CadAgentSessionDiagnostics,
+  CadAgentTransportCleanupInput,
+  CadAgentTransportCleanupResult,
   CadArtifact,
+  CadAgentStreamEvent,
   CadBridgeEvent,
   CadMesh,
   CadParameter,
@@ -18,6 +22,7 @@ import type {
   OpenArtifactResult,
   RevealArtifactResult,
   RestoreRevisionResult,
+  StartNewAgentConversationResult,
   UpdateModelSourceInput,
   UpdateModelSourceResult,
   VerifyArtifactFilesResult
@@ -46,6 +51,9 @@ export interface CadBackendClient {
     values: Record<string, CadParameter["value"]>;
   }): Promise<CadSessionState>;
   createAgentRun(input: { sessionId: string; prompt: string; revisionId?: string; retryOfRunId?: string }): Promise<CreateAgentRunResult>;
+  startNewAgentConversation(sessionId: string): Promise<StartNewAgentConversationResult>;
+  getAgentSessionDiagnostics(sessionId: string): Promise<CadAgentSessionDiagnostics>;
+  cleanupAgentTransportEvents(input: CadAgentTransportCleanupInput): Promise<CadAgentTransportCleanupResult>;
   cancelAgentRun(input: { sessionId: string; runId: string }): Promise<{ run: CadAgentRun; state: CadSessionState }>;
   exportArtifact(input: { sessionId: string; revisionId?: string; format: "stl" | "metadata" }): Promise<{ state: CadSessionState }>;
   openArtifact(artifactId: string): Promise<OpenArtifactResult>;
@@ -58,6 +66,7 @@ export interface CadBackendClient {
     handlers: {
       onStatus: (status: ConnectionStatus) => void;
       onSnapshot: (state: CadSessionState) => void;
+      onStream: (event: CadAgentStreamEvent) => void;
       onError: (error: unknown) => void;
     }
   ): () => void;
@@ -139,6 +148,18 @@ export class TauriCadBackendClient implements CadBackendClient {
     return invokeCommand("create_agent_run", { input });
   }
 
+  startNewAgentConversation(sessionId: string): Promise<StartNewAgentConversationResult> {
+    return invokeCommand("start_new_agent_conversation", { input: { sessionId } });
+  }
+
+  getAgentSessionDiagnostics(sessionId: string): Promise<CadAgentSessionDiagnostics> {
+    return invokeCommand("get_agent_session_diagnostics", { sessionId });
+  }
+
+  cleanupAgentTransportEvents(input: CadAgentTransportCleanupInput): Promise<CadAgentTransportCleanupResult> {
+    return invokeCommand("cleanup_agent_transport_events", { input });
+  }
+
   cancelAgentRun(input: { sessionId: string; runId: string }): Promise<{ run: CadAgentRun; state: CadSessionState }> {
     return invokeCommand("cancel_agent_run", input);
   }
@@ -177,6 +198,7 @@ export class TauriCadBackendClient implements CadBackendClient {
     handlers: {
       onStatus: (status: ConnectionStatus) => void;
       onSnapshot: (state: CadSessionState) => void;
+      onStream: (event: CadAgentStreamEvent) => void;
       onError: (error: unknown) => void;
     }
   ): () => void {
@@ -184,16 +206,32 @@ export class TauriCadBackendClient implements CadBackendClient {
     let closedByCaller = false;
     handlers.onStatus("connecting");
     import("@tauri-apps/api/event")
-      .then(({ listen }) =>
-        listen<CadBridgeEvent>("cad_bridge_event", (event) => {
+      .then(async ({ listen }) => {
+        const unlistenSnapshot = await listen<CadBridgeEvent>("cad_bridge_event", (event) => {
           if (event.payload.sessionId === sessionId) {
             handlers.onSnapshot(event.payload.state);
           }
-        })
-      )
-      .then((unlisten) => {
-        cleanup = unlisten;
-        if (!closedByCaller) handlers.onStatus("connected");
+        });
+        let unlistenStream: (() => void) | undefined;
+        try {
+          unlistenStream = await listen<CadAgentStreamEvent>("agent_stream_event", (event) => {
+            if (event.payload.sessionId === sessionId) {
+              handlers.onStream(event.payload);
+            }
+          });
+        } catch (error) {
+          unlistenSnapshot();
+          throw error;
+        }
+        cleanup = () => {
+          unlistenSnapshot();
+          unlistenStream();
+        };
+        if (closedByCaller) {
+          cleanup();
+          return;
+        }
+        handlers.onStatus("connected");
       })
       .catch((error) => {
         handlers.onStatus("disconnected");

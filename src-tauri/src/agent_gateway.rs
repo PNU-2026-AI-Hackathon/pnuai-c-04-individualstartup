@@ -1,6 +1,6 @@
 use crate::agent_adapter::{AgentAdapter, AgentAdapterEvent};
 use crate::protocol::*;
-use crate::session_service::SessionService;
+use crate::session_service::{timestamp, SessionService};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -27,19 +27,12 @@ impl AgentGateway {
         if prompt.is_empty() {
             return Err("Agent prompt cannot be empty.".to_string());
         }
-        let (run, _) = self.service.create_agent_run(
+        let (run, message, state) = self.service.create_agent_run_with_user_message(
             &input.session_id,
             prompt.clone(),
             input.revision_id.clone(),
             Some(self.adapter.external_agent().to_string()),
             input.retry_of_run_id.clone(),
-        )?;
-        let (message, _) = self.service.create_conversation_message(
-            &input.session_id,
-            run.input_revision_id.clone(),
-            CadConversationRole::User,
-            prompt,
-            Some(run.id.clone()),
             Some(crate::session_service::metadata_from_value(
                 serde_json::json!({"source": "web-ui"}),
             )),
@@ -48,7 +41,7 @@ impl AgentGateway {
         Ok(CreateAgentRunResult {
             message,
             run,
-            state: self.service.get_session_state(&input.session_id)?,
+            state,
         })
     }
 
@@ -74,19 +67,109 @@ impl AgentGateway {
         ) {
             return Ok((run, self.service.get_session_state(session_id)?));
         }
-        self.active_runs
-            .lock()
-            .map_err(|_| "Agent gateway lock is poisoned.".to_string())?
-            .remove(run_id);
-        self.service.update_agent_run(
+        if run.external_turn_id.is_none() {
+            self.active_runs
+                .lock()
+                .map_err(|_| "Agent gateway lock is poisoned.".to_string())?
+                .remove(run_id);
+            return self.service.update_agent_run(
+                session_id,
+                run_id,
+                Some(CadAgentRunStatus::Cancelled),
+                Some(None),
+                None,
+                Some(CadBridgeEventType::AgentRunUpdated),
+                Some(serde_json::json!({"reason": "cancelled_before_turn_start"})),
+            );
+        }
+        let adapter = Arc::clone(&self.adapter);
+        let service = Arc::clone(&self.service);
+        let active_runs = Arc::clone(&self.active_runs);
+        let session_id_owned = session_id.to_string();
+        let run_id_owned = run_id.to_string();
+        let reconciling = self.service.mark_agent_run_reconciling(
             session_id,
             run_id,
-            Some(CadAgentRunStatus::Cancelled),
-            Some(None),
-            None,
-            Some(CadBridgeEventType::AgentRunUpdated),
-            Some(serde_json::json!({"reason": "cancel_requested"})),
-        )
+            "Cancellation requested; waiting for Codex terminal state or history reconciliation."
+                .to_string(),
+        )?;
+        tauri::async_runtime::spawn(async move {
+            let result = adapter
+                .interrupt_run(&session_id_owned, &run_id_owned)
+                .await;
+            if let Err(error) = result {
+                if let Err(persist_error) = service.mark_agent_run_unknown_outcome(
+                    &session_id_owned,
+                    &run_id_owned,
+                    format!("Cancel interrupt/reconciliation failed; outcome is unknown and run was not retried: {error}"),
+                ) {
+                    eprintln!(
+                        "[cadastrophe:cancel-recovery] session_id={} run_id={} interrupt_error={error:?} persist_error={persist_error:?}",
+                        session_id_owned, run_id_owned
+                    );
+                }
+            }
+            match active_runs.lock() {
+                Ok(mut active) => {
+                    active.remove(&run_id_owned);
+                }
+                Err(_) => eprintln!(
+                    "[cadastrophe:cancel-recovery] session_id={} run_id={} active run lock poisoned during cleanup",
+                    session_id_owned, run_id_owned
+                ),
+            }
+        });
+        Ok((reconciling, self.service.get_session_state(session_id)?))
+    }
+
+    pub fn recover_startup_runs(&self) -> Result<(), String> {
+        for candidate in self.service.list_startup_agent_run_recovery_candidates()? {
+            match candidate.action {
+                CadAgentRunRecoveryAction::Reenqueue => {
+                    let run = self
+                        .service
+                        .get_agent_run(&candidate.session_id, &candidate.run_id)?
+                        .ok_or_else(|| {
+                            format!("Startup recovery run not found: {}", candidate.run_id)
+                        })?;
+                    self.enqueue(run);
+                }
+                CadAgentRunRecoveryAction::QueryHistory => {
+                    self.service.mark_agent_run_reconciling(
+                        &candidate.session_id,
+                        &candidate.run_id,
+                        "Reconciling persisted Codex turn during application startup.".to_string(),
+                    )?;
+                    let adapter = Arc::clone(&self.adapter);
+                    let service = Arc::clone(&self.service);
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) = adapter
+                            .reconcile_run(&candidate.session_id, &candidate.run_id)
+                            .await
+                        {
+                            if let Err(persist_error) = service.mark_agent_run_unknown_outcome(
+                                &candidate.session_id,
+                                &candidate.run_id,
+                                format!("Startup Codex history reconciliation failed; outcome is unknown and run was not retried: {error}"),
+                            ) {
+                                eprintln!(
+                                    "[cadastrophe:startup-recovery] failed to persist unknown outcome for {}/{}: {persist_error}",
+                                    candidate.session_id, candidate.run_id
+                                );
+                            }
+                        }
+                    });
+                }
+                CadAgentRunRecoveryAction::MarkUnknownOutcome => {
+                    self.service.mark_agent_run_unknown_outcome(
+                        &candidate.session_id,
+                        &candidate.run_id,
+                        "Application restarted before this run received a Codex turn id; outcome cannot be determined and the run was not retried.".to_string(),
+                    )?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn enqueue(&self, run: CadAgentRun) {
@@ -94,10 +177,11 @@ impl AgentGateway {
         let adapter = Arc::clone(&self.adapter);
         let active_runs = Arc::clone(&self.active_runs);
         let session_lock = self.session_lock(&run.session_id);
+        active_runs
+            .lock()
+            .expect("agent gateway active run lock poisoned")
+            .insert(run.id.clone());
         tauri::async_runtime::spawn(async move {
-            if let Ok(mut active) = active_runs.lock() {
-                active.insert(run.id.clone());
-            }
             let _session_guard = session_lock.lock().await;
             let result = execute_run(service, adapter, active_runs.clone(), run).await;
             if let Err(error) = result {
@@ -173,7 +257,11 @@ async fn execute_run(
                 }
                 apply_adapter_event(&service, &run, event)?;
             }
-            if is_active(&active_runs, &run.id) {
+            if is_active(&active_runs, &run.id)
+                && !service
+                    .get_agent_run(&run.session_id, &run.id)?
+                    .is_some_and(|current| is_terminal_run_status(&current.status))
+            {
                 service.update_agent_run(
                     &run.session_id,
                     &run.id,
@@ -186,6 +274,13 @@ async fn execute_run(
             }
         }
         Err(error) => {
+            if service
+                .get_agent_run(&run.session_id, &run.id)?
+                .is_some_and(|current| is_terminal_run_status(&current.status))
+            {
+                remove_active_run(&active_runs, &run.id)?;
+                return Ok(());
+            }
             service.record_agent_failure(&run.session_id, &error)?;
             service.create_conversation_message(
                 &run.session_id,
@@ -208,13 +303,29 @@ async fn execute_run(
             )?;
         }
     }
-    if let Ok(mut active) = active_runs.lock() {
-        active.remove(&run.id);
-    }
+    remove_active_run(&active_runs, &run.id)?;
     Ok(())
 }
 
-fn apply_adapter_event(
+fn remove_active_run(
+    active_runs: &Arc<Mutex<HashSet<String>>>,
+    run_id: &str,
+) -> Result<(), String> {
+    active_runs
+        .lock()
+        .map_err(|_| "Agent gateway active run lock is poisoned during cleanup.".to_string())?
+        .remove(run_id);
+    Ok(())
+}
+
+fn is_terminal_run_status(status: &CadAgentRunStatus) -> bool {
+    matches!(
+        status,
+        CadAgentRunStatus::Completed | CadAgentRunStatus::Failed | CadAgentRunStatus::Cancelled
+    )
+}
+
+pub(crate) fn apply_adapter_event(
     service: &SessionService,
     run: &CadAgentRun,
     event: AgentAdapterEvent,
@@ -251,6 +362,114 @@ fn apply_adapter_event(
                 metadata,
             )?;
         }
+        AgentAdapterEvent::AgentMessageDelta {
+            external_thread_id,
+            external_turn_id,
+            external_item_id,
+            phase,
+            delta,
+            sequence,
+        } => {
+            service.emit_agent_stream(CadAgentStreamEvent {
+                session_id: run.session_id.clone(),
+                run_id: run.id.clone(),
+                thread_id: external_thread_id,
+                turn_id: external_turn_id,
+                item_id: external_item_id,
+                phase,
+                delta,
+                sequence,
+                completed: false,
+            })?;
+        }
+        AgentAdapterEvent::AgentMessageCompleted {
+            external_thread_id,
+            external_turn_id,
+            external_item_id,
+            phase,
+            content,
+            sequence,
+            is_final,
+            metadata,
+        } => {
+            let mut content = content;
+            let mut metadata = metadata.unwrap_or_default();
+            if let Some(report) = parse_vlm_judge_report(&content) {
+                let submission = submit_inline_vlm_judge_report(service, run, report)?;
+                content = if submission.passed {
+                    format!(
+                        "VLM accepted final artifact {} with score {:.2} (threshold {:.2}).",
+                        short_id(&submission.artifact_id),
+                        submission.score,
+                        submission.pass_threshold
+                    )
+                } else {
+                    format!(
+                        "VLM requested refinement for artifact {} with score {:.2} (threshold {:.2}).",
+                        short_id(&submission.artifact_id), submission.score, submission.pass_threshold
+                    )
+                };
+                metadata.insert(
+                    "source".to_string(),
+                    Value::String("codex-inline-vlm-report".to_string()),
+                );
+                metadata.insert("rawVlmReportHidden".to_string(), Value::Bool(true));
+            }
+            let state = service.get_session_state(&run.session_id)?;
+            service.upsert_agent_conversation_message(CadConversationMessage {
+                id: uuid::Uuid::new_v4().to_string(),
+                session_id: run.session_id.clone(),
+                revision_id: state.session.active_revision_id,
+                role: CadConversationRole::Assistant,
+                content,
+                created_at: timestamp(),
+                run_id: Some(run.id.clone()),
+                external_thread_id: Some(external_thread_id.clone()),
+                external_turn_id: Some(external_turn_id.clone()),
+                external_item_id: Some(external_item_id.clone()),
+                phase: Some(phase.clone()),
+                sequence: Some(sequence),
+                is_final,
+                metadata: Some(metadata),
+            })?;
+            // upsert_agent_conversation_message synchronously emits the durable
+            // AgentMessageCreated snapshot before this ephemeral tombstone.
+            service.emit_agent_stream(CadAgentStreamEvent {
+                session_id: run.session_id.clone(),
+                run_id: run.id.clone(),
+                thread_id: external_thread_id,
+                turn_id: external_turn_id,
+                item_id: external_item_id,
+                phase,
+                delta: String::new(),
+                sequence,
+                completed: true,
+            })?;
+        }
+        AgentAdapterEvent::TransportNotification {
+            agent_thread_id,
+            external_turn_id,
+            external_item_id,
+            method,
+            sequence,
+            payload,
+        } => {
+            service.save_agent_transport_event(CadAgentTransportEvent {
+                id: format!(
+                    "transport:{}:{}:{}:{}",
+                    run.id, agent_thread_id, external_turn_id, sequence
+                ),
+                session_id: run.session_id.clone(),
+                run_id: Some(run.id.clone()),
+                agent_thread_id: Some(agent_thread_id),
+                external_turn_id: Some(external_turn_id),
+                external_item_id,
+                method,
+                sequence,
+                payload: normalize_transport_payload(&payload),
+                created_at: timestamp(),
+            })?;
+        }
         AgentAdapterEvent::ToolStarted { name } => {
             let tool_name = name.clone();
             service.update_agent_run(
@@ -283,21 +502,32 @@ fn apply_adapter_event(
             message,
             metadata,
         } => {
+            let normalized_label = normalize_transport_value(&Value::String(label), 0).0;
+            let normalized_label = normalized_label
+                .as_str()
+                .ok_or_else(|| "Normalized progress label must remain a string.".to_string())?
+                .to_string();
             let mut payload = serde_json::Map::from_iter([(
                 "progressLabel".to_string(),
-                serde_json::Value::String(label.clone()),
+                serde_json::Value::String(normalized_label.clone()),
             )]);
             if let Some(message) = message {
-                payload.insert("message".to_string(), serde_json::Value::String(message));
+                payload.insert(
+                    "message".to_string(),
+                    normalize_transport_value(&Value::String(message), 0).0,
+                );
             }
             if let Some(metadata) = metadata {
-                payload.insert("metadata".to_string(), serde_json::Value::Object(metadata));
+                payload.insert(
+                    "metadata".to_string(),
+                    normalize_transport_payload(&Value::Object(metadata)),
+                );
             }
             service.update_agent_run(
                 &run.session_id,
                 &run.id,
                 None,
-                Some(Some(label)),
+                Some(Some(normalized_label)),
                 None,
                 Some(CadBridgeEventType::AgentRunUpdated),
                 Some(serde_json::Value::Object(payload)),
@@ -327,6 +557,139 @@ fn apply_adapter_event(
         }
     }
     Ok(())
+}
+
+const MAX_TRANSPORT_STRING_CHARS: usize = 4_096;
+const MAX_TRANSPORT_COLLECTION_ITEMS: usize = 64;
+
+pub(crate) fn normalize_transport_payload(payload: &Value) -> Value {
+    let mut structurally_redacted = payload.clone();
+    let hidden_content_redacted = redact_hidden_transport_content(&mut structurally_redacted);
+    let (mut value, truncated, recursively_redacted) =
+        normalize_transport_value(&structurally_redacted, 0);
+    let redacted = hidden_content_redacted || recursively_redacted;
+    if let Value::Object(object) = &mut value {
+        object.insert(
+            "_cadastropheTransportPolicy".to_string(),
+            json!({ "truncated": truncated, "redacted": redacted }),
+        );
+    } else {
+        value = json!({
+            "value": value,
+            "_cadastropheTransportPolicy": { "truncated": truncated, "redacted": redacted }
+        });
+    }
+    value
+}
+
+fn redact_hidden_transport_content(payload: &mut Value) -> bool {
+    if payload.get("method").and_then(Value::as_str) == Some("item/reasoning/textDelta") {
+        if let Some(params) = payload.get_mut("params").and_then(Value::as_object_mut) {
+            if params.contains_key("delta") {
+                params.insert("delta".to_string(), Value::String("[redacted]".to_string()));
+                return true;
+            }
+        }
+    }
+    let Some(item) = payload
+        .get_mut("params")
+        .and_then(|params| params.get_mut("item"))
+        .and_then(Value::as_object_mut)
+    else {
+        return false;
+    };
+    let item_type = item.get("type").and_then(Value::as_str);
+    if !matches!(item_type, Some("reasoning" | "userMessage")) {
+        return false;
+    }
+    if item.contains_key("content") {
+        item.insert(
+            "content".to_string(),
+            Value::String("[redacted]".to_string()),
+        );
+        true
+    } else {
+        false
+    }
+}
+
+fn normalize_transport_value(value: &Value, depth: usize) -> (Value, bool, bool) {
+    if depth >= 12 {
+        return (
+            Value::String("[truncated: maximum nesting depth]".to_string()),
+            true,
+            false,
+        );
+    }
+    match value {
+        Value::String(text) => {
+            let mut chars = text.chars();
+            let prefix = chars
+                .by_ref()
+                .take(MAX_TRANSPORT_STRING_CHARS)
+                .collect::<String>();
+            if chars.next().is_some() {
+                (Value::String(format!("{prefix}\n[truncated]")), true, false)
+            } else {
+                (value.clone(), false, false)
+            }
+        }
+        Value::Array(values) => {
+            let mut truncated = values.len() > MAX_TRANSPORT_COLLECTION_ITEMS;
+            let mut redacted = false;
+            let normalized = values
+                .iter()
+                .take(MAX_TRANSPORT_COLLECTION_ITEMS)
+                .map(|value| {
+                    let (value, was_truncated, was_redacted) =
+                        normalize_transport_value(value, depth + 1);
+                    truncated |= was_truncated;
+                    redacted |= was_redacted;
+                    value
+                })
+                .collect();
+            (Value::Array(normalized), truncated, redacted)
+        }
+        Value::Object(values) => {
+            let mut truncated = values.len() > MAX_TRANSPORT_COLLECTION_ITEMS;
+            let mut redacted = false;
+            let mut normalized = serde_json::Map::new();
+            for (key, value) in values.iter().take(MAX_TRANSPORT_COLLECTION_ITEMS) {
+                if is_sensitive_transport_key(key) {
+                    normalized.insert(key.clone(), Value::String("[redacted]".to_string()));
+                    redacted = true;
+                    continue;
+                }
+                let (value, was_truncated, was_redacted) =
+                    normalize_transport_value(value, depth + 1);
+                truncated |= was_truncated;
+                redacted |= was_redacted;
+                normalized.insert(key.clone(), value);
+            }
+            (Value::Object(normalized), truncated, redacted)
+        }
+        _ => (value.clone(), false, false),
+    }
+}
+
+fn is_sensitive_transport_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    [
+        "environment",
+        "env",
+        "secret",
+        "token",
+        "password",
+        "authorization",
+        "cookie",
+        "prompt",
+    ]
+    .iter()
+    .any(|sensitive| normalized == *sensitive || normalized.ends_with(sensitive))
 }
 
 struct InlineVlmSubmission {
@@ -492,7 +855,7 @@ fn submit_inline_vlm_judge_report(
         }),
     )?;
     if passed {
-        let _ = service.update_agent_run(
+        service.update_agent_run(
             &run.session_id,
             &run.id,
             Some(CadAgentRunStatus::Completed),
@@ -550,9 +913,7 @@ fn validate_inline_vlm_report(
     if let Some(value) = report.get("artifactId") {
         match value.as_str() {
             Some(value) if value == artifact_id => {}
-            _ => {
-                return Err("VLM judge report artifactId does not match pending VLM.".to_string())
-            }
+            _ => return Err("VLM judge report artifactId does not match pending VLM.".to_string()),
         }
     }
     Ok(())

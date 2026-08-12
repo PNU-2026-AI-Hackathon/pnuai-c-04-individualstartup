@@ -1,4 +1,6 @@
-use super::workflow_support::{require_committed_plan, with_tool_events};
+use super::workflow_support::{
+    require_committed_plan, require_revision_in_session, with_tool_events,
+};
 use super::*;
 
 pub(super) fn plan_commit(
@@ -15,6 +17,14 @@ pub(super) fn plan_commit(
         .map_err(CliError::not_found)?
         .session
         .active_revision_id;
+    let active_revision_id = match args.optional("revision") {
+        Some(_) => Some(resolve_active_revision_id(args, service, &session_id)?),
+        None => active_revision_id,
+    };
+    if let Some(revision_id) = &active_revision_id {
+        require_revision_in_session(service, &session_id, revision_id)?;
+    }
+    validate_run_revision_scope(service, &session_id, &run_id, active_revision_id.as_deref())?;
 
     with_tool_events(
         service,
@@ -81,6 +91,14 @@ pub(super) fn source_apply(
         .map_err(CliError::not_found)?
         .session
         .active_revision_id;
+    let parent_revision_id = match args.optional("revision") {
+        Some(_) => Some(resolve_active_revision_id(args, service, &session_id)?),
+        None => parent_revision_id,
+    };
+    if let Some(revision_id) = &parent_revision_id {
+        require_revision_in_session(service, &session_id, revision_id)?;
+    }
+    validate_run_revision_scope(service, &session_id, &run_id, parent_revision_id.as_deref())?;
 
     with_tool_events(
         service,
@@ -148,4 +166,26 @@ pub(super) fn source_apply(
             })
         },
     )
+}
+
+fn validate_run_revision_scope(
+    service: &SessionService,
+    session_id: &str,
+    run_id: &str,
+    revision_id: Option<&str>,
+) -> CliResult<()> {
+    let run = service
+        .get_agent_run(session_id, run_id)
+        .map_err(CliError::storage)?
+        .ok_or_else(|| CliError::not_found(format!("Agent run not found: {run_id}")))?;
+    if let Some(revision_id) = revision_id {
+        let belongs_to_run = run.input_revision_id.as_deref() == Some(revision_id)
+            || run.output_revision_id.as_deref() == Some(revision_id);
+        if !belongs_to_run {
+            return Err(CliError::precondition_failed(format!(
+                "CAD revision {revision_id} is not an input or output revision of agent run {run_id}."
+            )));
+        }
+    }
+    Ok(())
 }

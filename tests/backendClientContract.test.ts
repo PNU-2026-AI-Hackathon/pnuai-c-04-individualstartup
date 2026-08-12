@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { CadBackendClient } from "../ui/src/backendClient";
 import type {
+  CadAgentStreamEvent,
   CadArtifact,
   CadBridgeEvent,
   CadSessionListItem,
@@ -42,6 +43,7 @@ async function assertClientShape(client: CadBackendClient) {
   const unsubscribe = client.subscribeSession(created.sessionId, {
     onStatus: () => undefined,
     onSnapshot: (state) => observedSnapshots.push(state),
+    onStream: () => undefined,
     onError: (error) => {
       throw error;
     }
@@ -53,6 +55,15 @@ async function assertClientShape(client: CadBackendClient) {
     revisionId: created.state.session.activeRevisionId
   });
   assertAgentRunShape(started);
+  const newConversation = await client.startNewAgentConversation(created.sessionId);
+  assert.equal(newConversation.activeThread.externalThreadId, "contract-thread-1");
+  const agentDiagnostics = await client.getAgentSessionDiagnostics(created.sessionId);
+  assert.equal(agentDiagnostics.threads[0]?.thread.id, newConversation.activeThread.id);
+  const cleanup = await client.cleanupAgentTransportEvents({
+    sessionId: created.sessionId,
+    maxEventsPerSession: 100
+  });
+  assert.equal(cleanup.deletedCount, 0);
   const active = await client.setActiveRevision({
     sessionId: created.sessionId,
     revisionId: created.state.session.activeRevisionId ?? "revision-1"
@@ -291,7 +302,8 @@ class ContractBackendClient implements CadBackendClient {
       status: "queued" as const,
       prompt: input.prompt,
       createdAt: now,
-      updatedAt: now
+      updatedAt: now,
+      recoveryStatus: "none" as const
     };
     const event = {
       id: "tauri-run-event-1",
@@ -311,6 +323,38 @@ class ContractBackendClient implements CadBackendClient {
     };
     this.emit("agent.run.created");
     return { message, run, state: this.state };
+  }
+
+  async startNewAgentConversation(sessionId: string) {
+    const state = this.requireState();
+    const now = new Date().toISOString();
+    const activeThread = {
+      id: "agent-thread-1",
+      sessionId,
+      externalAgent: "codex",
+      externalThreadId: "contract-thread-1",
+      status: "ready" as const,
+      connectionGeneration: 1,
+      createdAt: now,
+      updatedAt: now
+    };
+    this.state = { ...state, agentThreads: [activeThread] };
+    return { activeThread, state: this.state };
+  }
+
+  async getAgentSessionDiagnostics(sessionId: string) {
+    const state = this.requireState();
+    return {
+      sessionId,
+      archived: false,
+      threads: state.agentThreads.map((thread) => ({ thread, runs: [] })),
+      unboundRuns: [],
+      transportEventCount: 0
+    };
+  }
+
+  async cleanupAgentTransportEvents() {
+    return { deletedCount: 0, deletedEventIds: [] };
   }
 
   async cancelAgentRun(): Promise<{ run: never; state: CadSessionState }> {
@@ -375,6 +419,7 @@ class ContractBackendClient implements CadBackendClient {
     handlers: {
       onStatus: (status: "connecting" | "connected" | "disconnected") => void;
       onSnapshot: (state: CadSessionState) => void;
+      onStream: (event: CadAgentStreamEvent) => void;
       onError: (error: unknown) => void;
     }
   ): () => void {
@@ -458,6 +503,7 @@ function sampleState(title: string): CadSessionState {
     },
     messages: [],
     conversation: [],
+    agentThreads: [],
     agentRuns: [],
     agentRunEvents: [],
     workflow: {

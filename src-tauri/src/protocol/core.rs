@@ -70,6 +70,39 @@ pub enum CadAgentRunStatus {
     Cancelled,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CadAgentRecoveryStatus {
+    #[default]
+    None,
+    Reconciling,
+    Resumed,
+    RecoveredFromHistory,
+    OrphanedThread,
+    UnknownOutcome,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CadAgentThreadStatus {
+    Starting,
+    Ready,
+    Active,
+    NotLoaded,
+    Failed,
+    Archived,
+    Replaced,
+    Legacy,
+    Orphaned,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CadConversationPhase {
+    Commentary,
+    FinalAnswer,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub enum CadAgentRunEventType {
     #[serde(rename = "agent.run.created")]

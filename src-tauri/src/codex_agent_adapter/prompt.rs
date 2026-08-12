@@ -14,14 +14,8 @@ pub(super) fn build_thread_start_params(cwd: &Path) -> Value {
     })
 }
 
-pub(super) fn build_turn_start_params(
-    thread_id: &str,
-    prompt: &str,
-    cwd: &Path,
-    app_data_dir: &Path,
-) -> Value {
+pub(super) fn build_turn_start_params(prompt: &str, cwd: &Path, app_data_dir: &Path) -> Value {
     json!({
-        "threadId": thread_id,
         "input": [
             {
                 "type": "text",
@@ -47,6 +41,13 @@ pub(super) fn build_cad_prompt(input: &AgentAdapterRunInput) -> String {
         .map(|report| serde_json::to_string_pretty(report).unwrap_or_else(|_| report.to_string()))
         .unwrap_or_else(|| "null".to_string());
     let app_data_dir = shell_quote_path(&input.app_data_dir);
+    let session_id = shell_quote_arg(&input.session_id);
+    let run_id = shell_quote_arg(&input.run_id);
+    let input_revision_scope = input
+        .revision_id
+        .as_deref()
+        .map(|revision_id| format!(" --revision {}", shell_quote_arg(revision_id)))
+        .unwrap_or_default();
     format!(
         r#"You are the Cadastrophe CAD modeling agent.
 
@@ -56,12 +57,12 @@ User request:
 {prompt}
 
 Required order:
-1. Inspect current state with `cadastrophe-session-state --app-data-dir {app_data_dir}` when useful, especially on retries.
-2. Create a CadModelPlanDraft JSON file under the Cadastrophe app data directory, then commit it with `cadastrophe-plan-commit --app-data-dir {app_data_dir} --plan <file>`.
+1. Inspect current state with `cadastrophe-session-state --app-data-dir {app_data_dir} --session {session_id} --run {run_id}` when useful, especially on retries.
+2. Create a CadModelPlanDraft JSON file under the Cadastrophe app data directory, then commit it with `cadastrophe-plan-commit --app-data-dir {app_data_dir} --session {session_id} --run {run_id}{input_revision_scope} --plan <file>`.
 3. Do not call `cadastrophe-source-apply` or `cadastrophe-finalize` until the plan commit succeeds for this run.
-4. Write complete OpenSCAD source to a file under the Cadastrophe app data directory, then call `cadastrophe-source-apply --app-data-dir {app_data_dir} --source <file>`.
+4. Write complete OpenSCAD source to a file under the Cadastrophe app data directory, then call `cadastrophe-source-apply --app-data-dir {app_data_dir} --session {session_id} --run {run_id}{input_revision_scope} --source <file>`.
 5. Source apply triggers the app-owned preview render automatically and returns runtime diagnostics. If diagnostics contain errors, explain the cause briefly, repair the source, and repeat source apply.
-6. When runtime diagnostics pass, call `cadastrophe-finalize --app-data-dir {app_data_dir}`.
+6. When runtime diagnostics pass, call `cadastrophe-finalize --app-data-dir {app_data_dir} --session {session_id} --run {run_id} --revision <revision_id_from_source_apply>`.
 7. Finalize exports the final artifact, runs the deterministic structural anchor, renders mandatory VLM evidence, and records the pending VLM contract when structural checks pass.
 8. If finalize returns a `failure_report` or `next_action`/`nextAction` of `outer_loop_refine_source`, include that report in the next plan/source attempt and repeat from plan commit.
 9. If finalize returns a `cadastrophe.vlm_judge.v1` handoff, pass the handoff, rendered image path, and original user request to a separate subagent using the `cadastrophe-vlm-judge` skill and request strict JSON only. Return the strict JSON report as your assistant message; the app will consume it and record the VLM result automatically.
@@ -70,9 +71,11 @@ Required order:
 CLI contract reminders:
 - JSON output is the default; use `--pretty` only for human inspection.
 - Always pass `--app-data-dir {app_data_dir}` to Cadastrophe CLI commands. The UI and CLI must operate on the same SQLite database and artifacts.
+- Always pass the exact immutable run scope `--session {session_id} --run {run_id}` to every Cadastrophe CLI command. Never infer either identifier from current UI state.
+- For commands targeting an existing revision, pass `--revision <revision_id>` explicitly. Finalize must use the `revisionId` returned by the successful source-apply call.
 - Treat non-zero exits and JSON error envelopes as authoritative.
 - Preserve command outputs that include `next_action`, `nextAction`, `diagnostics`, `failure_report`, `failureReport`, `artifact_paths`, `artifactPaths`, `contract_type`, or `contractType`; these fields are shown in the UI run log.
-- A retry must inspect previous workflow failures via `cadastrophe-session-state --app-data-dir {app_data_dir}` and carry the latest structural or VLM failure report into the new attempt.
+- A retry must inspect previous workflow failures via `cadastrophe-session-state --app-data-dir {app_data_dir} --session {session_id} --run {run_id}` and carry the latest structural or VLM failure report into the new attempt.
 - Do not call `cadastrophe-preview-render`, `cadastrophe-artifact-export`, `cadastrophe-evaluate-structural`, or `cadastrophe-vlm-submit`; they are not part of the agent surface.
 
 Plan draft contract:
@@ -89,6 +92,9 @@ OpenSCAD constraints for the current Cadastrophe openscad-wasm runtime:
 
 Cadastrophe context:
 - appDataDir: {app_data_dir}
+- sessionId: {session_id}
+- runId: {run_id}
+- inputRevisionId: {input_revision_id}
 - activeRevisionSourceLanguage: {source_language}
 - latestWorkflowFailureReport:
 ```json
@@ -101,6 +107,10 @@ Cadastrophe context:
 "#,
         prompt = input.prompt,
         app_data_dir = app_data_dir,
+        session_id = session_id,
+        run_id = run_id,
+        input_revision_scope = input_revision_scope,
+        input_revision_id = input.revision_id.as_deref().unwrap_or("null"),
         latest_failure_report = latest_failure_report,
         source_language = input
             .revision_source_language
@@ -118,5 +128,9 @@ Cadastrophe context:
 
 fn shell_quote_path(path: &Path) -> String {
     let value = path.to_string_lossy();
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn shell_quote_arg(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
