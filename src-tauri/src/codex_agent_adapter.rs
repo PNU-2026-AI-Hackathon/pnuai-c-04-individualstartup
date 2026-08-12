@@ -244,7 +244,11 @@ fn assert_turn_identity(
         || notification.identifiers.turn_id.as_deref() != Some(turn_id)
     {
         return Err(format!(
-            "Routed Codex notification identity did not match collector route {thread_id}/{turn_id}."
+            "Routed Codex notification identity did not match collector route {thread_id}/{turn_id}: method={}, actualThreadId={:?}, actualTurnId={:?}, transportSequence={}.",
+            notification.method,
+            notification.identifiers.thread_id,
+            notification.identifiers.turn_id,
+            notification.transport_sequence,
         ));
     }
     Ok(())

@@ -376,15 +376,6 @@ impl NotificationRouter {
                 pending.notifications.push_back(notification);
                 return Ok(NotificationRouteOutcome::BufferedPending);
             }
-        } else if let Some(thread_id) = thread_id.as_ref() {
-            let mut state = self.lock_state()?;
-            if let Some(pending) = state.pending_routes.get_mut(thread_id) {
-                if pending.notifications.len() >= self.config.pending_buffer_capacity {
-                    return Err(NotificationRouteError::PendingBufferFull(thread_id.clone()));
-                }
-                pending.notifications.push_back(notification);
-                return Ok(NotificationRouteOutcome::BufferedPending);
-            }
         }
 
         if thread_id.is_none() && turn_id.is_none() {
@@ -720,6 +711,36 @@ mod tests {
         let mut receiver = router.promote_pending_route(handle, "turn-1").unwrap();
         assert_eq!(receiver.recv().await.unwrap().method, "turn/started");
         assert_eq!(receiver.recv().await.unwrap().method, "item/started");
+    }
+
+    #[tokio::test]
+    async fn keeps_thread_scoped_events_out_of_pending_turn_routes() {
+        let router = router();
+        let handle = router.begin_pending_route("thread-1").unwrap();
+        let mut orphans = router.subscribe_orphans();
+
+        assert_eq!(
+            router
+                .route(json!({
+                    "method": "thread/status/changed",
+                    "params": {
+                        "threadId": "thread-1",
+                        "status": {"type": "active", "activeFlags": []}
+                    }
+                }))
+                .unwrap(),
+            NotificationRouteOutcome::Orphan
+        );
+        let diagnostic = orphans.recv().await.unwrap();
+        assert_eq!(diagnostic.method, "thread/status/changed");
+        assert_eq!(
+            diagnostic.identifiers.thread_id.as_deref(),
+            Some("thread-1")
+        );
+        assert_eq!(diagnostic.identifiers.turn_id, None);
+
+        let mut receiver = router.promote_pending_route(handle, "turn-1").unwrap();
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
