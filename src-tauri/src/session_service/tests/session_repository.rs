@@ -48,8 +48,7 @@ fn sqlite_repository_restores_current_session_and_session_index() {
 
 #[test]
 fn first_run_boot_creates_example_once_and_persists_completion() {
-    let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-first-run-test-{}", uuid()));
+    let app_data_dir = std::env::temp_dir().join(format!("cadastrophe-first-run-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
 
@@ -67,7 +66,10 @@ fn first_run_boot_creates_example_once_and_persists_completion() {
     assert!(first.state.session.active_revision_id.is_none());
     assert!(first.state.active_revision.is_none());
     assert!(first.state.session.revisions.is_empty());
-    assert_eq!(first.state.session.title_source, CadSessionTitleSource::System);
+    assert_eq!(
+        first.state.session.title_source,
+        CadSessionTitleSource::System
+    );
 
     let second = service.boot_session().unwrap();
     assert!(!second.is_first_run);
@@ -98,9 +100,11 @@ fn generated_title_updates_from_prompt_until_user_rename() {
         Arc::new(SqliteSessionRepository::new(layout.clone())),
     )
     .unwrap();
-    let created = service.create_session(CreateCadSessionInput::default()).unwrap();
+    let created = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
 
-    let (_, prompted) = service
+    let (first_run, prompted) = service
         .create_agent_run(
             &created.session_id,
             "Create a slotted fixture plate with rounded corners".to_string(),
@@ -114,6 +118,17 @@ fn generated_title_updates_from_prompt_until_user_rename() {
         Some("Slotted Fixture Plate Rounded")
     );
     assert_eq!(prompted.session.title_source, CadSessionTitleSource::Agent);
+    service
+        .update_agent_run(
+            &created.session_id,
+            &first_run.id,
+            Some(CadAgentRunStatus::Completed),
+            Some(None),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
     let renamed = service
         .rename_session(RenameCadSessionInput {
@@ -333,6 +348,65 @@ fn sqlite_repository_persists_duplicate_archive_and_delete() {
 }
 
 #[test]
+fn restart_marks_persisted_loaded_thread_not_loaded_without_changing_mapping() {
+    let app_data_dir =
+        std::env::temp_dir().join(format!("cadastrophe-thread-restart-test-{}", uuid()));
+    let layout = StorageLayout::from_app_data_dir(app_data_dir);
+    storage::initialize_storage(&layout).unwrap();
+    let service = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout.clone())),
+    )
+    .unwrap();
+    let created = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let now = timestamp();
+    let thread = service
+        .upsert_agent_thread(CadAgentThread {
+            id: uuid(),
+            session_id: created.session_id.clone(),
+            external_agent: "codex".to_string(),
+            external_thread_id: "persisted-thread".to_string(),
+            status: CadAgentThreadStatus::Active,
+            connection_generation: Some(7),
+            created_at: now.clone(),
+            updated_at: now,
+            last_resumed_at: None,
+            archived_at: None,
+            replaced_by_id: None,
+            metadata: None,
+        })
+        .unwrap();
+    drop(service);
+
+    let restarted = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout.clone())),
+    )
+    .unwrap();
+    let loaded = restarted.list_agent_threads(&created.session_id).unwrap();
+    let loaded = loaded
+        .iter()
+        .find(|candidate| candidate.id == thread.id)
+        .unwrap();
+    assert_eq!(loaded.status, CadAgentThreadStatus::NotLoaded);
+    assert_eq!(loaded.external_thread_id, "persisted-thread");
+    assert_eq!(loaded.connection_generation, None);
+
+    drop(restarted);
+    let persisted = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout)),
+    )
+    .unwrap();
+    assert_eq!(
+        persisted.list_agent_threads(&created.session_id).unwrap()[0].status,
+        CadAgentThreadStatus::NotLoaded
+    );
+}
+
+#[test]
 fn sqlite_repository_rejects_stale_save_after_session_delete() {
     let app_data_dir =
         std::env::temp_dir().join(format!("cadastrophe-session-delete-stale-test-{}", uuid()));
@@ -372,6 +446,242 @@ fn sqlite_repository_rejects_stale_save_after_session_delete() {
     .unwrap();
     assert!(reloaded.list_sessions(true).unwrap().is_empty());
     assert!(reloaded.get_session_state(&created.session_id).is_err());
+}
+
+#[test]
+fn sqlite_repository_restores_agent_thread_run_message_and_transport_graph_idempotently() {
+    let app_data_dir =
+        std::env::temp_dir().join(format!("cadastrophe-agent-graph-test-{}", uuid()));
+    let layout = StorageLayout::from_app_data_dir(app_data_dir);
+    storage::initialize_storage(&layout).unwrap();
+
+    let service = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout.clone())),
+    )
+    .unwrap();
+    let created = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let (run, _) = service
+        .create_agent_run(
+            &created.session_id,
+            "continue the same design".to_string(),
+            None,
+            Some("codex".to_string()),
+            None,
+        )
+        .unwrap();
+    let thread = CadAgentThread {
+        id: uuid(),
+        session_id: created.session_id.clone(),
+        external_agent: "codex".to_string(),
+        external_thread_id: "external-thread-1".to_string(),
+        status: CadAgentThreadStatus::Ready,
+        connection_generation: Some(7),
+        created_at: "2026-08-12T00:00:00.000Z".to_string(),
+        updated_at: "2026-08-12T00:00:00.000Z".to_string(),
+        last_resumed_at: Some("2026-08-12T00:00:00.000Z".to_string()),
+        archived_at: None,
+        replaced_by_id: None,
+        metadata: None,
+    };
+    service.upsert_agent_thread(thread.clone()).unwrap();
+    let bound_run = service
+        .bind_agent_run_to_thread(
+            &created.session_id,
+            &run.id,
+            &thread.id,
+            Some("turn-1".to_string()),
+            Some(7),
+            CadAgentRecoveryStatus::Resumed,
+        )
+        .unwrap();
+    assert_eq!(
+        bound_run.agent_thread_id.as_deref(),
+        Some(thread.id.as_str())
+    );
+
+    let message = CadConversationMessage {
+        id: uuid(),
+        session_id: created.session_id.clone(),
+        revision_id: None,
+        role: CadConversationRole::Assistant,
+        content: "partial".to_string(),
+        created_at: "2026-08-12T00:00:01.000Z".to_string(),
+        run_id: Some(run.id.clone()),
+        external_thread_id: Some("external-thread-1".to_string()),
+        external_turn_id: Some("turn-1".to_string()),
+        external_item_id: Some("item-1".to_string()),
+        phase: Some(CadConversationPhase::FinalAnswer),
+        sequence: Some(1),
+        is_final: false,
+        metadata: None,
+    };
+    let first_saved = service
+        .upsert_agent_conversation_message(message.clone())
+        .unwrap();
+    let completed = CadConversationMessage {
+        id: uuid(),
+        content: "authoritative completed answer".to_string(),
+        is_final: true,
+        ..message
+    };
+    let second_saved = service
+        .upsert_agent_conversation_message(completed)
+        .unwrap();
+    assert_eq!(first_saved.id, second_saved.id);
+    assert_eq!(second_saved.content, "authoritative completed answer");
+    assert!(second_saved.is_final);
+
+    let transport_event = CadAgentTransportEvent {
+        id: uuid(),
+        session_id: created.session_id.clone(),
+        run_id: Some(run.id.clone()),
+        agent_thread_id: Some(thread.id.clone()),
+        external_turn_id: Some("turn-1".to_string()),
+        external_item_id: Some("item-1".to_string()),
+        method: "item/completed".to_string(),
+        sequence: 1,
+        payload: json!({"item": {"id": "item-1"}}),
+        created_at: "2026-08-12T00:00:02.000Z".to_string(),
+    };
+    service
+        .save_agent_transport_event(transport_event.clone())
+        .unwrap();
+    service.save_agent_transport_event(transport_event).unwrap();
+
+    let reloaded = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout)),
+    )
+    .unwrap();
+    let state = reloaded.get_session_state(&created.session_id).unwrap();
+    assert_eq!(state.agent_threads.len(), 1);
+    assert_eq!(state.agent_threads[0].id, thread.id);
+    assert_eq!(
+        state.agent_threads[0].external_thread_id,
+        thread.external_thread_id
+    );
+    assert_eq!(
+        state.agent_threads[0].status,
+        CadAgentThreadStatus::NotLoaded
+    );
+    assert_eq!(state.agent_threads[0].connection_generation, None);
+    let restored_run = state
+        .agent_runs
+        .iter()
+        .find(|candidate| candidate.id == run.id)
+        .unwrap();
+    assert_eq!(
+        restored_run.agent_thread_id.as_deref(),
+        Some(thread.id.as_str())
+    );
+    assert_eq!(
+        restored_run.external_thread_id.as_deref(),
+        Some("external-thread-1")
+    );
+    assert_eq!(restored_run.external_turn_id.as_deref(), Some("turn-1"));
+    assert_eq!(restored_run.connection_generation, Some(7));
+    assert_eq!(
+        restored_run.recovery_status,
+        CadAgentRecoveryStatus::Resumed
+    );
+    let restored_messages = state
+        .conversation
+        .iter()
+        .filter(|candidate| candidate.external_item_id.as_deref() == Some("item-1"))
+        .collect::<Vec<_>>();
+    assert_eq!(restored_messages.len(), 1);
+    assert_eq!(
+        restored_messages[0].content,
+        "authoritative completed answer"
+    );
+    assert!(restored_messages[0].is_final);
+
+    let snapshot = reloaded.repository.load().unwrap();
+    assert_eq!(
+        snapshot
+            .agent_transport_events
+            .get(&created.session_id)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn duplicate_never_shares_agent_thread_and_archive_requires_terminal_runs() {
+    let app_data_dir =
+        std::env::temp_dir().join(format!("cadastrophe-thread-lifecycle-test-{}", uuid()));
+    let layout = StorageLayout::from_app_data_dir(app_data_dir);
+    storage::initialize_storage(&layout).unwrap();
+    let service = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout)),
+    )
+    .unwrap();
+    let created = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let (run, _) = service
+        .create_agent_run(
+            &created.session_id,
+            "active run".to_string(),
+            None,
+            Some("codex".to_string()),
+            None,
+        )
+        .unwrap();
+    let thread = CadAgentThread {
+        id: uuid(),
+        session_id: created.session_id.clone(),
+        external_agent: "codex".to_string(),
+        external_thread_id: "external-original".to_string(),
+        status: CadAgentThreadStatus::Ready,
+        connection_generation: None,
+        created_at: "2026-08-12T00:00:00.000Z".to_string(),
+        updated_at: "2026-08-12T00:00:00.000Z".to_string(),
+        last_resumed_at: None,
+        archived_at: None,
+        replaced_by_id: None,
+        metadata: None,
+    };
+    service.upsert_agent_thread(thread.clone()).unwrap();
+    let duplicated = service
+        .duplicate_session(DuplicateCadSessionInput {
+            session_id: created.session_id.clone(),
+            title: None,
+        })
+        .unwrap();
+    assert!(duplicated.state.agent_threads.is_empty());
+    assert!(service
+        .archive_session(ArchiveCadSessionInput {
+            session_id: created.session_id.clone(),
+            archived: Some(true),
+        })
+        .unwrap_err()
+        .contains("active agent run"));
+
+    service
+        .update_agent_run(
+            &created.session_id,
+            &run.id,
+            Some(CadAgentRunStatus::Cancelled),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let archived = service
+        .archive_session(ArchiveCadSessionInput {
+            session_id: created.session_id.clone(),
+            archived: Some(true),
+        })
+        .unwrap();
+    assert!(archived.session.archived_at.is_some());
+    assert_eq!(archived.agent_threads, vec![thread]);
 }
 
 #[test]

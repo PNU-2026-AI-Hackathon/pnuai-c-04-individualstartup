@@ -92,7 +92,7 @@ pub(super) fn uuid() -> String {
     Uuid::new_v4().to_string()
 }
 
-pub(super) fn timestamp() -> String {
+pub(crate) fn timestamp() -> String {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

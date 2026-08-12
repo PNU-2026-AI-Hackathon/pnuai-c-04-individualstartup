@@ -22,8 +22,10 @@ pub(crate) struct SessionRepositorySnapshot {
     pub revisions: HashMap<String, CadRevision>,
     pub artifacts: HashMap<String, CadArtifact>,
     pub conversation: HashMap<String, Vec<CadConversationMessage>>,
+    pub agent_threads: HashMap<String, Vec<CadAgentThread>>,
     pub agent_runs: HashMap<String, Vec<CadAgentRun>>,
     pub agent_run_events: HashMap<String, Vec<CadAgentRunEvent>>,
+    pub agent_transport_events: HashMap<String, Vec<CadAgentTransportEvent>>,
     pub workflow_plans: HashMap<String, CadWorkflowPlan>,
     pub workflow_outer_iterations: HashMap<String, Vec<CadWorkflowOuterIteration>>,
     pub workflow_pending_vlm: HashMap<String, CadWorkflowPendingVlm>,
@@ -46,12 +48,31 @@ pub(crate) trait SessionRepository: Send + Sync {
     fn save_conversation_message(
         &self,
         message: &CadConversationMessage,
+    ) -> SessionRepositoryResult<CadConversationMessage>;
+    fn create_agent_run_with_user_message(
+        &self,
+        session: &CadSession,
+        run: &CadAgentRun,
+        message: &CadConversationMessage,
+        event: &CadAgentRunEvent,
+    ) -> SessionRepositoryResult<(CadConversationMessage, CadAgentRunEvent)>;
+    fn save_agent_thread(&self, thread: &CadAgentThread) -> SessionRepositoryResult<()>;
+    fn replace_agent_thread(
+        &self,
+        archived_thread: &CadAgentThread,
+        replacement: &CadAgentThread,
     ) -> SessionRepositoryResult<()>;
     fn save_agent_run(&self, run: &CadAgentRun) -> SessionRepositoryResult<()>;
     fn save_agent_run_event(
         &self,
         event: &CadAgentRunEvent,
     ) -> SessionRepositoryResult<CadAgentRunEvent>;
+    fn save_agent_transport_event(
+        &self,
+        event: &CadAgentTransportEvent,
+    ) -> SessionRepositoryResult<CadAgentTransportEvent>;
+    fn delete_agent_transport_events(&self, event_ids: &[String])
+        -> SessionRepositoryResult<usize>;
     fn save_workflow_plan(&self, plan: &CadWorkflowPlan) -> SessionRepositoryResult<()>;
     fn save_workflow_outer_iteration(
         &self,
@@ -107,7 +128,29 @@ impl SessionRepository for InMemorySessionRepository {
 
     fn save_conversation_message(
         &self,
-        _message: &CadConversationMessage,
+        message: &CadConversationMessage,
+    ) -> SessionRepositoryResult<CadConversationMessage> {
+        Ok(message.clone())
+    }
+
+    fn create_agent_run_with_user_message(
+        &self,
+        _session: &CadSession,
+        _run: &CadAgentRun,
+        message: &CadConversationMessage,
+        event: &CadAgentRunEvent,
+    ) -> SessionRepositoryResult<(CadConversationMessage, CadAgentRunEvent)> {
+        Ok((message.clone(), event.clone()))
+    }
+
+    fn save_agent_thread(&self, _thread: &CadAgentThread) -> SessionRepositoryResult<()> {
+        Ok(())
+    }
+
+    fn replace_agent_thread(
+        &self,
+        _archived_thread: &CadAgentThread,
+        _replacement: &CadAgentThread,
     ) -> SessionRepositoryResult<()> {
         Ok(())
     }
@@ -121,6 +164,20 @@ impl SessionRepository for InMemorySessionRepository {
         event: &CadAgentRunEvent,
     ) -> SessionRepositoryResult<CadAgentRunEvent> {
         Ok(event.clone())
+    }
+
+    fn save_agent_transport_event(
+        &self,
+        event: &CadAgentTransportEvent,
+    ) -> SessionRepositoryResult<CadAgentTransportEvent> {
+        Ok(event.clone())
+    }
+
+    fn delete_agent_transport_events(
+        &self,
+        event_ids: &[String],
+    ) -> SessionRepositoryResult<usize> {
+        Ok(event_ids.len())
     }
 
     fn save_workflow_plan(&self, _plan: &CadWorkflowPlan) -> SessionRepositoryResult<()> {
@@ -204,8 +261,10 @@ impl SessionRepository for SqliteSessionRepository {
         let mut revisions = load_revisions(&connection)?;
         let artifacts = load_artifacts(&connection, &self.layout, None)?;
         let conversation = load_conversation_messages(&connection)?;
+        let agent_threads = load_agent_threads(&connection)?;
         let agent_runs = load_agent_runs(&connection)?;
         let agent_run_events = load_agent_run_events(&connection)?;
+        let agent_transport_events = load_agent_transport_events(&connection)?;
         let workflow_plans = load_workflow_plans(&connection)?;
         let workflow_outer_iterations = load_workflow_outer_iterations(&connection)?;
         let workflow_pending_vlm = load_workflow_pending_vlm(&connection)?;
@@ -220,8 +279,10 @@ impl SessionRepository for SqliteSessionRepository {
             revisions,
             artifacts,
             conversation,
+            agent_threads,
             agent_runs,
             agent_run_events,
+            agent_transport_events,
             workflow_plans,
             workflow_outer_iterations,
             workflow_pending_vlm,
@@ -365,9 +426,70 @@ impl SessionRepository for SqliteSessionRepository {
     fn save_conversation_message(
         &self,
         message: &CadConversationMessage,
-    ) -> SessionRepositoryResult<()> {
+    ) -> SessionRepositoryResult<CadConversationMessage> {
         let connection = self.connection()?;
         save_conversation_message(&connection, message)
+    }
+
+    fn create_agent_run_with_user_message(
+        &self,
+        session: &CadSession,
+        run: &CadAgentRun,
+        message: &CadConversationMessage,
+        event: &CadAgentRunEvent,
+    ) -> SessionRepositoryResult<(CadConversationMessage, CadAgentRunEvent)> {
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+        let changed_rows = transaction
+            .execute(
+                r#"
+                UPDATE sessions
+                SET title = ?1, title_source = ?2, updated_at = ?3
+                WHERE id = ?4 AND deleted_at IS NULL
+                "#,
+                params![
+                    session.title,
+                    to_db_text(&session.title_source)?,
+                    session.updated_at,
+                    session.id,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        if changed_rows != 1 {
+            return Err(format!(
+                "Atomic agent run creation expected one active session row, changed {changed_rows}: {}",
+                session.id
+            ));
+        }
+        save_agent_run(&transaction, run)?;
+        let saved_event = save_agent_run_event_in_transaction(&transaction, event)?;
+        let saved_message = save_conversation_message(&transaction, message)?;
+        transaction.commit().map_err(|error| error.to_string())?;
+        Ok((saved_message, saved_event))
+    }
+
+    fn save_agent_thread(&self, thread: &CadAgentThread) -> SessionRepositoryResult<()> {
+        let connection = self.connection()?;
+        save_agent_thread(&connection, thread)
+    }
+
+    fn replace_agent_thread(
+        &self,
+        archived_thread: &CadAgentThread,
+        replacement: &CadAgentThread,
+    ) -> SessionRepositoryResult<()> {
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+        let mut temporarily_archived = archived_thread.clone();
+        temporarily_archived.replaced_by_id = None;
+        save_agent_thread(&transaction, &temporarily_archived)?;
+        save_agent_thread(&transaction, replacement)?;
+        save_agent_thread(&transaction, archived_thread)?;
+        transaction.commit().map_err(|error| error.to_string())
     }
 
     fn save_agent_run(&self, run: &CadAgentRun) -> SessionRepositoryResult<()> {
@@ -381,6 +503,41 @@ impl SessionRepository for SqliteSessionRepository {
     ) -> SessionRepositoryResult<CadAgentRunEvent> {
         let mut connection = self.connection()?;
         save_agent_run_event(&mut connection, event)
+    }
+
+    fn save_agent_transport_event(
+        &self,
+        event: &CadAgentTransportEvent,
+    ) -> SessionRepositoryResult<CadAgentTransportEvent> {
+        let connection = self.connection()?;
+        save_agent_transport_event(&connection, event)
+    }
+
+    fn delete_agent_transport_events(
+        &self,
+        event_ids: &[String],
+    ) -> SessionRepositoryResult<usize> {
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+        let mut deleted_count = 0;
+        for event_id in event_ids {
+            let changed_rows = transaction
+                .execute(
+                    "DELETE FROM agent_transport_events WHERE id = ?1",
+                    params![event_id],
+                )
+                .map_err(|error| error.to_string())?;
+            if changed_rows != 1 {
+                return Err(format!(
+                    "Agent transport cleanup expected one row for event {event_id}, changed {changed_rows}."
+                ));
+            }
+            deleted_count += changed_rows;
+        }
+        transaction.commit().map_err(|error| error.to_string())?;
+        Ok(deleted_count)
     }
 
     fn save_workflow_plan(&self, plan: &CadWorkflowPlan) -> SessionRepositoryResult<()> {
@@ -455,13 +612,28 @@ impl SessionRepository for SqliteSessionRepository {
     }
 
     fn delete_session(&self, session_id: &str, deleted_at: &str) -> SessionRepositoryResult<()> {
-        let connection = self.connection()?;
-        let changed_rows = connection
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "DELETE FROM agent_threads WHERE session_id = ?1",
+                params![session_id],
+            )
+            .map_err(|error| error.to_string())?;
+        let changed_rows = transaction
             .execute(
                 "UPDATE sessions SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2",
                 params![deleted_at, session_id],
             )
             .map_err(|error| error.to_string())?;
+        if changed_rows != 1 {
+            return Err(format!(
+                "CAD session delete expected one row, changed {changed_rows}: {session_id}"
+            ));
+        }
+        transaction.commit().map_err(|error| error.to_string())?;
         eprintln!(
             "[cadastrophe:delete-session] sqlite delete update finished session_id={} deleted_at={} changed_rows={}",
             session_id, deleted_at, changed_rows

@@ -51,9 +51,13 @@ impl SessionService {
             state.sessions.insert(session_id.clone(), session);
             state.messages.insert(session_id.clone(), Vec::new());
             state.conversation.insert(session_id.clone(), Vec::new());
+            state.agent_threads.insert(session_id.clone(), Vec::new());
             state.agent_runs.insert(session_id.clone(), Vec::new());
             state
                 .agent_run_events
+                .insert(session_id.clone(), Vec::new());
+            state
+                .agent_transport_events
                 .insert(session_id.clone(), Vec::new());
             self.persist_session_graph(&state, &session_id)?;
         }
@@ -234,6 +238,19 @@ impl SessionService {
             let mut state = self.inner.lock().map_err(lock_error)?;
             let now = timestamp();
             let archived = input.archived.unwrap_or(true);
+            if archived
+                && state
+                    .agent_runs
+                    .get(&input.session_id)
+                    .into_iter()
+                    .flatten()
+                    .any(|run| !is_terminal_run_status(&run.status))
+            {
+                return Err(format!(
+                    "CAD session has an active agent run and cannot be archived: {}",
+                    input.session_id
+                ));
+            }
             let session = require_session_mut(&mut state, &input.session_id)?;
             session.archived_at = archived.then_some(now.clone());
             session.updated_at = now;
@@ -266,13 +283,26 @@ impl SessionService {
         let current_session_id = {
             let mut state = self.inner.lock().map_err(lock_error)?;
             require_session(&state, session_id)?;
+            if state
+                .agent_runs
+                .get(session_id)
+                .into_iter()
+                .flatten()
+                .any(|run| !is_terminal_run_status(&run.status))
+            {
+                return Err(format!(
+                    "CAD session has an active agent run and cannot be deleted: {session_id}"
+                ));
+            }
             eprintln!(
                 "[cadastrophe:delete-session] service session found session_id={}",
                 session_id
             );
+            self.repository.delete_session(session_id, &deleted_at)?;
             state.sessions.remove(session_id);
             state.messages.remove(session_id);
             state.conversation.remove(session_id);
+            state.agent_threads.remove(session_id);
             let run_ids: Vec<String> = state
                 .agent_runs
                 .get(session_id)
@@ -282,6 +312,7 @@ impl SessionService {
                 .collect();
             state.agent_runs.remove(session_id);
             state.agent_run_events.remove(session_id);
+            state.agent_transport_events.remove(session_id);
             for run_id in &run_ids {
                 state.workflow_plans.remove(run_id);
                 state.workflow_outer_iterations.remove(run_id);
@@ -314,7 +345,6 @@ impl SessionService {
             }
             state.current_interactive_session_id.clone()
         };
-        self.repository.delete_session(session_id, &deleted_at)?;
         eprintln!(
             "[cadastrophe:delete-session] service delete persisted session_id={} current_session_id={:?}",
             session_id, current_session_id
@@ -376,9 +406,15 @@ impl SessionService {
             state
                 .conversation
                 .insert(new_session_id.clone(), Vec::new());
+            state
+                .agent_threads
+                .insert(new_session_id.clone(), Vec::new());
             state.agent_runs.insert(new_session_id.clone(), Vec::new());
             state
                 .agent_run_events
+                .insert(new_session_id.clone(), Vec::new());
+            state
+                .agent_transport_events
                 .insert(new_session_id.clone(), Vec::new());
             if let (Some(mut revision), Some(new_revision_id)) =
                 (active_revision, active_revision_id)

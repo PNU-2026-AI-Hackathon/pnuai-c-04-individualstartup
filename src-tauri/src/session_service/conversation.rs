@@ -46,6 +46,12 @@ impl SessionService {
                 content: input.message.trim().to_string(),
                 created_at: created_at.clone(),
                 run_id: None,
+                external_thread_id: None,
+                external_turn_id: None,
+                external_item_id: None,
+                phase: None,
+                sequence: None,
+                is_final: true,
                 metadata: Some(metadata_from_value(
                     json!({"channel": "web-ui", "legacyMessageId": message_id}),
                 )),
@@ -104,6 +110,12 @@ impl SessionService {
                 content: content.trim().to_string(),
                 created_at: timestamp(),
                 run_id,
+                external_thread_id: None,
+                external_turn_id: None,
+                external_item_id: None,
+                phase: None,
+                sequence: None,
+                is_final: true,
                 metadata,
             };
             state

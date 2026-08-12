@@ -1,6 +1,59 @@
 use super::*;
 
 #[test]
+fn create_agent_run_rejects_a_second_nonterminal_run_in_the_same_session() {
+    let service = SessionService::new(
+        std::env::temp_dir().join(format!("cadastrophe-active-run-test-{}", uuid())),
+    );
+    let created = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let (first, _) = service
+        .create_agent_run(
+            &created.session_id,
+            "first".to_string(),
+            None,
+            Some("test".to_string()),
+            None,
+        )
+        .unwrap();
+
+    let error = service
+        .create_agent_run(
+            &created.session_id,
+            "second".to_string(),
+            None,
+            Some("test".to_string()),
+            None,
+        )
+        .unwrap_err();
+
+    assert!(error.contains(&first.id));
+    assert!(error.contains("already has an active agent run"));
+
+    service
+        .update_agent_run(
+            &created.session_id,
+            &first.id,
+            Some(CadAgentRunStatus::Completed),
+            Some(None),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    service
+        .create_agent_run(
+            &created.session_id,
+            "after terminal".to_string(),
+            None,
+            Some("test".to_string()),
+            None,
+        )
+        .unwrap();
+}
+
+#[test]
 fn sqlite_restart_restores_session_revision_artifacts_conversation_and_runs_together() {
     let app_data_dir =
         std::env::temp_dir().join(format!("cadastrophe-restart-integrity-test-{}", uuid()));
