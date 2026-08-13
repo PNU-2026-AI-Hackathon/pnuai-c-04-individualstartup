@@ -1,8 +1,8 @@
-# Cadastrophe
+# CADGen-AX
 
 > 자연어로 아이디어를 설명하면, 편집 가능한 OpenSCAD 모델과 STL 결과물을 만드는 AI 기반 데스크톱 CAD 워크스페이스
 
-Cadastrophe는 CAD 경험이 적은 사용자도 텍스트로 요구사항을 전달하고, 생성된 3D 모델을 미리보기·수정·검증·내보내기까지 할 수 있도록 돕는 프로토타입입니다.
+CADGen-AX는 CAD 경험이 적은 사용자도 텍스트로 요구사항을 전달하고, 생성된 3D 모델을 미리보기·수정·검증·내보내기까지 할 수 있도록 돕는 프로토타입입니다.
 
 > 개발 이력: 본 저장소는 비공개 창업용 프로토타입 저장소에서 해커톤 저장소로 이전되었으며, 이전 개발 이력은 원래 커밋 작성일과 함께 보존되어 있습니다. 논문 제출용 저장소는 블라인드 정책에 따라 비공개 처리되었습니다.
 
@@ -12,7 +12,7 @@ Cadastrophe는 CAD 경험이 적은 사용자도 텍스트로 요구사항을 �
 
 3D 프린팅과 디지털 제작의 활용 범위는 넓어지고 있지만, 일반 사용자가 아이디어를 실제 제작 가능한 3D 모델로 옮기려면 CAD 도구의 조작법과 형상 설계 방식을 먼저 익혀야 합니다. 기존 생성형 AI로 3D 형상을 만들더라도 결과가 단순한 이미지나 수정하기 어려운 메시로 끝나거나, 생성 결과의 구조적 타당성과 변경 이력을 확인하기 어려운 경우가 있습니다.
 
-Cadastrophe는 자연어를 매개로 CAD 설계 진입 장벽을 낮추면서도, 결과물을 코드 기반 파라메트릭 모델로 남겨 사용자가 직접 확인하고 수정할 수 있도록 하기 위해 시작했습니다.
+CADGen-AX는 자연어를 매개로 CAD 설계 진입 장벽을 낮추면서도, 결과물을 코드 기반 파라메트릭 모델로 남겨 사용자가 직접 확인하고 수정할 수 있도록 하기 위해 시작했습니다.
 
 ### 1.2. 개발 목표 및 주요 내용
 
@@ -33,7 +33,7 @@ Cadastrophe는 자연어를 매개로 CAD 설계 진입 장벽을 낮추면서�
 
 ### 1.4. 기존 서비스 대비 차별성
 
-| 구분 | 일반적인 Text-to-3D 방식 | Cadastrophe |
+| 구분 | 일반적인 Text-to-3D 방식 | CADGen-AX |
 | --- | --- | --- |
 | 결과물 | 편집이 어려운 메시 또는 이미지 중심 | 수정 가능한 OpenSCAD 소스와 STL 동시 제공 |
 | 수정 방식 | 프롬프트를 다시 입력하거나 외부 도구 사용 | 자연어 재요청, 파라미터 변경, 소스 직접 편집 |
@@ -229,11 +229,11 @@ npm run build:tauri
 
 ## 6. 팀 소개
 
-| 이름 | 역할 | 연락처 |
-| --- | --- | --- |
-| 김성욱 | 팀장, 서비스 기획, PM | [GitHub @wannabidr](https://github.com/wannabidr) |
-| 김태균 | 백엔드, 하네스 개발 | [GitHub @gyuun](https://github.com/gyuun) |
-| 권혜원 | UX/UI 설계, 프론트엔드 개발 | [GitHub @hyerom](https://github.com/hyerom) |
+| 김성욱 | 김태균 | 권혜원 |
+| :---: | :---: | :---: |
+|<a href="https://github.com/wannabidr"><img src="https://github.com/wannabidr.png" width="100" /></a>| <a href="https://github.com/gyuun"><img src="https://github.com/gyuun.png" width="100"/></a>|<a href="https://github.com/hyerom"><img src="https://github.com/hyerom.png" width="100"/></a>|
+| 팀장, PM | 백엔드, 하네스 개발 | UX/UI 설계, 프론트엔드 개발 |
+| sungwooki9@pusan.ac.kr | csegyuun@pusan.ac.kr | hyerom@pusan.ac.kr |
 
 ## 7. 해커톤 참여 후기
 
