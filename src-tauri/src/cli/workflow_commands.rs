@@ -61,9 +61,54 @@ pub(super) fn finalize(
             )?;
             let evaluation = evaluation?;
             validate_structural_report(&evaluation.report, &run_id, &revision_id)?;
-            // Both validators must evaluate the same STL before deciding whether to
-            // hand off to VLM. DFM operational errors are deliberately not converted
-            // into a synthetic failed report.
+            if !evaluation.passed {
+                let failure_report = structural_failure_report(&evaluation.report)?;
+                service
+                    .clear_workflow_pending_vlm(&session_id, &run_id)
+                    .map_err(CliError::storage)?;
+                let workflow = append_outer_iteration(
+                    service,
+                    &session_id,
+                    &run_id,
+                    Some(revision_id.clone()),
+                    evaluation.report.clone(),
+                    None,
+                    None,
+                    Some(failure_report.clone()),
+                    false,
+                )?;
+                return Ok(CommandOutput {
+                    revision_id: Some(revision_id.clone()),
+                    event_payload: json!({
+                        "runId": run_id,
+                        "revisionId": revision_id,
+                        "artifactId": final_artifact.id,
+                        "structuralPassed": false,
+                        "failureReport": failure_report.clone(),
+                        "failure_report": failure_report.clone(),
+                        "nextAction": "outer_loop_refine_source",
+                        "next_action": "outer_loop_refine_source"
+                    }),
+                    data: json!({
+                        "contractType": "cadastrophe.finalization.v1",
+                        "runId": run_id,
+                        "revisionId": revision_id,
+                        "artifactId": final_artifact.id,
+                        "finalArtifact": final_artifact,
+                        "artifactPaths": artifact_paths([&final_artifact].into_iter()),
+                        "locked": true,
+                        "structuralReport": evaluation.report,
+                        "failureReport": failure_report.clone(),
+                        "failure_report": failure_report,
+                        "workflow": workflow,
+                        "nextAction": "outer_loop_refine_source",
+                        "next_action": "outer_loop_refine_source"
+                    }),
+                });
+            }
+            // Structural validation gates DFM so an actionable structural failure is
+            // persisted even when the slicer is unavailable. DFM operational errors
+            // are deliberately not converted into synthetic failed reports.
             let dfm_evaluation = crate::dfm::evaluate(
                 service,
                 app_data_dir,
@@ -78,7 +123,7 @@ pub(super) fn finalize(
             crate::dfm::validate_report(&dfm_evaluation.report, &run_id, &revision_id)
                 .map_err(CliError::invalid_input)?;
             let final_artifact = dfm_evaluation.stl_artifact.clone();
-            if !evaluation.passed || !dfm_evaluation.passed {
+            if !dfm_evaluation.passed {
                 let failure_report =
                     crate::dfm::failure_report(&evaluation.report, &dfm_evaluation.report);
                 service
@@ -90,7 +135,7 @@ pub(super) fn finalize(
                     &run_id,
                     Some(revision_id.clone()),
                     evaluation.report.clone(),
-                    dfm_evaluation.report.clone(),
+                    Some(dfm_evaluation.report.clone()),
                     None,
                     Some(failure_report.clone()),
                     false,
@@ -103,7 +148,10 @@ pub(super) fn finalize(
                         "artifactId": final_artifact.id,
                         "structuralPassed": evaluation.passed,
                         "dfmPassed": dfm_evaluation.passed,
-                        "nextAction": "outer_loop_refine_source"
+                        "failureReport": failure_report.clone(),
+                        "failure_report": failure_report.clone(),
+                        "nextAction": "outer_loop_refine_source",
+                        "next_action": "outer_loop_refine_source"
                     }),
                     data: json!({
                         "contractType": "cadastrophe.finalization.v1",

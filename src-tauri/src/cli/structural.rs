@@ -262,10 +262,49 @@ pub(super) fn validate_structural_report(
             "Structural report revisionId does not match finalization revision.",
         ));
     }
-    if report.get("passed").and_then(Value::as_bool).is_none() {
-        return Err(CliError::invalid_input(
-            "Structural report must contain a boolean passed field.",
-        ));
+    let passed = report
+        .get("passed")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            CliError::invalid_input("Structural report must contain a boolean passed field.")
+        })?;
+    if !passed {
+        structural_failure_report(report)?;
     }
     Ok(())
+}
+
+pub(super) fn structural_failure_report(report: &Value) -> CliResult<Value> {
+    let failure_report = report
+        .get("failureReport")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            CliError::invalid_input("Failed structural report must contain a failureReport object.")
+        })?;
+    require_contract_type(
+        &Value::Object(failure_report.clone()),
+        "cadastrophe.failure_report.v1",
+        "structural failure report",
+    )?;
+    if failure_report
+        .get("reason")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return Err(CliError::invalid_input(
+            "Structural failure report must contain a non-empty reason.",
+        ));
+    }
+    let mut failure_report = failure_report.clone();
+    failure_report.insert("structuralPassed".to_string(), Value::Bool(false));
+    failure_report.insert("structuralReport".to_string(), report.clone());
+    failure_report.insert(
+        "nextAction".to_string(),
+        Value::String("outer_loop_refine_source".to_string()),
+    );
+    failure_report.insert(
+        "next_action".to_string(),
+        Value::String("outer_loop_refine_source".to_string()),
+    );
+    Ok(Value::Object(failure_report))
 }

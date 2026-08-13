@@ -127,7 +127,7 @@ fn finalize_requires_committed_plan() {
 
 #[cfg(unix)]
 #[test]
-fn finalize_structural_fail_appends_outer_iteration_without_pending_vlm() {
+fn finalize_structural_fail_returns_report_without_prusaslicer() {
     let app_data_dir = temp_app_data_dir("finalize-structural-fail");
     let service = sqlite_service(&app_data_dir);
     let setup = setup_run_with_plan(&service);
@@ -136,17 +136,12 @@ fn finalize_structural_fail_appends_outer_iteration_without_pending_vlm() {
         "structural-fail",
         &structural_report_json(&setup.run_id, &setup.revision_id, false),
     );
-    let prusaslicer = fixture_prusaslicer(&app_data_dir, "prusaslicer-structural-fail", None);
-    let profile = fixture_dfm_profile(&app_data_dir);
-
     let output = finalize(
         &args([
             ("session", &setup.session_id),
             ("run", &setup.run_id),
             ("revision", &setup.revision_id),
             ("sidecar", sidecar.to_str().unwrap()),
-            ("prusaslicer-path", prusaslicer.to_str().unwrap()),
-            ("dfm-profile", profile.to_str().unwrap()),
         ]),
         &service,
         &app_data_dir,
@@ -166,8 +161,36 @@ fn finalize_structural_fail_appends_outer_iteration_without_pending_vlm() {
     assert_eq!(state.workflow.outer_iterations.len(), 1);
     assert!(!state.workflow.outer_iterations[0].passed);
     assert!(state.workflow.outer_iterations[0].vlm_report.is_none());
-    assert_eq!(output.data["dfmReport"]["passed"].as_bool(), Some(true));
-    assert!(state.workflow.outer_iterations[0].dfm_report.is_some());
+    assert!(output.data.get("dfmReport").is_none());
+    assert!(state.workflow.outer_iterations[0].dfm_report.is_none());
+    assert_eq!(
+        output.data["failureReport"]["structuralReport"]["passed"].as_bool(),
+        Some(false)
+    );
+    let completed = state
+        .agent_run_events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.event_type == CadAgentRunEventType::AgentToolCompleted
+                && event.payload["command"] == "cadastrophe-finalize"
+        })
+        .expect("finalize completion event");
+    assert_eq!(
+        completed.payload["failureReport"]["contractType"].as_str(),
+        Some("cadastrophe.failure_report.v1")
+    );
+    let reloaded_state = sqlite_service(&app_data_dir)
+        .get_session_state(&setup.session_id)
+        .unwrap();
+    assert_eq!(
+        reloaded_state.workflow.outer_iterations[0]
+            .failure_report
+            .as_ref()
+            .unwrap()["structuralReport"]["passed"]
+            .as_bool(),
+        Some(false)
+    );
 }
 
 #[cfg(unix)]
