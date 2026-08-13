@@ -145,16 +145,16 @@ pub fn validate_executable(path: &str) -> Result<ExecutableValidation, String> {
         }
     }
     let output = Command::new(&resolved)
-        .arg("--version")
+        .arg("--help")
         .output()
-        .map_err(|error| format!("Failed to execute PrusaSlicer --version: {error}"))?;
+        .map_err(|error| format!("Failed to execute PrusaSlicer --help: {error}"))?;
     let stdout = String::from_utf8(output.stdout)
-        .map_err(|error| format!("PrusaSlicer --version stdout is not UTF-8: {error}"))?;
+        .map_err(|error| format!("PrusaSlicer --help stdout is not UTF-8: {error}"))?;
     let stderr = String::from_utf8(output.stderr)
-        .map_err(|error| format!("PrusaSlicer --version stderr is not UTF-8: {error}"))?;
+        .map_err(|error| format!("PrusaSlicer --help stderr is not UTF-8: {error}"))?;
     if !output.status.success() {
         return Err(format!(
-            "PrusaSlicer --version exited with status {}. stdout: {} stderr: {}",
+            "PrusaSlicer --help exited with status {}. stdout: {} stderr: {}",
             output.status,
             stdout.trim(),
             stderr.trim()
@@ -164,14 +164,15 @@ pub fn validate_executable(path: &str) -> Result<ExecutableValidation, String> {
         .lines()
         .chain(stderr.lines())
         .map(str::trim)
-        .find(|line| !line.is_empty())
-        .ok_or_else(|| "PrusaSlicer --version returned no version text.".to_string())?
+        .find(|line| line.to_ascii_lowercase().contains("prusaslicer"))
+        .ok_or_else(|| {
+            format!(
+                "Configured executable did not identify itself as PrusaSlicer. stdout: {} stderr: {}",
+                stdout.trim(),
+                stderr.trim()
+            )
+        })?
         .to_string();
-    if !version.to_ascii_lowercase().contains("prusa") {
-        return Err(format!(
-            "Configured executable is not a compatible PrusaSlicer binary: {version}"
-        ));
-    }
     Ok(ExecutableValidation {
         path: resolved.to_string_lossy().to_string(),
         version,

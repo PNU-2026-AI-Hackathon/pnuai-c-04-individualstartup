@@ -365,6 +365,28 @@ fn dfm_executable_validation_rejects_missing_and_broken_binary() {
 
 #[cfg(unix)]
 #[test]
+fn dfm_executable_validation_uses_supported_help_action() {
+    let app_data_dir = temp_app_data_dir("dfm-binary-help-validation");
+    fs::create_dir_all(&app_data_dir).unwrap();
+    let prusaslicer = app_data_dir.join("PrusaSlicer");
+    fs::write(
+        &prusaslicer,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf '%s\\n' 'PrusaSlicer-2.9.6 based on Slic3r (with GUI support)'\n  printf '%s\\n' 'Unknown option --version' >&2\n  exit 1\nfi\nif [ \"$1\" = \"--help\" ]; then\n  printf '%s\\n' 'PrusaSlicer-2.9.6 based on Slic3r (with GUI support)'\n  exit 0\nfi\nexit 8\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&prusaslicer).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&prusaslicer, permissions).unwrap();
+
+    let validation = crate::dfm::validate_executable(prusaslicer.to_str().unwrap()).unwrap();
+    assert_eq!(
+        validation.version,
+        "PrusaSlicer-2.9.6 based on Slic3r (with GUI support)"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn dfm_settings_survive_reload_from_app_data_directory() {
     let app_data_dir = temp_app_data_dir("dfm-settings-restart");
     fs::create_dir_all(&app_data_dir).unwrap();
@@ -887,7 +909,7 @@ fn fixture_prusaslicer(app_data_dir: &PathBuf, name: &str, diagnostic: Option<&s
     fs::write(
         &path,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf '%s\\n' 'PrusaSlicer 2.9.6'\n  exit 0\nfi\nif [ \"$#\" -ne 4 ] || [ \"$1\" != \"--load\" ] || [ \"$3\" != \"--export-gcode\" ]; then\n  printf '%s\\n' 'unexpected arguments' >&2\n  exit 8\nfi\nlast=''\nfor arg in \"$@\"; do last=\"$arg\"; done\nprintf '%s\\n' '; generated fixture G-code' > \"${{last%.stl}}.gcode\"\nprintf '%s\\n' '{}'\n",
+            "#!/bin/sh\nif [ \"$1\" = \"--help\" ]; then\n  printf '%s\\n' 'PrusaSlicer 2.9.6'\n  exit 0\nfi\nif [ \"$#\" -ne 4 ] || [ \"$1\" != \"--load\" ] || [ \"$3\" != \"--export-gcode\" ]; then\n  printf '%s\\n' 'unexpected arguments' >&2\n  exit 8\nfi\nlast=''\nfor arg in \"$@\"; do last=\"$arg\"; done\nprintf '%s\\n' '; generated fixture G-code' > \"${{last%.stl}}.gcode\"\nprintf '%s\\n' '{}'\n",
             diagnostic
         ),
     )
@@ -903,7 +925,7 @@ fn fixture_prusaslicer_without_gcode(app_data_dir: &PathBuf, name: &str) -> Path
     let path = app_data_dir.join(name);
     fs::write(
         &path,
-        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf '%s\\n' 'PrusaSlicer 2.9.6'\nfi\nexit 0\n",
+        "#!/bin/sh\nif [ \"$1\" = \"--help\" ]; then\n  printf '%s\\n' 'PrusaSlicer 2.9.6'\nfi\nexit 0\n",
     )
     .unwrap();
     let mut permissions = fs::metadata(&path).unwrap().permissions();

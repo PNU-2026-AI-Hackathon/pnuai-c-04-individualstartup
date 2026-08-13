@@ -32,7 +32,7 @@ STL Export
 - 파일 선택기를 통해 실행 파일의 절대경로 지정
 - macOS .app 선택 시 내부 CLI 경로 선택 안내 또는 자동 변환
 - 저장 전 절대경로, 파일 존재 여부, 실행 가능 여부 검증
-- <path> --version 실행으로 PrusaSlicer 호환성 확인
+- `<path> --help` 실행 성공과 출력의 PrusaSlicer 버전 배너로 호환성 확인
 - 검증 성공 시 버전과 상태를 UI에 표시
 - 설정값은 로컬 app_kv 또는 전용 설정 저장소에 영속화
 - subprocess는 셸을 거치지 않고 저장된 경로를 직접 실행
