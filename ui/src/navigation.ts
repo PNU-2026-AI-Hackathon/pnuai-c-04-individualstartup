@@ -1,4 +1,4 @@
-export type WorkspaceView = "workspace" | "sessions" | "artifacts" | "logs";
+export type WorkspaceView = "workspace" | "sessions" | "artifacts" | "logs" | "settings";
 
 export function toHistoryPath(uiUrl: string, baseUrl: string): string {
   const url = new URL(uiUrl, baseUrl);
@@ -23,5 +23,5 @@ export function sessionPathWithView(sessionId: string, view: WorkspaceView): str
 }
 
 function isWorkspaceView(value: string | null): value is WorkspaceView {
-  return value === "workspace" || value === "sessions" || value === "artifacts" || value === "logs";
+  return value === "workspace" || value === "sessions" || value === "artifacts" || value === "logs" || value === "settings";
 }

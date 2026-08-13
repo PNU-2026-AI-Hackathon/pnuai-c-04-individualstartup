@@ -457,6 +457,7 @@ function sampleState(title: string): CadSessionState {
   const artifact = {
     id: "artifact-1",
     revisionId: "revision-1",
+    revisionHash: "a".repeat(64),
     kind: "stl" as const,
     format: "stl",
     uri: "artifacts/session-1/revision-1/artifact-1.stl",

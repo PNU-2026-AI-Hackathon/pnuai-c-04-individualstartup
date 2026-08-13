@@ -1,6 +1,7 @@
 import type {
   CadAgentRun,
   CadAgentRunEvent,
+  CadDfmReport,
   CadWorkflowOuterIteration,
   CadWorkflowPendingVlm,
   CadWorkflowState
@@ -12,6 +13,7 @@ export interface WorkflowRunView {
   plan?: CadWorkflowState["plans"][number];
   iterations: CadWorkflowOuterIteration[];
   pendingVlm?: CadWorkflowPendingVlm;
+  latestDfmReport?: CadDfmReport;
   latestFailure?: Record<string, unknown>;
   latestCommand?: string;
   latestNextAction?: string;
@@ -106,6 +108,7 @@ export function WorkflowRunSummary({
           {contractType(view.pendingVlm.contract) ? <code>{contractType(view.pendingVlm.contract)}</code> : null}
         </div>
       ) : null}
+      {view.latestDfmReport ? <DfmReportSummary report={view.latestDfmReport} compact={compact} /> : null}
       {view.latestFailure ? (
         <div className="workflow-callout workflow-failure">
           <strong>{failureTitle(view.latestFailure)}</strong>
@@ -165,6 +168,8 @@ export function workflowRunView(
     .filter((item) => item.runId === run.id)
     .sort((left, right) => left.iteration - right.iteration);
   const pendingVlm = workflow.pendingVlm.find((item) => item.runId === run.id);
+  const latestDfmReport = [...iterations].reverse().find((iteration) => iteration.dfmReport)?.dfmReport
+    ?? pendingVlm?.dfmReport;
   const latestFailure = [...iterations].reverse().find((iteration) => iteration.failureReport)?.failureReport;
   const latestCompletedCommand = [...events]
     .reverse()
@@ -176,11 +181,12 @@ export function workflowRunView(
     ? stringField(latestCompletedCommand.payload, "nextAction") ?? stringField(latestCompletedCommand.payload, "next_action")
     : undefined;
   return {
-    stage: workflowStage(run, events, Boolean(plan), iterations, pendingVlm, latestFailure),
+    stage: workflowStage(run, events, Boolean(plan), iterations, pendingVlm, latestFailure, latestDfmReport),
     finalizationStatus: finalizationStatus(run, events, iterations, pendingVlm, latestFailure),
     plan,
     iterations,
     pendingVlm,
+    latestDfmReport,
     latestFailure,
     latestCommand,
     latestNextAction
@@ -197,16 +203,41 @@ function workflowStage(
   hasPlan: boolean,
   iterations: CadWorkflowOuterIteration[],
   pendingVlm?: CadWorkflowPendingVlm,
-  latestFailure?: Record<string, unknown>
+  latestFailure?: Record<string, unknown>,
+  latestDfmReport?: CadDfmReport
 ): string {
   if (pendingVlm) return "VLM pending";
   if (iterations.some((iteration) => iteration.passed)) return "VLM accepted";
-  if (latestFailure) return failureReason(latestFailure).includes("vlm") ? "VLM repair" : "Structural repair";
+  if (latestFailure) {
+    const reason = failureReason(latestFailure).toLowerCase();
+    if (reason.includes("vlm")) return "VLM repair";
+    if (reason.includes("dfm") || reason.includes("slic") || reason.includes("prusa")) return "DFM repair";
+    return "Structural repair";
+  }
+  if (latestDfmReport && !latestDfmReport.passed) return "DFM repair";
   if (hasCompletedCommand(events, "cadastrophe-finalize")) return "Finalized";
   if (hasCompletedCommand(events, "cadastrophe-source-apply")) return "Source applied";
   if (hasPlan) return "Plan committed";
   if (isActiveRunStatus(run.status)) return "Planning";
   return "Plan required";
+}
+
+function DfmReportSummary({ report, compact }: { report: CadDfmReport; compact: boolean }) {
+  return (
+    <div className={`workflow-callout ${report.passed ? "workflow-dfm-pass" : "workflow-failure"}`} data-testid="dfm-report-summary">
+      <strong>DFM {report.passed ? "passed" : "failed"}</strong>
+      <span>{report.checks.length} checks · {report.diagnostics.length} diagnostics</span>
+      <code>profile {report.profileHash}</code>
+      {report.gcodeArtifactId ? <code>G-code {shortId(report.gcodeArtifactId)}</code> : null}
+      {!compact && report.keySettings ? (
+        <dl className="dfm-key-settings">
+          {Object.entries(report.keySettings).map(([key, value]) => (
+            <div key={key}><dt>{key.replaceAll("_", " ")}</dt><dd>{value}</dd></div>
+          ))}
+        </dl>
+      ) : null}
+    </div>
+  );
 }
 
 function finalizationStatus(
@@ -234,8 +265,10 @@ function hasCompletedCommand(events: CadAgentRunEvent[], command: string): boole
 }
 
 export function failureTitle(report: Record<string, unknown>): string {
-  const reason = failureReason(report);
-  return reason.includes("vlm") ? "VLM failure report" : "Structural failure report";
+  const reason = failureReason(report).toLowerCase();
+  if (reason.includes("vlm")) return "VLM failure report";
+  if (reason.includes("dfm") || reason.includes("slic") || reason.includes("prusa")) return "DFM failure report";
+  return "Structural failure report";
 }
 
 function failureReason(report: Record<string, unknown>): string {

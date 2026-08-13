@@ -166,11 +166,12 @@ impl SessionService {
         metadata: Option<Value>,
     ) -> Result<CadArtifact, String> {
         let id = uuid();
-        let (session_id, path, relative_path) = {
+        let (session_id, revision_hash, path, relative_path) = {
             let state = self.inner.lock().map_err(lock_error)?;
             let revision = require_revision(&state, revision_id)?;
             (
                 revision.session_id.clone(),
+                revision.source_hash.clone(),
                 self.storage_layout
                     .artifact_path(&revision.session_id, revision_id, &id, format)
                     .map_err(|error| error.to_string())?,
@@ -194,9 +195,20 @@ impl SessionService {
             Value::String(relative_path.to_string_lossy().to_string()),
         );
         metadata_map.insert("sha256".to_string(), Value::String(sha256));
+        let profile_hash = metadata_map
+            .get("profileHash")
+            .map(|value| {
+                value
+                    .as_str()
+                    .ok_or_else(|| "Artifact metadata profileHash must be a string.".to_string())
+                    .and_then(|value| validate_sha256("profileHash", value))
+            })
+            .transpose()?;
         let artifact = CadArtifact {
             id: id.clone(),
             revision_id: revision_id.to_string(),
+            revision_hash,
+            profile_hash,
             kind,
             format: format.to_string(),
             uri: format!("tauri://artifact/{id}"),
@@ -211,6 +223,42 @@ impl SessionService {
         let mut state = self.inner.lock().map_err(lock_error)?;
         state.artifacts.insert(id, artifact.clone());
         Ok(artifact)
+    }
+
+    pub(crate) fn update_artifact_profile_hash(
+        &self,
+        session_id: &str,
+        artifact_id: &str,
+        profile_hash: &str,
+    ) -> Result<CadArtifact, String> {
+        let profile_hash = validate_sha256("profileHash", profile_hash)?;
+        {
+            let state = self.inner.lock().map_err(lock_error)?;
+            validate_artifact_session(&state, session_id, artifact_id)?;
+        }
+        self.repository
+            .update_artifact_profile_hash(session_id, artifact_id, &profile_hash)?;
+        let mut state = self.inner.lock().map_err(lock_error)?;
+        let artifact = state
+            .artifacts
+            .get_mut(artifact_id)
+            .ok_or_else(|| format!("CAD artifact not found: {artifact_id}"))?;
+        artifact.profile_hash = Some(profile_hash.clone());
+        artifact
+            .metadata
+            .get_or_insert_with(Metadata::new)
+            .insert("profileHash".to_string(), Value::String(profile_hash));
+        let updated = artifact.clone();
+        if let Some(revision) = state.revisions.get_mut(&updated.revision_id) {
+            if let Some(revision_artifact) = revision
+                .artifacts
+                .iter_mut()
+                .find(|candidate| candidate.id == updated.id)
+            {
+                *revision_artifact = updated.clone();
+            }
+        }
+        Ok(updated)
     }
     fn load_artifact_manifest(&self, artifact_id: &str) -> Result<CadArtifact, String> {
         if let Some(artifact) = self.repository.load_artifact_manifest(artifact_id)? {
@@ -435,6 +483,19 @@ impl SessionService {
             state: None,
         })
     }
+}
+
+fn validate_sha256(name: &str, value: &str) -> Result<String, String> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(format!(
+            "Artifact {name} must be a lowercase SHA-256 hex digest."
+        ));
+    }
+    Ok(value.to_string())
 }
 
 fn reveal_path_in_file_manager(path: &Path) -> Result<bool, String> {

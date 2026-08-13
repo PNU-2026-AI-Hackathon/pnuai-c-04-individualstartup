@@ -547,6 +547,7 @@ async fn gateway_includes_latest_workflow_failure_report_in_retry_input() {
                     "contractType": "cadastrophe.structural_report.v1",
                     "passed": false
                 }),
+                dfm_report: None,
                 vlm_report: None,
                 failure_report: Some(serde_json::json!({
                     "contractType": "cadastrophe.failure_report.v1",
@@ -1055,6 +1056,7 @@ impl AgentAdapter for InlineVlmReportAdapter {
                     "artifactId": artifact.id,
                     "passed": true
                 })),
+                dfm_report: None,
                 created_at: "2026-07-30T00:00:00.000Z".to_string(),
             },
         )?;

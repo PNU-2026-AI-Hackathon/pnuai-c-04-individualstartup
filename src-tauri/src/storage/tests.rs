@@ -84,6 +84,8 @@ fn migration_runner_creates_schema_once() {
         "deleted_at",
         "missing_at",
         "metadata_json",
+        "revision_hash",
+        "profile_hash",
     ] {
         assert!(
             artifact_columns.iter().any(|candidate| candidate == column),
@@ -96,7 +98,7 @@ fn migration_runner_creates_schema_once() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(migration_count, 5);
+    assert_eq!(migration_count, 6);
     let migrations = connection
         .prepare("SELECT version, name FROM schema_migrations ORDER BY version")
         .unwrap()
@@ -113,12 +115,13 @@ fn migration_runner_creates_schema_once() {
             (2, "milestone_3_0_workflow_state_spine".to_string()),
             (3, "milestone_4_0_first_run_and_title_source".to_string()),
             (4, "agent_owned_vlm_handoff_context".to_string()),
-            (5, "persistent_agent_thread_graph".to_string())
+            (5, "persistent_agent_thread_graph".to_string()),
+            (6, "dfm_artifact_lineage_and_workflow_reports".to_string())
         ]
     );
 
     let applied_versions = applied_schema_versions(&connection);
-    assert_eq!(applied_versions, vec![1, 2, 3, 4, SCHEMA_VERSION]);
+    assert_eq!(applied_versions, vec![1, 2, 3, 4, 5, SCHEMA_VERSION]);
     let mut connection = Connection::open(layout.database_path()).unwrap();
     run_migrations(&mut connection).unwrap();
     assert_eq!(applied_schema_versions(&connection), applied_versions);
@@ -152,7 +155,7 @@ fn later_migrations_upgrade_version_1_database_idempotently() {
     run_migrations(&mut connection).unwrap();
     run_migrations(&mut connection).unwrap();
 
-    assert_eq!(applied_schema_versions(&connection), vec![1, 2, 3, 4, 5]);
+    assert_eq!(applied_schema_versions(&connection), vec![1, 2, 3, 4, 5, 6]);
     for (table, expected_columns) in [
         (
             "workflow_plans",
@@ -172,6 +175,7 @@ fn later_migrations_upgrade_version_1_database_idempotently() {
                 "iteration",
                 "revision_id",
                 "structural_report_json",
+                "dfm_report_json",
                 "vlm_report_json",
                 "failure_report_json",
                 "passed",
@@ -187,6 +191,7 @@ fn later_migrations_upgrade_version_1_database_idempotently() {
                 "contract_json",
                 "pass_threshold",
                 "structural_report_json",
+                "dfm_report_json",
                 "created_at",
             ],
         ),
@@ -242,6 +247,87 @@ fn later_migrations_upgrade_version_1_database_idempotently() {
             "missing conversation_messages.{expected_column}"
         );
     }
+}
+
+#[test]
+fn dfm_migration_backfills_artifact_revision_hash_and_enforces_hash_integrity() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .unwrap();
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE schema_migrations (
+              version INTEGER PRIMARY KEY,
+              name TEXT NOT NULL,
+              applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            "#,
+        )
+        .unwrap();
+    connection.execute_batch(MIGRATIONS[0].sql).unwrap();
+    connection
+        .execute(
+            "INSERT INTO schema_migrations (version, name) VALUES (?1, ?2)",
+            params![MIGRATIONS[0].version, MIGRATIONS[0].name],
+        )
+        .unwrap();
+    let source = "cube([7, 8, 9]);";
+    connection
+        .execute(
+            r#"
+            INSERT INTO sessions (
+              id, selected_runtime, status, created_at, updated_at
+            ) VALUES ('session-1', 'openscad-wasm', 'idle', '2026-01-01', '2026-01-01')
+            "#,
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            r#"
+            INSERT INTO revisions (
+              id, session_id, source_language, source, created_at
+            ) VALUES ('revision-1', 'session-1', 'openscad', ?1, '2026-01-01')
+            "#,
+            params![source],
+        )
+        .unwrap();
+    connection
+        .execute(
+            r#"
+            INSERT INTO artifacts (
+              id, session_id, revision_id, kind, format, relative_path, uri,
+              sha256, bytes, created_at
+            ) VALUES (
+              'artifact-1', 'session-1', 'revision-1', 'stl', 'stl',
+              'artifacts/session-1/revision-1/artifact-1.stl',
+              'tauri://artifact/artifact-1', ?1, 1, '2026-01-01'
+            )
+            "#,
+            params!["a".repeat(64)],
+        )
+        .unwrap();
+
+    run_migrations(&mut connection).unwrap();
+
+    let revision_hash: String = connection
+        .query_row(
+            "SELECT revision_hash FROM artifacts WHERE id = 'artifact-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(revision_hash, sha256_hex(source.as_bytes()));
+    let invalid = connection.execute(
+        "UPDATE artifacts SET profile_hash = 'invalid' WHERE id = 'artifact-1'",
+        [],
+    );
+    assert!(invalid
+        .expect_err("invalid profile hash must fail fast")
+        .to_string()
+        .contains("artifact revision/profile hash is invalid"));
 }
 
 #[test]
@@ -307,7 +393,7 @@ fn legacy_agent_graph_backfill_is_deterministic_and_preserves_unmapped_rows() {
     run_migrations(&mut connection).unwrap();
     run_migrations(&mut connection).unwrap();
 
-    assert_eq!(applied_schema_versions(&connection), vec![1, 2, 3, 4, 5]);
+    assert_eq!(applied_schema_versions(&connection), vec![1, 2, 3, 4, 5, 6]);
     let active_thread: String = connection
         .query_row(
             r#"

@@ -21,6 +21,8 @@ pub struct CadWorkflowOuterIteration {
     pub revision_id: Option<String>,
     pub structural_report: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub dfm_report: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub vlm_report: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_report: Option<Value>,
@@ -39,6 +41,8 @@ pub struct CadWorkflowPendingVlm {
     pub pass_threshold: f64,
     #[serde(skip)]
     pub structural_report: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dfm_report: Option<Value>,
     pub created_at: String,
 }
 

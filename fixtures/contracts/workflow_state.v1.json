@@ -41,6 +41,14 @@
         "passed": true,
         "checks": []
       },
+      "dfmReport": {
+        "contractType": "cadastrophe.dfm_report.v1",
+        "passed": true,
+        "checks": [],
+        "diagnostics": [],
+        "profileHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "gcodeArtifactId": "artifact-fixture-gcode"
+      },
       "vlmReport": {
         "contractType": "cadastrophe.vlm_judge_report.v1",
         "score": 0.72,
@@ -66,6 +74,14 @@
           "available": true,
           "path": "/absolute/path/render-grid.png"
         }
+      },
+      "dfmReport": {
+        "contractType": "cadastrophe.dfm_report.v1",
+        "passed": true,
+        "checks": [],
+        "diagnostics": [],
+        "profileHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "gcodeArtifactId": "artifact-fixture-gcode"
       },
       "passThreshold": 0.8,
       "createdAt": "2026-07-29T00:00:02.000Z"

@@ -1,6 +1,7 @@
 @import "./styles/base.css";
 @import "./styles/workspace.css";
 @import "./styles/management.css";
+@import "./styles/settings.css";
 @import "./styles/content.css";
 @import "./styles/agent.css";
 @import "./styles/responsive.css";

@@ -1,8 +1,8 @@
-use super::StorageResult;
+use super::{sha256_hex, StorageResult};
 use rusqlite::{params, Connection};
 
 #[cfg(test)]
-pub(super) const SCHEMA_VERSION: i64 = 5;
+pub(super) const SCHEMA_VERSION: i64 = 6;
 
 pub fn run_migrations(connection: &mut Connection) -> StorageResult<()> {
     connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -27,6 +27,9 @@ pub fn run_migrations(connection: &mut Connection) -> StorageResult<()> {
         }
         let transaction = connection.transaction()?;
         transaction.execute_batch(migration.sql)?;
+        if migration.version == 6 {
+            backfill_artifact_revision_hashes(&transaction)?;
+        }
         transaction.execute(
             "INSERT INTO schema_migrations (version, name) VALUES (?1, ?2)",
             params![migration.version, migration.name],
@@ -34,6 +37,92 @@ pub fn run_migrations(connection: &mut Connection) -> StorageResult<()> {
         transaction.commit()?;
     }
 
+    Ok(())
+}
+
+fn backfill_artifact_revision_hashes(transaction: &rusqlite::Transaction<'_>) -> StorageResult<()> {
+    let artifacts = {
+        let mut statement = transaction.prepare(
+            r#"
+            SELECT artifacts.id, revisions.source
+            FROM artifacts
+            INNER JOIN revisions ON revisions.id = artifacts.revision_id
+            WHERE artifacts.revision_hash IS NULL OR artifacts.revision_hash = ''
+            "#,
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    for (artifact_id, source) in artifacts {
+        let changed = transaction.execute(
+            "UPDATE artifacts SET revision_hash = ?1 WHERE id = ?2",
+            params![sha256_hex(source.as_bytes()), artifact_id],
+        )?;
+        if changed != 1 {
+            return Err(format!(
+                "DFM migration could not backfill artifact revision hash: {artifact_id}"
+            )
+            .into());
+        }
+    }
+    let missing_count: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM artifacts WHERE revision_hash IS NULL OR length(revision_hash) <> 64 OR revision_hash GLOB '*[^0-9a-f]*'",
+        [],
+        |row| row.get(0),
+    )?;
+    if missing_count != 0 {
+        return Err(format!(
+            "DFM migration left {missing_count} artifacts without a valid revision hash"
+        )
+        .into());
+    }
+    let mismatched_count: i64 = transaction.query_row(
+        r#"
+        SELECT COUNT(*)
+        FROM artifacts
+        LEFT JOIN revisions ON revisions.id = artifacts.revision_id
+        WHERE revisions.id IS NULL
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    if mismatched_count != 0 {
+        return Err(format!(
+            "DFM migration found {mismatched_count} artifacts without a matching revision"
+        )
+        .into());
+    }
+    transaction.execute_batch(
+        r#"
+        CREATE TRIGGER artifacts_hashes_insert
+        BEFORE INSERT ON artifacts
+        WHEN NEW.revision_hash IS NULL
+          OR length(NEW.revision_hash) <> 64
+          OR NEW.revision_hash GLOB '*[^0-9a-f]*'
+          OR (NEW.profile_hash IS NOT NULL AND (
+            length(NEW.profile_hash) <> 64 OR NEW.profile_hash GLOB '*[^0-9a-f]*'
+          ))
+        BEGIN
+          SELECT RAISE(ABORT, 'artifact revision/profile hash is invalid');
+        END;
+
+        CREATE TRIGGER artifacts_hashes_update
+        BEFORE UPDATE OF revision_hash, profile_hash ON artifacts
+        WHEN NEW.revision_hash IS NULL
+          OR length(NEW.revision_hash) <> 64
+          OR NEW.revision_hash GLOB '*[^0-9a-f]*'
+          OR (NEW.profile_hash IS NOT NULL AND (
+            length(NEW.profile_hash) <> 64 OR NEW.profile_hash GLOB '*[^0-9a-f]*'
+          ))
+        BEGIN
+          SELECT RAISE(ABORT, 'artifact revision/profile hash is invalid');
+        END;
+        "#,
+    )?;
     Ok(())
 }
 pub(super) struct Migration {
@@ -493,6 +582,18 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         WHERE run_id IS NOT NULL;
       CREATE INDEX idx_agent_transport_events_thread_turn
         ON agent_transport_events(agent_thread_id, external_turn_id, sequence);
+    "#,
+    },
+    Migration {
+        version: 6,
+        name: "dfm_artifact_lineage_and_workflow_reports",
+        sql: r#"
+      ALTER TABLE artifacts ADD COLUMN revision_hash TEXT;
+      ALTER TABLE artifacts ADD COLUMN profile_hash TEXT;
+      ALTER TABLE workflow_outer_iterations ADD COLUMN dfm_report_json TEXT;
+      ALTER TABLE workflow_pending_vlm ADD COLUMN dfm_report_json TEXT;
+      CREATE INDEX idx_artifacts_revision_hash ON artifacts(revision_hash);
+      CREATE INDEX idx_artifacts_profile_hash ON artifacts(profile_hash);
     "#,
     },
 ];

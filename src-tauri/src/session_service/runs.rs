@@ -516,6 +516,19 @@ impl SessionService {
             let mut state = self.inner.lock().map_err(lock_error)?;
             validate_workflow_run(&state, session_id, &pending_vlm.run_id)?;
             validate_artifact_session(&state, session_id, &pending_vlm.artifact_id)?;
+            let artifact = state
+                .artifacts
+                .get(&pending_vlm.artifact_id)
+                .ok_or_else(|| format!("CAD artifact not found: {}", pending_vlm.artifact_id))?;
+            if let Some(revision_id) = &pending_vlm.revision_id {
+                validate_revision_session(&state, session_id, revision_id)?;
+                if artifact.revision_id != *revision_id {
+                    return Err(format!(
+                        "Pending VLM artifact {} belongs to revision {}, not {}.",
+                        artifact.id, artifact.revision_id, revision_id
+                    ));
+                }
+            }
             self.repository.save_workflow_pending_vlm(&pending_vlm)?;
             state
                 .workflow_pending_vlm

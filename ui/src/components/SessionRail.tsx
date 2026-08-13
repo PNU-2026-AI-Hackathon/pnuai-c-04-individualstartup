@@ -11,6 +11,7 @@ import {
   MoreVertical,
   Plus,
   Search,
+  Settings,
   Trash2,
   X
 } from "lucide-react";
@@ -63,7 +64,8 @@ export function SessionRail({
     .sort((left, right) => sessionSortStamp(right).localeCompare(sessionSortStamp(left)));
   const navItems: Array<{ view: WorkspaceView; label: string; icon: typeof Box }> = [
     { view: "workspace", label: "Model", icon: Box },
-    { view: "artifacts", label: "Files", icon: FileText }
+    { view: "artifacts", label: "Files", icon: FileText },
+    { view: "settings", label: "Settings", icon: Settings }
   ];
 
   function startRename(session: CadSessionListItem) {

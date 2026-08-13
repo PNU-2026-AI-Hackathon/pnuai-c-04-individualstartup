@@ -25,6 +25,23 @@ fn sqlite_repository_restores_artifact_manifest_after_restart() {
         })
         .unwrap();
     let artifact = export.artifact.unwrap();
+    assert_eq!(
+        artifact.revision_hash,
+        storage::sha256_hex(b"cube([4, 4, 4]);")
+    );
+    assert!(artifact.profile_hash.is_none());
+    let invalid_profile_hash = service
+        .update_artifact_profile_hash(&created.session_id, &artifact.id, "invalid")
+        .expect_err("invalid profile hash must fail fast");
+    assert!(invalid_profile_hash.contains("lowercase SHA-256"));
+    let profile_hash = storage::sha256_hex(b"dfm-profile-fixture");
+    let artifact = service
+        .update_artifact_profile_hash(&created.session_id, &artifact.id, &profile_hash)
+        .unwrap();
+    assert_eq!(
+        artifact.profile_hash.as_deref(),
+        Some(profile_hash.as_str())
+    );
     let original_contents = service.read_artifact(&artifact.id).unwrap();
 
     let reloaded = SessionService::with_repository(
@@ -42,6 +59,19 @@ fn sqlite_repository_restores_artifact_manifest_after_restart() {
         .find(|candidate| candidate.id == artifact.id)
         .expect("artifact manifest restored");
     assert_eq!(restored_artifact.kind, CadArtifactKind::Stl);
+    assert_eq!(restored_artifact.revision_hash, artifact.revision_hash);
+    assert_eq!(
+        restored_artifact.profile_hash.as_deref(),
+        Some(profile_hash.as_str())
+    );
+    assert_eq!(
+        restored_artifact
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("profileHash"))
+            .and_then(Value::as_str),
+        Some(profile_hash.as_str())
+    );
     assert_eq!(
         reloaded.read_artifact(&artifact.id).unwrap(),
         original_contents
@@ -79,6 +109,60 @@ fn sqlite_repository_restores_artifact_manifest_after_restart() {
         .iter()
         .any(|candidate| candidate.id == artifact.id));
     assert!(reloaded_after_delete.read_artifact(&artifact.id).is_err());
+}
+
+#[test]
+fn sqlite_repository_restores_gcode_lineage_from_profile_metadata() {
+    let app_data_dir =
+        std::env::temp_dir().join(format!("cadastrophe-gcode-lineage-test-{}", uuid()));
+    let layout = StorageLayout::from_app_data_dir(app_data_dir);
+    storage::initialize_storage(&layout).unwrap();
+    let service = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout.clone())),
+    )
+    .unwrap();
+    let created = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let source = "cube([11, 12, 13]);";
+    let revision_id = create_test_revision(&service, &created.session_id, source);
+    let profile_hash = storage::sha256_hex(b"profile.ini contents");
+    let artifact = service
+        .write_artifact_bytes(
+            &revision_id,
+            CadArtifactKind::Gcode,
+            "gcode",
+            b"G28\nM84\n",
+            Some(serde_json::json!({"profileHash": profile_hash})),
+        )
+        .unwrap();
+    assert_eq!(
+        artifact.revision_hash,
+        storage::sha256_hex(source.as_bytes())
+    );
+    assert_eq!(
+        artifact.profile_hash.as_deref(),
+        Some(profile_hash.as_str())
+    );
+
+    let reloaded = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout)),
+    )
+    .unwrap();
+    let restored = reloaded
+        .get_session_state(&created.session_id)
+        .unwrap()
+        .active_revision
+        .unwrap()
+        .artifacts
+        .into_iter()
+        .find(|candidate| candidate.id == artifact.id)
+        .expect("gcode artifact lineage restored");
+    assert_eq!(restored.kind, CadArtifactKind::Gcode);
+    assert_eq!(restored.revision_hash, artifact.revision_hash);
+    assert_eq!(restored.profile_hash, artifact.profile_hash);
 }
 
 #[test]

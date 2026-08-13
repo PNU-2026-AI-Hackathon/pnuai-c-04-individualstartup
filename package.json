@@ -14,11 +14,12 @@
     "clean:obsolete-cli-tools": "node scripts/clean-obsolete-cli-tools.mjs",
     "build:cli-tools": "npm run clean:obsolete-cli-tools && cargo build --manifest-path src-tauri/Cargo.toml --bins && npm run build:sidecar",
     "check": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts",
+    "test": "tsx --test tests/*.test.ts tests/*.test.tsx",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
     "lucide-react": "^0.468.0",
     "openscad-wasm": "^0.0.4",
     "react": "^19.1.0",

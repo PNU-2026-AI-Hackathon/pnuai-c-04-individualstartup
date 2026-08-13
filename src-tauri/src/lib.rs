@@ -4,6 +4,7 @@ pub mod agent_thread_manager;
 pub mod cli;
 pub mod codex_agent_adapter;
 pub mod codex_process_client;
+pub mod dfm;
 pub mod notification_router;
 pub mod protocol;
 mod runtime;
@@ -32,6 +33,58 @@ struct AppState {
 struct UpdateParametersInput {
     session_id: String,
     values: Map<String, Value>,
+}
+
+#[tauri::command]
+fn get_dfm_settings(state: State<'_, AppState>) -> Result<dfm::DfmSettings, String> {
+    dfm::get_settings(state.service.app_data_dir())
+}
+
+#[tauri::command]
+fn validate_prusaslicer_executable(
+    input: dfm::PathInput,
+) -> Result<dfm::ExecutableValidation, String> {
+    dfm::validate_executable(&input.path)
+}
+
+#[tauri::command]
+fn save_prusaslicer_executable(
+    input: dfm::PathInput,
+    state: State<'_, AppState>,
+) -> Result<dfm::ExecutableValidation, String> {
+    dfm::save_executable(state.service.app_data_dir(), &input.path)
+}
+
+#[tauri::command]
+fn validate_dfm_profile(
+    input: dfm::ProfileContentsInput,
+) -> Result<dfm::ProfileValidation, String> {
+    dfm::validate_profile(&input.contents)
+}
+
+#[tauri::command]
+fn save_dfm_profile(
+    input: dfm::ProfileContentsInput,
+    state: State<'_, AppState>,
+) -> Result<dfm::DfmProfileSettings, String> {
+    dfm::save_profile(state.service.app_data_dir(), &input.contents)
+}
+
+#[tauri::command]
+fn import_dfm_profile(input: dfm::PathInput) -> Result<dfm::ImportedProfile, String> {
+    dfm::import_profile(&input.path)
+}
+
+#[tauri::command]
+fn export_dfm_profile(input: dfm::ExportProfileInput) -> Result<dfm::ExportedProfile, String> {
+    dfm::export_profile(&input.path, &input.contents)
+}
+
+#[tauri::command]
+fn restore_default_dfm_profile(
+    state: State<'_, AppState>,
+) -> Result<dfm::DfmProfileSettings, String> {
+    dfm::restore_default_profile(state.service.app_data_dir())
 }
 
 #[tauri::command]
@@ -299,6 +352,7 @@ fn cleanup_agent_transport_events(
 
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir().map_err(|error| {
                 format!("Failed to resolve Cadastrophe app data directory: {error}")
@@ -364,7 +418,15 @@ pub fn run() {
             cleanup_orphan_artifacts,
             start_new_agent_conversation,
             get_agent_session_diagnostics,
-            cleanup_agent_transport_events
+            cleanup_agent_transport_events,
+            get_dfm_settings,
+            validate_prusaslicer_executable,
+            save_prusaslicer_executable,
+            validate_dfm_profile,
+            save_dfm_profile,
+            import_dfm_profile,
+            export_dfm_profile,
+            restore_default_dfm_profile
         ])
         .build(tauri::generate_context!())
         .expect("error while building Cadastrophe Tauri app");

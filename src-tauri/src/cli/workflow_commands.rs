@@ -61,8 +61,26 @@ pub(super) fn finalize(
             )?;
             let evaluation = evaluation?;
             validate_structural_report(&evaluation.report, &run_id, &revision_id)?;
-            let failure_report = structural_failure_report(&evaluation.report);
-            if !evaluation.passed {
+            // Both validators must evaluate the same STL before deciding whether to
+            // hand off to VLM. DFM operational errors are deliberately not converted
+            // into a synthetic failed report.
+            let dfm_evaluation = crate::dfm::evaluate(
+                service,
+                app_data_dir,
+                &session_id,
+                &run_id,
+                &revision_id,
+                &final_artifact,
+                args.optional("prusaslicer-path"),
+                args.optional("dfm-profile"),
+            )
+            .map_err(CliError::runtime)?;
+            crate::dfm::validate_report(&dfm_evaluation.report, &run_id, &revision_id)
+                .map_err(CliError::invalid_input)?;
+            let final_artifact = dfm_evaluation.stl_artifact.clone();
+            if !evaluation.passed || !dfm_evaluation.passed {
+                let failure_report =
+                    crate::dfm::failure_report(&evaluation.report, &dfm_evaluation.report);
                 service
                     .clear_workflow_pending_vlm(&session_id, &run_id)
                     .map_err(CliError::storage)?;
@@ -72,8 +90,9 @@ pub(super) fn finalize(
                     &run_id,
                     Some(revision_id.clone()),
                     evaluation.report.clone(),
+                    dfm_evaluation.report.clone(),
                     None,
-                    failure_report.clone(),
+                    Some(failure_report.clone()),
                     false,
                 )?;
                 return Ok(CommandOutput {
@@ -82,7 +101,8 @@ pub(super) fn finalize(
                         "runId": run_id,
                         "revisionId": revision_id,
                         "artifactId": final_artifact.id,
-                        "structuralPassed": false,
+                        "structuralPassed": evaluation.passed,
+                        "dfmPassed": dfm_evaluation.passed,
                         "nextAction": "outer_loop_refine_source"
                     }),
                     data: json!({
@@ -91,10 +111,13 @@ pub(super) fn finalize(
                         "revisionId": revision_id,
                         "artifactId": final_artifact.id,
                         "finalArtifact": final_artifact,
-                        "artifactPaths": artifact_paths(std::iter::once(&final_artifact)),
+                        "gcodeArtifact": dfm_evaluation.gcode_artifact,
+                        "dfmReportArtifact": dfm_evaluation.report_artifact,
+                        "artifactPaths": artifact_paths([&final_artifact, &dfm_evaluation.gcode_artifact, &dfm_evaluation.report_artifact].into_iter()),
                         "locked": true,
                         "structuralReport": evaluation.report,
-                        "failureReport": failure_report,
+                        "dfmReport": dfm_evaluation.report,
+                        "failureReport": failure_report.clone(),
                         "failure_report": failure_report,
                         "workflow": workflow,
                         "nextAction": "outer_loop_refine_source",
@@ -122,6 +145,7 @@ pub(super) fn finalize(
                 contract: contract.clone(),
                 pass_threshold,
                 structural_report: Some(evaluation.report.clone()),
+                dfm_report: Some(dfm_evaluation.report.clone()),
                 created_at: timestamp(),
             };
             let workflow = service
@@ -135,6 +159,7 @@ pub(super) fn finalize(
                     "artifactId": final_artifact.id,
                     "renderedImageArtifactId": rendered_images.id,
                     "structuralPassed": true,
+                    "dfmPassed": true,
                     "contractType": "cadastrophe.vlm_judge.v1",
                     "nextAction": "vlm_judge"
                 }),
@@ -145,9 +170,12 @@ pub(super) fn finalize(
                     "artifactId": final_artifact.id,
                     "finalArtifact": final_artifact,
                     "renderedImageArtifact": rendered_images,
-                    "artifactPaths": artifact_paths([&final_artifact, &rendered_images].into_iter()),
+                    "gcodeArtifact": dfm_evaluation.gcode_artifact,
+                    "dfmReportArtifact": dfm_evaluation.report_artifact,
+                    "artifactPaths": artifact_paths([&final_artifact, &dfm_evaluation.gcode_artifact, &dfm_evaluation.report_artifact, &rendered_images].into_iter()),
                     "locked": true,
                     "structuralReport": evaluation.report,
+                    "dfmReport": dfm_evaluation.report,
                     "vlmContract": contract,
                     "workflow": workflow,
                     "nextAction": "vlm_judge",

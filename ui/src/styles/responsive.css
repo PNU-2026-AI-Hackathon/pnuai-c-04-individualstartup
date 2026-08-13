@@ -70,7 +70,7 @@
   }
 
   .workflow-progress-strip {
-    grid-template-columns: repeat(5, minmax(112px, 1fr));
+    grid-template-columns: repeat(6, minmax(112px, 1fr));
   }
 
   .inspector-tabs {

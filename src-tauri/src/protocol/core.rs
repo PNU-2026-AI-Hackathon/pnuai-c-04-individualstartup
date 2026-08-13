@@ -40,6 +40,7 @@ pub enum CadSessionTitleSource {
 pub enum CadArtifactKind {
     PreviewMesh,
     Stl,
+    Gcode,
     Metadata,
     RenderImage,
 }

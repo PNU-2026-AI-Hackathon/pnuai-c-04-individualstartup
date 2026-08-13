@@ -119,7 +119,7 @@ pub(super) fn load_artifacts(
         SELECT artifacts.id, artifacts.revision_id, artifacts.kind, artifacts.format,
                artifacts.relative_path, artifacts.uri, artifacts.sha256, artifacts.bytes,
                artifacts.created_at, artifacts.deleted_at, artifacts.missing_at,
-               artifacts.metadata_json
+               artifacts.metadata_json, artifacts.revision_hash, artifacts.profile_hash
         FROM artifacts
         INNER JOIN sessions ON sessions.id = artifacts.session_id
         WHERE sessions.deleted_at IS NULL AND artifacts.id = ?1
@@ -129,7 +129,7 @@ pub(super) fn load_artifacts(
         SELECT artifacts.id, artifacts.revision_id, artifacts.kind, artifacts.format,
                artifacts.relative_path, artifacts.uri, artifacts.sha256, artifacts.bytes,
                artifacts.created_at, artifacts.deleted_at, artifacts.missing_at,
-               artifacts.metadata_json
+               artifacts.metadata_json, artifacts.revision_hash, artifacts.profile_hash
         FROM artifacts
         INNER JOIN sessions ON sessions.id = artifacts.session_id
         WHERE sessions.deleted_at IS NULL AND artifacts.deleted_at IS NULL
@@ -148,6 +148,13 @@ pub(super) fn load_artifacts(
             Value::String(relative_path.clone()),
         );
         metadata.insert("sha256".to_string(), Value::String(sha256));
+        let profile_hash: Option<String> = row.get(13)?;
+        if let Some(profile_hash) = &profile_hash {
+            metadata.insert(
+                "profileHash".to_string(),
+                Value::String(profile_hash.clone()),
+            );
+        }
         metadata.insert(
             "path".to_string(),
             Value::String(
@@ -161,6 +168,8 @@ pub(super) fn load_artifacts(
         Ok(CadArtifact {
             id: row.get(0)?,
             revision_id: row.get(1)?,
+            revision_hash: row.get(12)?,
+            profile_hash,
             kind: from_db_text(&kind).map_err(to_rusqlite_error)?,
             format: row.get(3)?,
             uri: row.get(5)?,
@@ -501,6 +510,7 @@ pub(super) fn load_workflow_outer_iterations(
                    workflow_outer_iterations.iteration,
                    workflow_outer_iterations.revision_id,
                    workflow_outer_iterations.structural_report_json,
+                   workflow_outer_iterations.dfm_report_json,
                    workflow_outer_iterations.vlm_report_json,
                    workflow_outer_iterations.failure_report_json,
                    workflow_outer_iterations.passed,
@@ -518,8 +528,9 @@ pub(super) fn load_workflow_outer_iterations(
     let rows = statement
         .query_map([], |row| {
             let structural_report_json: String = row.get(4)?;
-            let vlm_report_json: Option<String> = row.get(5)?;
-            let failure_report_json: Option<String> = row.get(6)?;
+            let dfm_report_json: Option<String> = row.get(5)?;
+            let vlm_report_json: Option<String> = row.get(6)?;
+            let failure_report_json: Option<String> = row.get(7)?;
             Ok(CadWorkflowOuterIteration {
                 id: row.get(0)?,
                 run_id: row.get(1)?,
@@ -527,11 +538,12 @@ pub(super) fn load_workflow_outer_iterations(
                 revision_id: row.get(3)?,
                 structural_report: serde_json::from_str(&structural_report_json)
                     .map_err(|error| to_rusqlite_error(error.to_string()))?,
+                dfm_report: optional_json_value(dfm_report_json).map_err(to_rusqlite_error)?,
                 vlm_report: optional_json_value(vlm_report_json).map_err(to_rusqlite_error)?,
                 failure_report: optional_json_value(failure_report_json)
                     .map_err(to_rusqlite_error)?,
-                passed: row.get::<_, i64>(7)? != 0,
-                created_at: row.get(8)?,
+                passed: row.get::<_, i64>(8)? != 0,
+                created_at: row.get(9)?,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -557,7 +569,8 @@ pub(super) fn load_workflow_pending_vlm(
                    workflow_pending_vlm.pass_threshold,
                    workflow_pending_vlm.created_at,
                    workflow_pending_vlm.revision_id,
-                   workflow_pending_vlm.structural_report_json
+                   workflow_pending_vlm.structural_report_json,
+                   workflow_pending_vlm.dfm_report_json
             FROM workflow_pending_vlm
             INNER JOIN agent_runs ON agent_runs.id = workflow_pending_vlm.run_id
             INNER JOIN sessions ON sessions.id = agent_runs.session_id
@@ -570,6 +583,7 @@ pub(super) fn load_workflow_pending_vlm(
         .query_map([], |row| {
             let contract_json: String = row.get(2)?;
             let structural_report_json: Option<String> = row.get(6)?;
+            let dfm_report_json: Option<String> = row.get(7)?;
             Ok(CadWorkflowPendingVlm {
                 run_id: row.get(0)?,
                 artifact_id: row.get(1)?,
@@ -583,6 +597,7 @@ pub(super) fn load_workflow_pending_vlm(
                             .map_err(|error| to_rusqlite_error(error.to_string()))
                     })
                     .transpose()?,
+                dfm_report: optional_json_value(dfm_report_json).map_err(to_rusqlite_error)?,
                 created_at: row.get(4)?,
             })
         })

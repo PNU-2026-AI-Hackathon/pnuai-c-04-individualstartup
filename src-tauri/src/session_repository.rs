@@ -45,6 +45,12 @@ pub(crate) trait SessionRepository: Send + Sync {
         session_id: &str,
         artifact: &CadArtifact,
     ) -> SessionRepositoryResult<()>;
+    fn update_artifact_profile_hash(
+        &self,
+        session_id: &str,
+        artifact_id: &str,
+        profile_hash: &str,
+    ) -> SessionRepositoryResult<()>;
     fn save_conversation_message(
         &self,
         message: &CadConversationMessage,
@@ -122,6 +128,15 @@ impl SessionRepository for InMemorySessionRepository {
         &self,
         _session_id: &str,
         _artifact: &CadArtifact,
+    ) -> SessionRepositoryResult<()> {
+        Ok(())
+    }
+
+    fn update_artifact_profile_hash(
+        &self,
+        _session_id: &str,
+        _artifact_id: &str,
+        _profile_hash: &str,
     ) -> SessionRepositoryResult<()> {
         Ok(())
     }
@@ -421,6 +436,16 @@ impl SessionRepository for SqliteSessionRepository {
     ) -> SessionRepositoryResult<()> {
         let connection = self.connection()?;
         save_artifact_manifest(&connection, session_id, artifact)
+    }
+
+    fn update_artifact_profile_hash(
+        &self,
+        session_id: &str,
+        artifact_id: &str,
+        profile_hash: &str,
+    ) -> SessionRepositoryResult<()> {
+        let connection = self.connection()?;
+        update_artifact_profile_hash(&connection, session_id, artifact_id, profile_hash)
     }
 
     fn save_conversation_message(

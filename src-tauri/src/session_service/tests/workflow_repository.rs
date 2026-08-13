@@ -200,6 +200,12 @@ fn sqlite_repository_restores_workflow_state_after_restart() {
                     "../../../../fixtures/contracts/structural_report.v1.json"
                 ))
                 .unwrap(),
+                dfm_report: Some(json!({
+                    "contractType": "cadastrophe.dfm_report.v1",
+                    "revisionId": updated.revision_id,
+                    "profileHash": "a".repeat(64),
+                    "passed": true
+                })),
                 vlm_report: Some(
                     serde_json::from_str(include_str!(
                         "../../../../fixtures/contracts/vlm_judge_report.v1.json"
@@ -253,6 +259,14 @@ fn sqlite_repository_restores_workflow_state_after_restart() {
                     "artifactId": artifact.id,
                     "passed": true
                 })),
+                dfm_report: Some(json!({
+                    "contractType": "cadastrophe.dfm_report.v1",
+                    "runId": run.id,
+                    "revisionId": updated.revision_id,
+                    "artifactId": artifact.id,
+                    "profileHash": "a".repeat(64),
+                    "passed": true
+                })),
                 created_at: "2026-07-29T00:00:02.000Z".to_string(),
             },
         )
@@ -280,6 +294,14 @@ fn sqlite_repository_restores_workflow_state_after_restart() {
     assert!(!state.workflow.outer_iterations[0].passed);
     assert_eq!(
         state.workflow.outer_iterations[0]
+            .dfm_report
+            .as_ref()
+            .and_then(|report| report.get("contractType"))
+            .and_then(Value::as_str),
+        Some("cadastrophe.dfm_report.v1")
+    );
+    assert_eq!(
+        state.workflow.outer_iterations[0]
             .failure_report
             .as_ref()
             .and_then(|report| report.get("contractType"))
@@ -289,6 +311,14 @@ fn sqlite_repository_restores_workflow_state_after_restart() {
     assert_eq!(state.workflow.pending_vlm.len(), 1);
     assert_eq!(state.workflow.pending_vlm[0].artifact_id, artifact.id);
     assert_eq!(state.workflow.pending_vlm[0].pass_threshold, 0.8);
+    assert_eq!(
+        state.workflow.pending_vlm[0]
+            .dfm_report
+            .as_ref()
+            .and_then(|report| report.get("contractType"))
+            .and_then(Value::as_str),
+        Some("cadastrophe.dfm_report.v1")
+    );
 }
 
 #[test]
@@ -486,6 +516,7 @@ fn workflow_service_rejects_cross_session_and_missing_references() {
                 contract: json!({"contractType": "cadastrophe.vlm_judge.v1"}),
                 pass_threshold: 0.8,
                 structural_report: None,
+                dfm_report: None,
                 created_at: "2026-07-29T00:00:02.000Z".to_string(),
             },
         )

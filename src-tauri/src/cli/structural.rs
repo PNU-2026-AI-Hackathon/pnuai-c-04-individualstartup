@@ -269,19 +269,3 @@ pub(super) fn validate_structural_report(
     }
     Ok(())
 }
-
-pub(super) fn structural_failure_report(report: &Value) -> Option<Value> {
-    report.get("failureReport").cloned().or_else(|| {
-        let passed = report
-            .get("passed")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        (!passed).then(|| {
-            json!({
-                "contractType": "cadastrophe.failure_report.v1",
-                "reason": "structural_anchor_failed",
-                "nextAction": "refine_plan_or_source"
-            })
-        })
-    })
-}

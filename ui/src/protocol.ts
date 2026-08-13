@@ -16,7 +16,7 @@ export type CadSessionTitleSource =
   | "user"
   | "system";
 
-export type CadArtifactKind = "preview-mesh" | "stl" | "metadata" | "render-image";
+export type CadArtifactKind = "preview-mesh" | "stl" | "gcode" | "metadata" | "render-image";
 
 export type CadUserMessageChannel = "web-ui";
 
@@ -100,6 +100,8 @@ export interface CadMesh {
 export interface CadArtifact {
   id: string;
   revisionId: string;
+  revisionHash: string;
+  profileHash?: string;
   kind: CadArtifactKind;
   format: string;
   uri: string;
@@ -357,6 +359,7 @@ export interface CadWorkflowOuterIteration {
   iteration: number;
   revisionId?: string;
   structuralReport: Record<string, unknown>;
+  dfmReport?: CadDfmReport;
   vlmReport?: Record<string, unknown>;
   failureReport?: Record<string, unknown>;
   passed: boolean;
@@ -367,8 +370,19 @@ export interface CadWorkflowPendingVlm {
   runId: string;
   artifactId: string;
   contract: Record<string, unknown>;
+  dfmReport?: CadDfmReport;
   passThreshold: number;
   createdAt: string;
+}
+
+export interface CadDfmReport extends Record<string, unknown> {
+  contractType: "cadastrophe.dfm_report.v1";
+  passed: boolean;
+  checks: unknown[];
+  diagnostics: unknown[];
+  profileHash: string;
+  gcodeArtifactId?: string;
+  keySettings?: Record<string, string>;
 }
 
 export interface CadWorkflowState {

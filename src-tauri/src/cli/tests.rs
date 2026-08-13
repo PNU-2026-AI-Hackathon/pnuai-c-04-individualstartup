@@ -136,6 +136,8 @@ fn finalize_structural_fail_appends_outer_iteration_without_pending_vlm() {
         "structural-fail",
         &structural_report_json(&setup.run_id, &setup.revision_id, false),
     );
+    let prusaslicer = fixture_prusaslicer(&app_data_dir, "prusaslicer-structural-fail", None);
+    let profile = fixture_dfm_profile(&app_data_dir);
 
     let output = finalize(
         &args([
@@ -143,6 +145,8 @@ fn finalize_structural_fail_appends_outer_iteration_without_pending_vlm() {
             ("run", &setup.run_id),
             ("revision", &setup.revision_id),
             ("sidecar", sidecar.to_str().unwrap()),
+            ("prusaslicer-path", prusaslicer.to_str().unwrap()),
+            ("dfm-profile", profile.to_str().unwrap()),
         ]),
         &service,
         &app_data_dir,
@@ -162,6 +166,8 @@ fn finalize_structural_fail_appends_outer_iteration_without_pending_vlm() {
     assert_eq!(state.workflow.outer_iterations.len(), 1);
     assert!(!state.workflow.outer_iterations[0].passed);
     assert!(state.workflow.outer_iterations[0].vlm_report.is_none());
+    assert_eq!(output.data["dfmReport"]["passed"].as_bool(), Some(true));
+    assert!(state.workflow.outer_iterations[0].dfm_report.is_some());
 }
 
 #[cfg(unix)]
@@ -176,6 +182,8 @@ fn finalize_structural_pass_creates_pending_vlm_contract() {
         &structural_report_json(&setup.run_id, &setup.revision_id, true),
     );
     let renderer_sidecar = fixture_renderer_sidecar(&app_data_dir, "renderer-pass");
+    let prusaslicer = fixture_prusaslicer(&app_data_dir, "prusaslicer-pass", None);
+    let profile = fixture_dfm_profile(&app_data_dir);
 
     let output = finalize(
         &args([
@@ -184,6 +192,8 @@ fn finalize_structural_pass_creates_pending_vlm_contract() {
             ("revision", &setup.revision_id),
             ("sidecar", sidecar.to_str().unwrap()),
             ("renderer-sidecar", renderer_sidecar.to_str().unwrap()),
+            ("prusaslicer-path", prusaslicer.to_str().unwrap()),
+            ("dfm-profile", profile.to_str().unwrap()),
         ]),
         &service,
         &app_data_dir,
@@ -215,6 +225,7 @@ fn finalize_structural_pass_creates_pending_vlm_contract() {
         Some(setup.revision_id.as_str())
     );
     assert!(state.workflow.pending_vlm[0].structural_report.is_some());
+    assert!(state.workflow.pending_vlm[0].dfm_report.is_some());
     assert_eq!(state.workflow.outer_iterations.len(), 0);
     assert!(state
         .active_revision
@@ -223,6 +234,164 @@ fn finalize_structural_pass_creates_pending_vlm_contract() {
         .artifacts
         .iter()
         .any(|artifact| artifact.kind == CadArtifactKind::RenderImage));
+}
+
+#[cfg(unix)]
+#[test]
+fn finalize_dfm_fail_returns_both_reports_without_pending_vlm() {
+    let app_data_dir = temp_app_data_dir("finalize-dfm-fail");
+    let service = sqlite_service(&app_data_dir);
+    let setup = setup_run_with_plan(&service);
+    let sidecar = fixture_sidecar(
+        &app_data_dir,
+        "structural-pass-dfm-fail",
+        &structural_report_json(&setup.run_id, &setup.revision_id, true),
+    );
+    let prusaslicer = fixture_prusaslicer(
+        &app_data_dir,
+        "prusaslicer-dfm-fail",
+        Some("ERROR: model has an unprintable feature"),
+    );
+    let profile = fixture_dfm_profile(&app_data_dir);
+
+    let output = finalize(
+        &args([
+            ("session", &setup.session_id),
+            ("run", &setup.run_id),
+            ("revision", &setup.revision_id),
+            ("sidecar", sidecar.to_str().unwrap()),
+            ("prusaslicer-path", prusaslicer.to_str().unwrap()),
+            ("dfm-profile", profile.to_str().unwrap()),
+        ]),
+        &service,
+        &app_data_dir,
+    )
+    .unwrap();
+
+    assert_eq!(output.data["structuralReport"]["passed"], true);
+    assert_eq!(output.data["dfmReport"]["passed"], false);
+    assert_eq!(output.data["nextAction"], "outer_loop_refine_source");
+    assert_eq!(output.data["failureReport"]["dfmPassed"], false);
+    let state = service.get_session_state(&setup.session_id).unwrap();
+    assert!(state.workflow.pending_vlm.is_empty());
+    assert!(state.workflow.outer_iterations[0].dfm_report.is_some());
+}
+
+#[cfg(unix)]
+#[test]
+fn finalize_fails_fast_when_prusaslicer_produces_no_gcode() {
+    let app_data_dir = temp_app_data_dir("finalize-no-gcode");
+    let service = sqlite_service(&app_data_dir);
+    let setup = setup_run_with_plan(&service);
+    let sidecar = fixture_sidecar(
+        &app_data_dir,
+        "structural-pass-no-gcode",
+        &structural_report_json(&setup.run_id, &setup.revision_id, true),
+    );
+    let prusaslicer = fixture_prusaslicer_without_gcode(&app_data_dir, "prusaslicer-no-gcode");
+    let profile = fixture_dfm_profile(&app_data_dir);
+
+    let error = finalize(
+        &args([
+            ("session", &setup.session_id),
+            ("run", &setup.run_id),
+            ("revision", &setup.revision_id),
+            ("sidecar", sidecar.to_str().unwrap()),
+            ("prusaslicer-path", prusaslicer.to_str().unwrap()),
+            ("dfm-profile", profile.to_str().unwrap()),
+        ]),
+        &service,
+        &app_data_dir,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "runtime_error");
+    assert!(error.message.contains("without producing G-code"));
+    assert!(service
+        .get_session_state(&setup.session_id)
+        .unwrap()
+        .workflow
+        .pending_vlm
+        .is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn finalize_fails_fast_when_prusaslicer_is_not_configured() {
+    let app_data_dir = temp_app_data_dir("finalize-prusaslicer-unset");
+    let service = sqlite_service(&app_data_dir);
+    let setup = setup_run_with_plan(&service);
+    let sidecar = fixture_sidecar(
+        &app_data_dir,
+        "structural-pass-prusaslicer-unset",
+        &structural_report_json(&setup.run_id, &setup.revision_id, true),
+    );
+
+    let error = finalize(
+        &args([
+            ("session", &setup.session_id),
+            ("run", &setup.run_id),
+            ("revision", &setup.revision_id),
+            ("sidecar", sidecar.to_str().unwrap()),
+        ]),
+        &service,
+        &app_data_dir,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "runtime_error");
+    assert_eq!(error.message, "PrusaSlicer executable is not configured.");
+}
+
+#[cfg(unix)]
+#[test]
+fn dfm_executable_validation_rejects_missing_and_broken_binary() {
+    let app_data_dir = temp_app_data_dir("dfm-binary-validation");
+    fs::create_dir_all(&app_data_dir).unwrap();
+    let missing = app_data_dir.join("missing-prusaslicer");
+    assert!(crate::dfm::validate_executable(missing.to_str().unwrap())
+        .unwrap_err()
+        .contains("does not exist"));
+
+    let broken = app_data_dir.join("broken-prusaslicer");
+    fs::write(&broken, "#!/bin/sh\nprintf '%s\\n' 'broken' >&2\nexit 9\n").unwrap();
+    let mut permissions = fs::metadata(&broken).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&broken, permissions).unwrap();
+    let error = crate::dfm::validate_executable(broken.to_str().unwrap()).unwrap_err();
+    assert!(error.contains("exited with status"));
+    assert!(error.contains("broken"));
+}
+
+#[cfg(unix)]
+#[test]
+fn dfm_settings_survive_reload_from_app_data_directory() {
+    let app_data_dir = temp_app_data_dir("dfm-settings-restart");
+    fs::create_dir_all(&app_data_dir).unwrap();
+    let prusaslicer = fixture_prusaslicer(&app_data_dir, "prusaslicer-settings", None);
+    let contents = include_str!("../../../profile.ini");
+    let executable =
+        crate::dfm::save_executable(&app_data_dir, prusaslicer.to_str().unwrap()).unwrap();
+    let profile = crate::dfm::save_profile(&app_data_dir, contents).unwrap();
+
+    // get_settings reconstructs state exclusively from persisted app-data files,
+    // matching what a newly started backend process reads.
+    let reloaded = crate::dfm::get_settings(&app_data_dir).unwrap();
+    assert_eq!(
+        reloaded.prusaslicer_executable.as_deref(),
+        Some(executable.path.as_str())
+    );
+    assert_eq!(reloaded.executable_validation, Some(executable));
+    assert_eq!(reloaded.profile.hash, profile.hash);
+    assert_eq!(reloaded.profile.contents, contents);
+}
+
+#[test]
+fn dfm_profile_validation_rejects_invalid_profile() {
+    let error =
+        crate::dfm::validate_profile("printer_technology = FFF\nnozzle_diameter = not-a-number\n")
+            .unwrap_err();
+    assert!(error.contains("filament_diameter") || error.contains("numeric"));
 }
 
 #[cfg(unix)]
@@ -275,10 +444,14 @@ fn cli_workflow_persists_required_tool_event_order() {
         &structural_report_json(&run.id, &revision_id, true),
     );
     let renderer_sidecar = fixture_renderer_sidecar(&app_data_dir, "renderer-event-order");
+    let prusaslicer = fixture_prusaslicer(&app_data_dir, "prusaslicer-event-order", None);
+    let profile = fixture_dfm_profile(&app_data_dir);
     finalize(
         &args([
             ("sidecar", sidecar.to_str().unwrap()),
             ("renderer-sidecar", renderer_sidecar.to_str().unwrap()),
+            ("prusaslicer-path", prusaslicer.to_str().unwrap()),
+            ("dfm-profile", profile.to_str().unwrap()),
         ]),
         &service,
         &app_data_dir,
@@ -704,6 +877,44 @@ EOF
     let mut permissions = fs::metadata(&path).unwrap().permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&path, permissions).unwrap();
+    path
+}
+
+#[cfg(unix)]
+fn fixture_prusaslicer(app_data_dir: &PathBuf, name: &str, diagnostic: Option<&str>) -> PathBuf {
+    let path = app_data_dir.join(name);
+    let diagnostic = diagnostic.unwrap_or("").replace('\'', "'\\''");
+    fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf '%s\\n' 'PrusaSlicer 2.9.6'\n  exit 0\nfi\nif [ \"$#\" -ne 4 ] || [ \"$1\" != \"--load\" ] || [ \"$3\" != \"--export-gcode\" ]; then\n  printf '%s\\n' 'unexpected arguments' >&2\n  exit 8\nfi\nlast=''\nfor arg in \"$@\"; do last=\"$arg\"; done\nprintf '%s\\n' '; generated fixture G-code' > \"${{last%.stl}}.gcode\"\nprintf '%s\\n' '{}'\n",
+            diagnostic
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&path, permissions).unwrap();
+    path
+}
+
+#[cfg(unix)]
+fn fixture_prusaslicer_without_gcode(app_data_dir: &PathBuf, name: &str) -> PathBuf {
+    let path = app_data_dir.join(name);
+    fs::write(
+        &path,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf '%s\\n' 'PrusaSlicer 2.9.6'\nfi\nexit 0\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&path, permissions).unwrap();
+    path
+}
+
+fn fixture_dfm_profile(app_data_dir: &PathBuf) -> PathBuf {
+    let path = app_data_dir.join("dfm-profile.ini");
+    fs::write(&path, include_str!("../../../profile.ini")).unwrap();
     path
 }
 

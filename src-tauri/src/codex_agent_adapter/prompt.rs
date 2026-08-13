@@ -63,7 +63,7 @@ Required order:
 4. Write complete OpenSCAD source to a file under the Cadastrophe app data directory, then call `cadastrophe-source-apply --app-data-dir {app_data_dir} --session {session_id} --run {run_id}{input_revision_scope} --source <file>`.
 5. Source apply triggers the app-owned preview render automatically and returns runtime diagnostics. If diagnostics contain errors, explain the cause briefly, repair the source, and repeat source apply.
 6. When runtime diagnostics pass, call `cadastrophe-finalize --app-data-dir {app_data_dir} --session {session_id} --run {run_id} --revision <revision_id_from_source_apply>`.
-7. Finalize exports the final artifact, runs the deterministic structural anchor, renders mandatory VLM evidence, and records the pending VLM contract when structural checks pass.
+7. Finalize exports the final STL, runs both the deterministic structural anchor and PrusaSlicer DFM validation, persists the generated G-code and both reports, then renders mandatory VLM evidence and records pending VLM only when both validators pass.
 8. If finalize returns a `failure_report` or `next_action`/`nextAction` of `outer_loop_refine_source`, include that report in the next plan/source attempt and repeat from plan commit.
 9. If finalize returns a `cadastrophe.vlm_judge.v1` handoff, pass the handoff, rendered image path, and original user request to a separate subagent using the `cadastrophe-vlm-judge` skill and request strict JSON only. Return the strict JSON report as your assistant message; the app will consume it and record the VLM result automatically.
 10. If the app-recorded VLM result produces a failure report, use that report for outer-loop refinement and repeat from plan commit. If it passes, finish the run with a concise assistant message naming the final revision/artifact.
@@ -75,7 +75,7 @@ CLI contract reminders:
 - For commands targeting an existing revision, pass `--revision <revision_id>` explicitly. Finalize must use the `revisionId` returned by the successful source-apply call.
 - Treat non-zero exits and JSON error envelopes as authoritative.
 - Preserve command outputs that include `next_action`, `nextAction`, `diagnostics`, `failure_report`, `failureReport`, `artifact_paths`, `artifactPaths`, `contract_type`, or `contractType`; these fields are shown in the UI run log.
-- A retry must inspect previous workflow failures via `cadastrophe-session-state --app-data-dir {app_data_dir} --session {session_id} --run {run_id}` and carry the latest structural or VLM failure report into the new attempt.
+- A retry must inspect previous workflow failures via `cadastrophe-session-state --app-data-dir {app_data_dir} --session {session_id} --run {run_id}` and carry the latest structural, DFM, or VLM failure report into the new attempt.
 - Do not call `cadastrophe-preview-render`, `cadastrophe-artifact-export`, `cadastrophe-evaluate-structural`, or `cadastrophe-vlm-submit`; they are not part of the agent surface.
 
 Plan draft contract:
