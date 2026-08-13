@@ -17,7 +17,7 @@ mod prompt;
 mod tests;
 
 use events::{extract_text, CodexEventCollector};
-use prompt::{build_cad_prompt, build_thread_start_params, build_turn_start_params};
+use prompt::{build_modeling_turn_input, build_thread_start_params, build_turn_start_params};
 
 pub struct CodexAgentAdapter {
     threads: AgentThreadManager,
@@ -55,8 +55,9 @@ impl CodexAgentAdapter {
         session_id: &str,
     ) -> Result<crate::protocol::StartNewAgentConversationResult, String> {
         let cwd = codex_cwd()?;
+        let thread_start_params = build_thread_start_params(&cwd)?;
         self.threads
-            .start_new_conversation(session_id, build_thread_start_params(&cwd))
+            .start_new_conversation(session_id, thread_start_params)
             .await
             .map_err(|error| error.to_string())
     }
@@ -74,7 +75,8 @@ impl AgentAdapter for CodexAgentAdapter {
 
     async fn run(&self, input: AgentAdapterRunInput) -> Result<Vec<AgentAdapterEvent>, String> {
         let cwd = codex_cwd()?;
-        let prompt = build_cad_prompt(&input)?;
+        let turn_input = build_modeling_turn_input(&input)?;
+        let thread_start_params = build_thread_start_params(&cwd)?;
         let replacement_context = format!(
             "The previous Codex thread could not be loaded. Continue this Cadastrophe session using the immutable scope --session '{}' --run '{}'. Re-read the persisted session/revision/workflow state before making changes.",
             input.session_id, input.run_id
@@ -84,8 +86,8 @@ impl AgentAdapter for CodexAgentAdapter {
             .start_turn(StartManagedTurn {
                 session_id: input.session_id.clone(),
                 run_id: input.run_id.clone(),
-                thread_start_params: build_thread_start_params(&cwd),
-                turn_start_params: build_turn_start_params(&prompt, &cwd, &input.app_data_dir),
+                thread_start_params,
+                turn_start_params: build_turn_start_params(&turn_input, &cwd, &input.app_data_dir),
                 replacement_context: Some(replacement_context),
             })
             .await

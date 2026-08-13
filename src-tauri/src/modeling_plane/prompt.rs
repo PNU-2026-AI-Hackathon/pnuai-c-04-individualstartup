@@ -5,8 +5,10 @@ use serde::Serialize;
 use std::path::Path;
 
 const MODELING_PROMPT_TEMPLATE: &str = include_str!("../../prompts/modeling_agent.md");
-const TEMPLATE_NAME: &str = "modeling_agent.md";
-const PLACEHOLDERS: &[&str] = &[
+const MODELING_TURN_TEMPLATE: &str = include_str!("../../prompts/modeling_turn.md");
+const MODELING_PROMPT_TEMPLATE_NAME: &str = "modeling_agent.md";
+const MODELING_TURN_TEMPLATE_NAME: &str = "modeling_turn.md";
+const TURN_PLACEHOLDERS: &[&str] = &[
     "USER_REQUEST_JSON",
     "SESSION_STATE_COMMAND",
     "PLAN_COMMIT_COMMAND",
@@ -21,7 +23,16 @@ const PLACEHOLDERS: &[&str] = &[
     "SOURCE_JSON",
 ];
 
-pub fn render_modeling_prompt(input: &AgentAdapterRunInput) -> Result<String, String> {
+pub fn render_modeling_developer_instructions() -> Result<String, String> {
+    render_strict_template(
+        MODELING_PROMPT_TEMPLATE_NAME,
+        MODELING_PROMPT_TEMPLATE,
+        &[],
+        vec![],
+    )
+}
+
+pub fn render_modeling_turn_input(input: &AgentAdapterRunInput) -> Result<String, String> {
     require_non_empty("session_id", &input.session_id)?;
     require_non_empty("run_id", &input.run_id)?;
     require_non_empty("user request", &input.prompt)?;
@@ -54,9 +65,9 @@ pub fn render_modeling_prompt(input: &AgentAdapterRunInput) -> Result<String, St
     );
 
     render_strict_template(
-        TEMPLATE_NAME,
-        MODELING_PROMPT_TEMPLATE,
-        PLACEHOLDERS,
+        MODELING_TURN_TEMPLATE_NAME,
+        MODELING_TURN_TEMPLATE,
+        TURN_PLACEHOLDERS,
         vec![
             ("USER_REQUEST_JSON", to_json("user request", &input.prompt)?),
             ("SESSION_STATE_COMMAND", session_state_command),
@@ -145,7 +156,7 @@ fn shell_quote_arg(label: &str, value: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{render_modeling_prompt, to_json};
+    use super::{render_modeling_developer_instructions, render_modeling_turn_input, to_json};
     use crate::agent_adapter::AgentAdapterRunInput;
     use crate::protocol::CadSourceLanguage;
     use serde_json::json;
@@ -165,8 +176,27 @@ mod tests {
     }
 
     #[test]
-    fn rendered_modeling_prompt_is_app_owned_and_ends_after_evaluation_enqueue() {
-        let prompt = render_modeling_prompt(&AgentAdapterRunInput {
+    fn modeling_developer_instructions_are_static_and_end_after_evaluation_enqueue() {
+        let prompt = render_modeling_developer_instructions().unwrap();
+
+        assert!(prompt.starts_with("# Cadastrophe modeling agent\n"));
+        assert!(prompt.contains("Use only the commands supplied for\nthe current turn"));
+        assert!(prompt.contains("enqueues app-owned VLM evaluation"));
+        assert!(prompt.contains(
+            "When finalize confirms that VLM evaluation was enqueued, end this modeling"
+        ));
+        assert!(prompt.contains("Do not inspect or judge the rendered image"));
+        assert!(!prompt.contains("cadastrophe-vlm-judge"));
+        assert!(!prompt.contains("separate subagent"));
+        assert!(!prompt.contains("{{"));
+        assert!(!prompt.contains("}}"));
+        assert!(!prompt.contains("session-1"));
+        assert!(!prompt.contains("run-1"));
+    }
+
+    #[test]
+    fn rendered_modeling_turn_contains_only_current_dynamic_scope() {
+        let prompt = render_modeling_turn_input(&AgentAdapterRunInput {
             session_id: "session-1".into(),
             run_id: "run-1".into(),
             app_data_dir: PathBuf::from("/tmp/Cad App Data"),
@@ -183,19 +213,14 @@ mod tests {
         })
         .unwrap();
 
-        assert!(prompt.starts_with("# Cadastrophe modeling agent\n"));
+        assert!(prompt.starts_with("# Cadastrophe modeling turn\n"));
         assert!(prompt.contains("\"Create a wall bracket.\""));
         assert!(prompt.contains("--app-data-dir '/tmp/Cad App Data'"));
         assert!(prompt.contains("--revision 'revision-1' --plan <file>"));
         assert!(prompt.contains("\"latestWorkflowFailureReport\": {"));
         assert!(prompt.contains("\"reason\": \"missing_support_tab\""));
-        assert!(prompt.contains("enqueues app-owned VLM evaluation"));
-        assert!(prompt.contains(
-            "When finalize confirms that VLM evaluation was enqueued, end this modeling"
-        ));
-        assert!(prompt.contains("Do not inspect or judge the rendered image"));
-        assert!(!prompt.contains("cadastrophe-vlm-judge"));
-        assert!(!prompt.contains("separate subagent"));
+        assert!(!prompt.contains("# Cadastrophe modeling agent"));
+        assert!(!prompt.contains("## Required workflow"));
         assert!(!prompt.contains("{{"));
         assert!(!prompt.contains("}}"));
     }
@@ -213,12 +238,12 @@ mod tests {
             latest_workflow_failure_report: None,
             event_sink: None,
         };
-        assert!(render_modeling_prompt(&input)
+        assert!(render_modeling_turn_input(&input)
             .unwrap_err()
             .contains("must be an absolute path"));
         input.app_data_dir = PathBuf::from("/tmp/cadastrophe");
         input.run_id = "bad\nrun".into();
-        assert!(render_modeling_prompt(&input)
+        assert!(render_modeling_turn_input(&input)
             .unwrap_err()
             .contains("forbidden control character"));
     }

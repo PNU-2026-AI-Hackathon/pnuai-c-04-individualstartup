@@ -1699,7 +1699,10 @@ mod tests {
         StartManagedTurn {
             session_id: session_id.to_string(),
             run_id: run_id.to_string(),
-            thread_start_params: json!({"cwd": "/tmp"}),
+            thread_start_params: json!({
+                "cwd": "/tmp",
+                "developerInstructions": "thread-only modeling instructions"
+            }),
             turn_start_params: json!({
                 "input": [{"type": "text", "text": "prompt", "text_elements": []}]
             }),
@@ -2057,6 +2060,13 @@ mod tests {
             transport.methods(),
             vec!["thread/start", "turn/start", "turn/start"]
         );
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(
+            requests[0].1["developerInstructions"],
+            "thread-only modeling instructions"
+        );
+        assert!(requests[1].1.get("developerInstructions").is_none());
+        assert!(requests[2].1.get("developerInstructions").is_none());
     }
 
     #[tokio::test]
