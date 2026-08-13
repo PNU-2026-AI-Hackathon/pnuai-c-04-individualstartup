@@ -18,6 +18,8 @@
 #include <utility>
 #include <vector>
 
+#include "mesh_validator.h"
+
 namespace fs = std::filesystem;
 
 namespace {
