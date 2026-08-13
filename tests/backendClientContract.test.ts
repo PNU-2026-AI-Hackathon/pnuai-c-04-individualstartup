@@ -99,6 +99,8 @@ function assertSessionResultShape(result: CreateCadSessionResult) {
   assert.ok(Array.isArray(result.state.session.revisions[0]?.runLinks));
   assert.equal(result.state.workflow.plans[0]?.plan.mainComponent.name, "contract_bracket");
   assert.equal(result.state.workflow.pendingVlm[0]?.contract.contractType, "cadastrophe.vlm_judge.v1");
+  assert.equal(result.state.validationEvaluations[0]?.status, "queued");
+  assert.equal(result.state.validationEvaluations[0]?.inputContract.contractType, "cadastrophe.vlm_evaluation_input.v1");
 }
 
 function assertCurrentSessionShape(result: CurrentCadSessionResult) {
@@ -331,6 +333,8 @@ class ContractBackendClient implements CadBackendClient {
     const activeThread = {
       id: "agent-thread-1",
       sessionId,
+      plane: "modeling" as const,
+      ownerId: sessionId,
       externalAgent: "codex",
       externalThreadId: "contract-thread-1",
       status: "ready" as const,
@@ -507,6 +511,23 @@ function sampleState(title: string): CadSessionState {
     agentThreads: [],
     agentRuns: [],
     agentRunEvents: [],
+    validationEvaluations: [
+      {
+        id: "validation-evaluation-1",
+        sessionId: "session-1",
+        runId: "workflow-run-1",
+        revisionId: "revision-1",
+        artifactId: "artifact-1",
+        kind: "vlm",
+        attempt: 1,
+        status: "queued",
+        inputContract: {
+          contractType: "cadastrophe.vlm_evaluation_input.v1"
+        },
+        passThreshold: 0.8,
+        createdAt: now
+      }
+    ],
     workflow: {
       plans: [
         {

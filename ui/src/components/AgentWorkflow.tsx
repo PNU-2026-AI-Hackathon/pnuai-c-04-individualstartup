@@ -2,6 +2,7 @@ import type {
   CadAgentRun,
   CadAgentRunEvent,
   CadDfmReport,
+  CadValidationEvaluation,
   CadWorkflowOuterIteration,
   CadWorkflowPendingVlm,
   CadWorkflowState
@@ -13,6 +14,7 @@ export interface WorkflowRunView {
   plan?: CadWorkflowState["plans"][number];
   iterations: CadWorkflowOuterIteration[];
   pendingVlm?: CadWorkflowPendingVlm;
+  validationEvaluation?: CadValidationEvaluation;
   latestDfmReport?: CadDfmReport;
   latestFailure?: Record<string, unknown>;
   latestCommand?: string;
@@ -108,6 +110,9 @@ export function WorkflowRunSummary({
           {contractType(view.pendingVlm.contract) ? <code>{contractType(view.pendingVlm.contract)}</code> : null}
         </div>
       ) : null}
+      {view.validationEvaluation ? (
+        <ValidationEvaluationSummary evaluation={view.validationEvaluation} />
+      ) : null}
       {view.latestDfmReport ? <DfmReportSummary report={view.latestDfmReport} compact={compact} /> : null}
       {view.latestFailure ? (
         <div className="workflow-callout workflow-failure">
@@ -161,13 +166,19 @@ export function EventPayloadSummary({ event }: { event: CadAgentRunEvent }) {
 export function workflowRunView(
   run: CadAgentRun,
   events: CadAgentRunEvent[],
-  workflow: CadWorkflowState
+  workflow: CadWorkflowState,
+  validationEvaluations: CadValidationEvaluation[] = []
 ): WorkflowRunView {
   const plan = workflow.plans.find((item) => item.runId === run.id);
   const iterations = workflow.outerIterations
     .filter((item) => item.runId === run.id)
     .sort((left, right) => left.iteration - right.iteration);
   const pendingVlm = workflow.pendingVlm.find((item) => item.runId === run.id);
+  const validationEvaluation = latestValidationEvaluation(
+    validationEvaluations,
+    run.id,
+    run.outputRevisionId
+  );
   const latestDfmReport = [...iterations].reverse().find((iteration) => iteration.dfmReport)?.dfmReport
     ?? pendingVlm?.dfmReport;
   const latestFailure = [...iterations].reverse().find((iteration) => iteration.failureReport)?.failureReport;
@@ -181,11 +192,12 @@ export function workflowRunView(
     ? stringField(latestCompletedCommand.payload, "nextAction") ?? stringField(latestCompletedCommand.payload, "next_action")
     : undefined;
   return {
-    stage: workflowStage(run, events, Boolean(plan), iterations, pendingVlm, latestFailure, latestDfmReport),
-    finalizationStatus: finalizationStatus(run, events, iterations, pendingVlm, latestFailure),
+    stage: workflowStage(run, events, Boolean(plan), iterations, validationEvaluation, pendingVlm, latestFailure, latestDfmReport),
+    finalizationStatus: finalizationStatus(run, events, iterations, validationEvaluation, pendingVlm, latestFailure),
     plan,
     iterations,
-    pendingVlm,
+    pendingVlm: validationEvaluation ? undefined : pendingVlm,
+    validationEvaluation,
     latestDfmReport,
     latestFailure,
     latestCommand,
@@ -202,10 +214,18 @@ function workflowStage(
   events: CadAgentRunEvent[],
   hasPlan: boolean,
   iterations: CadWorkflowOuterIteration[],
+  validationEvaluation?: CadValidationEvaluation,
   pendingVlm?: CadWorkflowPendingVlm,
   latestFailure?: Record<string, unknown>,
   latestDfmReport?: CadDfmReport
 ): string {
+  if (validationEvaluation) {
+    if (validationEvaluation.status === "queued") return "VLM queued";
+    if (validationEvaluation.status === "running") return "VLM evaluating";
+    if (validationEvaluation.status === "succeeded" && validationEvaluation.passed === true) return "VLM accepted";
+    if (validationEvaluation.status === "succeeded" && validationEvaluation.passed === false) return "VLM repair";
+    return "VLM failed";
+  }
   if (pendingVlm) return "VLM pending";
   if (iterations.some((iteration) => iteration.passed)) return "VLM accepted";
   if (latestFailure) {
@@ -244,9 +264,18 @@ function finalizationStatus(
   run: CadAgentRun,
   events: CadAgentRunEvent[],
   iterations: CadWorkflowOuterIteration[],
+  validationEvaluation?: CadValidationEvaluation,
   pendingVlm?: CadWorkflowPendingVlm,
   latestFailure?: Record<string, unknown>
 ): string {
+  if (validationEvaluation) {
+    if (validationEvaluation.status === "queued") return "waiting for VLM";
+    if (validationEvaluation.status === "running") return "VLM evaluation running";
+    if (validationEvaluation.status === "succeeded") {
+      return validationEvaluation.passed === true ? "passed" : "failed";
+    }
+    return "failed";
+  }
   if (iterations.some((iteration) => iteration.passed)) return "passed";
   if (pendingVlm) return "waiting for VLM";
   if (latestFailure) return "failed";
@@ -254,6 +283,41 @@ function finalizationStatus(
   if (run.status === "completed") return "completed";
   if (run.status === "failed" || run.status === "cancelled") return run.status;
   return "not finalized";
+}
+
+function ValidationEvaluationSummary({ evaluation }: { evaluation: CadValidationEvaluation }) {
+  const outcome = evaluation.status === "succeeded"
+    ? evaluation.passed === true ? "passed" : "failed"
+    : evaluation.status;
+  return (
+    <div
+      className={`workflow-callout ${outcome === "failed" ? "workflow-failure" : "workflow-pending"}`}
+      data-testid="validation-evaluation-summary"
+    >
+      <strong>VLM evaluation {outcome}</strong>
+      <span>attempt {evaluation.attempt} · artifact {shortId(evaluation.artifactId)} · threshold {evaluation.passThreshold}</span>
+      {evaluation.score !== undefined ? <code>score {evaluation.score}</code> : null}
+      {evaluation.error ? <span>{evaluation.error}</span> : null}
+    </div>
+  );
+}
+
+export function latestValidationEvaluation(
+  evaluations: CadValidationEvaluation[],
+  runId: string,
+  outputRevisionId?: string
+): CadValidationEvaluation | undefined {
+  const runEvaluations = evaluations.filter((evaluation) => evaluation.runId === runId);
+  const revisionEvaluations = outputRevisionId
+    ? runEvaluations.filter((evaluation) => evaluation.revisionId === outputRevisionId)
+    : runEvaluations;
+  return revisionEvaluations
+    .sort((left, right) =>
+      left.createdAt.localeCompare(right.createdAt)
+      || left.attempt - right.attempt
+      || left.id.localeCompare(right.id)
+    )
+    .at(-1);
 }
 
 function hasCompletedCommand(events: CadAgentRunEvent[], command: string): boolean {

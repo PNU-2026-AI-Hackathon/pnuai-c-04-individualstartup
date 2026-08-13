@@ -4,6 +4,7 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { Window } from "happy-dom";
 import { WorkspacePanel } from "../ui/src/components/WorkspacePanel";
+import { latestValidationEvaluation } from "../ui/src/components/AgentWorkflow";
 import type { CadRevision, CadSessionState } from "../ui/src/protocol";
 import type { OpenscadRuntimeState } from "../ui/src/runtime/openscadRuntime";
 
@@ -93,6 +94,104 @@ test("finalize command completion does not mark workflow complete before VLM acc
   assert.ok(workflowStep(harness.container, "VLM").classList.contains("workflow-step-pass"));
   assert.ok(workflowStep(harness.container, "Complete").classList.contains("workflow-step-pass"));
   harness.cleanup();
+});
+
+test("validation evaluations override legacy VLM waiting, pass, and fail state", async () => {
+  const queued = workflowStateWithAcceptedVlm();
+  queued.validationEvaluations = [validationEvaluation(queued, "queued")];
+  const harness = mountWorkspace({
+    sessionId: queued.session.id,
+    source: "cube([1, 1, 1]);",
+    runtimeState: "completed",
+    state: queued
+  });
+
+  assert.ok(workflowStep(harness.container, "VLM").classList.contains("workflow-step-active"));
+  assert.ok(workflowStep(harness.container, "Complete").classList.contains("workflow-step-pending"));
+  assert.match(harness.container.textContent ?? "", /VLM evaluation queued/);
+
+  const running = workflowStateWithAcceptedVlm();
+  running.validationEvaluations = [validationEvaluation(running, "running")];
+  harness.rerender({
+    sessionId: running.session.id,
+    source: "cube([1, 1, 1]);",
+    runtimeState: "completed",
+    state: running
+  });
+  assert.ok(workflowStep(harness.container, "VLM").classList.contains("workflow-step-active"));
+  assert.match(harness.container.textContent ?? "", /VLM evaluation running/);
+
+  const passed = workflowStateWithPendingVlm();
+  passed.validationEvaluations = [validationEvaluation(passed, "succeeded", true)];
+  harness.rerender({
+    sessionId: passed.session.id,
+    source: "cube([1, 1, 1]);",
+    runtimeState: "completed",
+    state: passed
+  });
+  assert.ok(workflowStep(harness.container, "VLM").classList.contains("workflow-step-pass"));
+  assert.ok(workflowStep(harness.container, "Complete").classList.contains("workflow-step-pass"));
+  assert.match(harness.container.textContent ?? "", /VLM evaluation passed/);
+  assert.doesNotMatch(harness.container.textContent ?? "", /Pending VLM/);
+
+  const rejected = workflowStateWithAcceptedVlm();
+  rejected.validationEvaluations = [validationEvaluation(rejected, "succeeded", false)];
+  harness.rerender({
+    sessionId: rejected.session.id,
+    source: "cube([1, 1, 1]);",
+    runtimeState: "completed",
+    state: rejected
+  });
+  assert.ok(workflowStep(harness.container, "VLM").classList.contains("workflow-step-fail"));
+  assert.ok(workflowStep(harness.container, "Complete").classList.contains("workflow-step-fail"));
+  assert.match(harness.container.textContent ?? "", /score 0\.4/);
+
+  const failed = workflowStateWithAcceptedVlm();
+  failed.validationEvaluations = [validationEvaluation(failed, "failed")];
+  harness.rerender({
+    sessionId: failed.session.id,
+    source: "cube([1, 1, 1]);",
+    runtimeState: "completed",
+    state: failed
+  });
+  assert.ok(workflowStep(harness.container, "VLM").classList.contains("workflow-step-fail"));
+  assert.ok(workflowStep(harness.container, "Complete").classList.contains("workflow-step-fail"));
+  assert.match(harness.container.textContent ?? "", /transport failed/);
+  harness.cleanup();
+});
+
+test("latest validation evaluation is scoped to the run output revision before ordering attempts", () => {
+  const state = workflowStateWithAcceptedVlm();
+  const run = state.agentRuns[0];
+  if (!run) throw new Error("Validation ordering fixture requires a run.");
+  run.outputRevisionId = "revision-current";
+  const previousRevision = {
+    ...validationEvaluation(state, "succeeded", true),
+    id: "evaluation-previous-attempt-2",
+    revisionId: "revision-previous",
+    attempt: 2,
+    createdAt: "2026-07-30T00:00:02.000Z"
+  };
+  const currentRevision = {
+    ...validationEvaluation(state, "queued"),
+    id: "evaluation-current-attempt-1",
+    revisionId: "revision-current",
+    attempt: 1,
+    createdAt: "2026-07-30T00:00:01.000Z"
+  };
+
+  assert.equal(
+    latestValidationEvaluation(
+      [previousRevision, currentRevision],
+      run.id,
+      run.outputRevisionId
+    )?.id,
+    currentRevision.id
+  );
+  assert.equal(
+    latestValidationEvaluation([previousRevision], run.id, run.outputRevisionId),
+    undefined
+  );
 });
 
 test("source editor click after session switch uses the new editor instance", async () => {
@@ -310,6 +409,7 @@ function emptyState(sessionId: string): CadSessionState {
     agentThreads: [],
     agentRuns: [],
     agentRunEvents: [],
+    validationEvaluations: [],
     workflow: {
       plans: [],
       outerIterations: [],
@@ -389,6 +489,35 @@ function workflowStateWithAcceptedVlm(): CadSessionState {
   return state;
 }
 
+function validationEvaluation(
+  state: CadSessionState,
+  status: "queued" | "running" | "succeeded" | "failed",
+  passed?: boolean
+): CadSessionState["validationEvaluations"][number] {
+  const now = "2026-07-30T00:00:00.000Z";
+  const run = state.agentRuns[0];
+  if (!run || !state.activeRevision) throw new Error("Validation fixture requires run and revision.");
+  return {
+    id: `evaluation-${status}`,
+    sessionId: state.session.id,
+    runId: run.id,
+    revisionId: state.activeRevision.id,
+    artifactId: "artifact-1",
+    kind: "vlm",
+    attempt: 2,
+    status,
+    inputContract: { contractType: "cadastrophe.vlm_evaluation_input.v1" },
+    report: status === "succeeded" ? { contractType: "cadastrophe.vlm_judge_report.v1" } : undefined,
+    passed: status === "succeeded" ? passed : undefined,
+    score: status === "succeeded" ? (passed ? 0.92 : 0.4) : undefined,
+    passThreshold: 0.8,
+    error: status === "failed" ? "transport failed" : undefined,
+    createdAt: now,
+    startedAt: status === "queued" ? undefined : now,
+    completedAt: status === "succeeded" || status === "failed" ? now : undefined
+  };
+}
+
 function workflowPlan(state: CadSessionState, runId: string, now: string): CadSessionState["workflow"]["plans"][number] {
   return {
     runId,
@@ -435,6 +564,7 @@ function sampleState(sessionId: string, source: string): CadSessionState {
     agentThreads: [],
     agentRuns: [],
     agentRunEvents: [],
+    validationEvaluations: [],
     workflow: {
       plans: [],
       outerIterations: [],

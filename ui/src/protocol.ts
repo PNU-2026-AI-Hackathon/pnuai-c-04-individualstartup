@@ -49,6 +49,16 @@ export type CadAgentThreadStatus =
   | "legacy"
   | "orphaned";
 
+export type CadAgentPlane = "modeling" | "validation";
+
+export type CadValidationEvaluationKind = "vlm";
+
+export type CadValidationEvaluationStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed";
+
 export type CadAgentRunEventType =
   | "agent.run.created"
   | "agent.run.updated"
@@ -236,6 +246,8 @@ export interface CadAgentRun {
 export interface CadAgentThread {
   id: string;
   sessionId: string;
+  plane: CadAgentPlane;
+  ownerId: string;
   externalAgent: string;
   externalThreadId: string;
   status: CadAgentThreadStatus;
@@ -246,6 +258,28 @@ export interface CadAgentThread {
   archivedAt?: string;
   replacedById?: string;
   metadata?: Record<string, unknown>;
+}
+
+export interface CadValidationEvaluation {
+  id: string;
+  sessionId: string;
+  runId: string;
+  revisionId: string;
+  artifactId: string;
+  kind: CadValidationEvaluationKind;
+  attempt: number;
+  status: CadValidationEvaluationStatus;
+  evaluatorThreadId?: string;
+  externalTurnId?: string;
+  inputContract: Record<string, unknown>;
+  report?: Record<string, unknown>;
+  passed?: boolean;
+  score?: number;
+  passThreshold: number;
+  error?: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
 }
 
 export interface CadAgentRunDiagnostic {
@@ -443,6 +477,7 @@ export interface CadSessionState {
   agentThreads: CadAgentThread[];
   agentRuns: CadAgentRun[];
   agentRunEvents: CadAgentRunEvent[];
+  validationEvaluations: CadValidationEvaluation[];
   workflow: CadWorkflowState;
 }
 

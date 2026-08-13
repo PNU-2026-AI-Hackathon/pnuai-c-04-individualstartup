@@ -297,6 +297,7 @@ function sampleState(): CadSessionState {
     agentThreads: [],
     agentRuns: [],
     agentRunEvents: [],
+    validationEvaluations: [],
     workflow: { plans: [], outerIterations: [], pendingVlm: [] }
   };
 }

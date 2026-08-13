@@ -1140,6 +1140,7 @@ export function App() {
             runs={state.agentRuns}
             events={state.agentRunEvents}
             workflow={state.workflow}
+            validationEvaluations={state.validationEvaluations}
           />
         ) : null}
 
