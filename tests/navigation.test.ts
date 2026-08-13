@@ -28,6 +28,12 @@ test("workspace tab parsing falls back to workspace for unknown views", () => {
   );
 });
 
+test("settings view is addressable within a session", () => {
+  const path = sessionPathWithView("session-1", "settings");
+  assert.equal(path, "/sessions/session-1?view=settings");
+  assert.equal(workspaceViewFromUrl(path, "http://127.0.0.1:5173/"), "settings");
+});
+
 test("UI history paths preserve query parameters from absolute desktop session URLs", () => {
   assert.equal(
     toHistoryPath(

@@ -135,6 +135,32 @@
   background: #fff7f6;
 }
 
+.workflow-dfm-pass {
+  border-left-color: #2d7a5b;
+  background: #f0faf5;
+}
+
+.dfm-key-settings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 5px;
+  margin: 3px 0 0;
+}
+
+.dfm-key-settings div {
+  min-width: 0;
+}
+
+.dfm-key-settings dt {
+  color: #667789;
+}
+
+.dfm-key-settings dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-weight: 700;
+}
+
 .workflow-last-command {
   display: flex;
   flex-wrap: wrap;

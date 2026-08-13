@@ -13,6 +13,7 @@ import type {
 } from "./protocol";
 import { createCadBackendClient, type ConnectionStatus } from "./backendClient";
 import { ArtifactBrowser } from "./components/ArtifactBrowser";
+import { DfmSettings } from "./components/DfmSettings";
 import { isActiveRunStatus } from "./components/AgentWorkflow";
 import { SessionLogs } from "./components/SessionLogs";
 import { SessionBrowser } from "./components/SessionBrowser";
@@ -1141,6 +1142,8 @@ export function App() {
             workflow={state.workflow}
           />
         ) : null}
+
+        {view === "settings" ? <DfmSettings backend={backend} /> : null}
       </div>
     </main>
   );

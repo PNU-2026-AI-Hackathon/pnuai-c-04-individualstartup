@@ -30,6 +30,37 @@ import type {
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected";
 
+export interface PrusaSlicerValidation {
+  path: string;
+  version: string;
+}
+
+export interface DfmProfileValidation {
+  hash: string;
+  keySettings: Record<string, string>;
+}
+
+export interface DfmProfileDocument extends DfmProfileValidation {
+  contents: string;
+}
+
+export interface DfmSettings {
+  prusaslicerExecutable: string | null;
+  executableValidation: PrusaSlicerValidation | null;
+  profile: DfmProfileDocument;
+}
+
+export interface DfmSettingsBackendClient {
+  getDfmSettings(): Promise<DfmSettings>;
+  validatePrusaSlicerExecutable(input: { path: string }): Promise<PrusaSlicerValidation>;
+  savePrusaSlicerExecutable(input: { path: string }): Promise<PrusaSlicerValidation>;
+  validateDfmProfile(input: { contents: string }): Promise<DfmProfileValidation>;
+  saveDfmProfile(input: { contents: string }): Promise<DfmProfileDocument>;
+  importDfmProfile(input: { path: string }): Promise<{ contents: string; sourcePath: string }>;
+  exportDfmProfile(input: { path: string; contents: string }): Promise<{ path: string }>;
+  restoreDefaultDfmProfile(): Promise<DfmProfileDocument>;
+}
+
 export interface CadBackendClient {
   createSession(input: { title?: string }): Promise<CreateCadSessionResult>;
   bootSession(): Promise<BootCadSessionResult>;
@@ -72,11 +103,43 @@ export interface CadBackendClient {
   ): () => void;
 }
 
-export function createCadBackendClient(): CadBackendClient {
+export function createCadBackendClient(): CadBackendClient & DfmSettingsBackendClient {
   return new TauriCadBackendClient();
 }
 
-export class TauriCadBackendClient implements CadBackendClient {
+export class TauriCadBackendClient implements CadBackendClient, DfmSettingsBackendClient {
+  getDfmSettings(): Promise<DfmSettings> {
+    return invokeCommand("get_dfm_settings");
+  }
+
+  validatePrusaSlicerExecutable(input: { path: string }): Promise<PrusaSlicerValidation> {
+    return invokeCommand("validate_prusaslicer_executable", { input });
+  }
+
+  savePrusaSlicerExecutable(input: { path: string }): Promise<PrusaSlicerValidation> {
+    return invokeCommand("save_prusaslicer_executable", { input });
+  }
+
+  validateDfmProfile(input: { contents: string }): Promise<DfmProfileValidation> {
+    return invokeCommand("validate_dfm_profile", { input });
+  }
+
+  saveDfmProfile(input: { contents: string }): Promise<DfmProfileDocument> {
+    return invokeCommand("save_dfm_profile", { input });
+  }
+
+  importDfmProfile(input: { path: string }): Promise<{ contents: string; sourcePath: string }> {
+    return invokeCommand("import_dfm_profile", { input });
+  }
+
+  exportDfmProfile(input: { path: string; contents: string }): Promise<{ path: string }> {
+    return invokeCommand("export_dfm_profile", { input });
+  }
+
+  restoreDefaultDfmProfile(): Promise<DfmProfileDocument> {
+    return invokeCommand("restore_default_dfm_profile");
+  }
+
   createSession(input: { title?: string }): Promise<CreateCadSessionResult> {
     return invokeCommand("create_session", { input });
   }

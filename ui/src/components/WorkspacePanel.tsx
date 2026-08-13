@@ -501,9 +501,13 @@ function workflowSteps(
     hasCanonicalPreviewRuntime;
   const latestIteration = state.workflow.outerIterations.at(-1);
   const failureReason = latestFailure ? stringField(latestFailure, "reason") ?? stringField(latestFailure, "code") ?? "" : "";
-  const structuralFailed = Boolean(latestFailure && !failureReason.toLowerCase().includes("vlm"));
-  const vlmFailed = Boolean(latestFailure && failureReason.toLowerCase().includes("vlm"));
+  const normalizedFailureReason = failureReason.toLowerCase();
+  const dfmFailed = Boolean(latestFailure && (normalizedFailureReason.includes("dfm") || normalizedFailureReason.includes("slic") || normalizedFailureReason.includes("prusa")));
+  const vlmFailed = Boolean(latestFailure && normalizedFailureReason.includes("vlm"));
+  const structuralFailed = Boolean(latestFailure && !vlmFailed && !dfmFailed);
   const structuralPassed = Boolean(latestIteration && !structuralFailed) || state.workflow.pendingVlm.length > 0;
+  const dfmReport = latestIteration?.dfmReport ?? state.workflow.pendingVlm.at(-1)?.dfmReport;
+  const dfmPassed = Boolean(dfmReport?.passed) || state.workflow.pendingVlm.length > 0;
   const vlmPassed = state.workflow.outerIterations.some((iteration) => iteration.passed);
 
   return [
@@ -523,10 +527,14 @@ function workflowSteps(
       state: structuralFailed ? "fail" : structuralPassed ? "pass" : hasPreview ? "active" : "pending"
     },
     {
+      label: "DFM",
+      state: dfmFailed || dfmReport?.passed === false ? "fail" : dfmPassed ? "pass" : structuralPassed ? "active" : "pending"
+    },
+    {
       label: "VLM",
       state: vlmFailed ? "fail" : vlmPassed ? "pass" : state.workflow.pendingVlm.length ? "active" : "pending"
     },
-    { label: "Complete", state: vlmPassed ? "pass" : vlmFailed || structuralFailed ? "fail" : "pending" }
+    { label: "Complete", state: vlmPassed ? "pass" : vlmFailed || dfmFailed || structuralFailed ? "fail" : "pending" }
   ];
 }
 

@@ -266,6 +266,7 @@ function sampleState(): CadSessionState {
       {
         id: "artifact-stl",
         revisionId: "revision-1",
+        revisionHash: "a".repeat(64),
         kind: "stl",
         format: "stl",
         uri: "artifact://stl",
