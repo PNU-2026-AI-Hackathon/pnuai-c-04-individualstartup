@@ -210,7 +210,7 @@ Json evaluate(const Json& input, const fs::path& base_dir) {
         }
     ));
 
-    const bool non_empty = mesh.loaded && mesh.unique_vertices > 0 && mesh.triangles_after_cleanup > 0 && mesh.bbox_volume > 0.0;
+    const bool non_empty = mesh.loaded && mesh.unique_vertices > 0 && mesh.validated_triangles > 0 && mesh.bbox_volume > 0.0;
     checks.push_back(check_json(
         "mesh_non_empty",
         non_empty,
@@ -219,22 +219,23 @@ Json evaluate(const Json& input, const fs::path& base_dir) {
         {
             {"bbox", number_array(mesh.bbox)},
             {"bboxVolume", Json::number(mesh.bbox_volume)},
-            {"triangles", Json::number(static_cast<double>(mesh.triangles_after_cleanup))},
+            {"triangles", Json::number(static_cast<double>(mesh.validated_triangles))},
             {"vertices", Json::number(static_cast<double>(mesh.unique_vertices))},
         }
     ));
 
-    const bool cleanup_passed = mesh.loaded && mesh.triangles_after_cleanup > 0;
+    const bool cleanup_passed = mesh.loaded && mesh.validated_triangles > 0 && !mesh.has_degenerate_triangles;
     checks.push_back(check_json(
         "mesh_cleanup",
         cleanup_passed,
         cleanup_passed ? "info" : "error",
-        cleanup_passed ? "Duplicated/degenerate triangle cleanup leaves a valid mesh." : "Cleanup removed all usable triangles.",
+        cleanup_passed ? "Mesh has no index-degenerate triangles." : "Mesh contains an index-degenerate triangle.",
         {
-            {"degenerateTrianglesRemoved", Json::number(static_cast<double>(mesh.degenerate_triangles))},
+            {"degenerateTriangles", Json::number(static_cast<double>(mesh.degenerate_triangles))},
+            {"hasDegenerateTriangles", Json::boolean(mesh.has_degenerate_triangles)},
             {"rawTriangles", Json::number(static_cast<double>(mesh.raw_triangles))},
-            {"trianglesAfterCleanup", Json::number(static_cast<double>(mesh.triangles_after_cleanup))},
-            {"uniqueVerticesAfterCleanup", Json::number(static_cast<double>(mesh.unique_vertices))},
+            {"validatedTriangles", Json::number(static_cast<double>(mesh.validated_triangles))},
+            {"uniqueVertices", Json::number(static_cast<double>(mesh.unique_vertices))},
         }
     ));
 
@@ -243,7 +244,7 @@ Json evaluate(const Json& input, const fs::path& base_dir) {
         && mesh.vertex_manifold
         && mesh.orientable
         && !mesh.self_intersecting
-        && mesh.solid_volume > 0.0;
+        && mesh.has_volume;
     checks.push_back(check_json(
         "topology",
         topology_passed,
@@ -252,11 +253,12 @@ Json evaluate(const Json& input, const fs::path& base_dir) {
         {
             {"edgeManifoldClosed", Json::boolean(mesh.edge_manifold_closed)},
             {"edgeManifoldWithBoundary", Json::boolean(mesh.edge_manifold_with_boundary)},
-            {"hasVolume", Json::boolean(mesh.solid_volume > 0.0)},
+            {"hasVolume", Json::boolean(mesh.has_volume)},
             {"isSelfIntersecting", Json::boolean(mesh.self_intersecting)},
             {"isVertexManifold", Json::boolean(mesh.vertex_manifold)},
             {"orientable", Json::boolean(mesh.orientable)},
             {"topologyApproximate", Json::boolean(mesh.topology_approximate)},
+            {"watertight", Json::boolean(mesh.watertight)},
             {"volume", Json::number(mesh.solid_volume)},
         }
     ));

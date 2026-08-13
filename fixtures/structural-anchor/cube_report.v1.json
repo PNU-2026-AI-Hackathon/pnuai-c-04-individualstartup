@@ -47,14 +47,15 @@
       "vertices": 8
     },
     {
-      "degenerateTrianglesRemoved": 0,
-      "message": "Duplicated/degenerate triangle cleanup leaves a valid mesh.",
+      "degenerateTriangles": 0,
+      "hasDegenerateTriangles": false,
+      "message": "Mesh has no index-degenerate triangles.",
       "name": "mesh_cleanup",
       "passed": true,
       "rawTriangles": 12,
       "severity": "info",
-      "trianglesAfterCleanup": 12,
-      "uniqueVerticesAfterCleanup": 8
+      "uniqueVertices": 8,
+      "validatedTriangles": 12
     },
     {
       "edgeManifoldClosed": true,
@@ -67,8 +68,9 @@
       "orientable": true,
       "passed": true,
       "severity": "info",
-      "topologyApproximate": true,
-      "volume": 1
+      "topologyApproximate": false,
+      "volume": 1,
+      "watertight": true
     },
     {
       "actual": {
