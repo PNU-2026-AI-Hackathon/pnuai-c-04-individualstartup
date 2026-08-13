@@ -15,6 +15,7 @@
     "build:cli-tools": "npm run clean:obsolete-cli-tools && cargo build --manifest-path src-tauri/Cargo.toml --bins && npm run build:sidecar",
     "check": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts tests/*.test.tsx",
+    "test:mesh-parity": "node scripts/test-mesh-validator-parity.mjs",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml"
   },
   "dependencies": {

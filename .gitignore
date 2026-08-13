@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# Local Open3D reference checkout/build (parity tests only; never vendored)
+/Open3D/
+
 # Frontend build output
 dist/
 
