@@ -82,6 +82,7 @@ pub struct CadSessionState {
     pub agent_threads: Vec<CadAgentThread>,
     pub agent_runs: Vec<CadAgentRun>,
     pub agent_run_events: Vec<CadAgentRunEvent>,
+    pub validation_evaluations: Vec<CadValidationEvaluation>,
     pub workflow: CadWorkflowState,
 }
 

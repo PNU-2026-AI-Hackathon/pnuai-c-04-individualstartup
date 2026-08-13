@@ -13,25 +13,29 @@ impl SessionService {
 
     pub fn get_active_agent_thread(
         &self,
-        session_id: &str,
+        scope: &ThreadScope,
         external_agent: &str,
     ) -> Result<Option<CadAgentThread>, String> {
         let state = self.inner.lock().map_err(lock_error)?;
-        require_session(&state, session_id)?;
+        validate_thread_scope(scope)?;
+        require_session(&state, &scope.session_id)?;
         let mut active = state
             .agent_threads
-            .get(session_id)
+            .get(&scope.session_id)
             .into_iter()
             .flatten()
             .filter(|thread| {
                 thread.external_agent == external_agent
+                    && thread.plane == scope.plane
+                    && thread.owner_id == scope.owner_id
                     && thread.archived_at.is_none()
                     && thread.replaced_by_id.is_none()
             });
         let result = active.next().cloned();
         if active.next().is_some() {
             return Err(format!(
-                "Multiple active agent threads exist for session {session_id} and agent {external_agent}."
+                "Multiple active agent threads exist for scope {:?} and agent {external_agent}.",
+                scope
             ));
         }
         Ok(result)
@@ -41,6 +45,29 @@ impl SessionService {
         validate_agent_thread_fields(&thread)?;
         let mut state = self.inner.lock().map_err(lock_error)?;
         require_session(&state, &thread.session_id)?;
+        if thread.plane == CadAgentPlane::Validation {
+            let evaluation = state
+                .validation_evaluations
+                .get(&thread.session_id)
+                .into_iter()
+                .flatten()
+                .find(|evaluation| evaluation.id == thread.owner_id)
+                .ok_or_else(|| {
+                    format!(
+                        "Validation agent thread owner evaluation not found: {}",
+                        thread.owner_id
+                    )
+                })?;
+            if matches!(
+                evaluation.status,
+                CadValidationEvaluationStatus::Succeeded | CadValidationEvaluationStatus::Failed
+            ) {
+                return Err(format!(
+                    "Validation agent thread cannot be attached to terminal evaluation: {}",
+                    thread.owner_id
+                ));
+            }
+        }
         let threads = state
             .agent_threads
             .entry(thread.session_id.clone())
@@ -50,6 +77,7 @@ impl SessionService {
             && threads.iter().any(|candidate| {
                 candidate.id != thread.id
                     && candidate.external_agent == thread.external_agent
+                    && candidate.plane == thread.plane
                     && candidate.archived_at.is_none()
                     && candidate.replaced_by_id.is_none()
             })
@@ -66,6 +94,8 @@ impl SessionService {
                 .ok_or_else(|| format!("Replacement agent thread not found: {replaced_by_id}"))?;
             if replacement.session_id != thread.session_id
                 || replacement.external_agent != thread.external_agent
+                || replacement.plane != thread.plane
+                || replacement.owner_id != thread.owner_id
             {
                 return Err(format!(
                     "Replacement agent thread {replaced_by_id} belongs to a different session or agent."
@@ -111,6 +141,11 @@ impl SessionService {
         if thread.archived_at.is_some() || thread.replaced_by_id.is_some() {
             return Err(format!(
                 "Cannot bind run {run_id} to inactive agent thread {agent_thread_id}."
+            ));
+        }
+        if thread.plane != CadAgentPlane::Modeling || thread.owner_id != session_id {
+            return Err(format!(
+                "Agent run {run_id} can only bind to the session's modeling thread."
             ));
         }
         let run = require_agent_run_mut(&mut state, session_id, run_id)?;
@@ -301,6 +336,11 @@ pub(super) fn validate_agent_thread_fields(thread: &CadAgentThread) -> Result<()
     {
         return Err("Agent thread identifiers cannot be empty.".to_string());
     }
+    validate_thread_scope(&ThreadScope {
+        session_id: thread.session_id.clone(),
+        plane: thread.plane.clone(),
+        owner_id: thread.owner_id.clone(),
+    })?;
     if thread.replaced_by_id.as_deref() == Some(thread.id.as_str()) {
         return Err(format!("Agent thread cannot replace itself: {}", thread.id));
     }
@@ -309,6 +349,16 @@ pub(super) fn validate_agent_thread_fields(thread: &CadAgentThread) -> Result<()
             "Replaced agent thread must have archived_at: {}",
             thread.id
         ));
+    }
+    Ok(())
+}
+
+fn validate_thread_scope(scope: &ThreadScope) -> Result<(), String> {
+    if scope.session_id.trim().is_empty() || scope.owner_id.trim().is_empty() {
+        return Err("Agent thread scope identifiers cannot be empty.".to_string());
+    }
+    if scope.plane == CadAgentPlane::Modeling && scope.owner_id != scope.session_id {
+        return Err("Modeling agent thread owner_id must equal session_id.".to_string());
     }
     Ok(())
 }

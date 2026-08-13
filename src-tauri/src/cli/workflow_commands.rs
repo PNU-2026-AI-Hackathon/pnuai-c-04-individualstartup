@@ -186,18 +186,36 @@ pub(super) fn finalize(
             )?;
             let contract = build_vlm_contract(&rendered_images)?;
             validate_vlm_contract(&contract)?;
-            let pending_vlm = CadWorkflowPendingVlm {
-                run_id: run_id.clone(),
-                artifact_id: final_artifact.id.clone(),
-                revision_id: Some(revision_id.clone()),
-                contract: contract.clone(),
-                pass_threshold,
-                structural_report: Some(evaluation.report.clone()),
-                dfm_report: Some(dfm_evaluation.report.clone()),
-                created_at: timestamp(),
-            };
-            let workflow = service
-                .save_workflow_pending_vlm(&session_id, pending_vlm)
+            let run = service
+                .get_agent_run(&session_id, &run_id)
+                .map_err(CliError::storage)?
+                .ok_or_else(|| CliError::not_found(format!("Agent run not found: {run_id}")))?;
+            let input_contract = crate::validation_plane::contract::build_input_contract(
+                crate::validation_plane::contract::EvaluationContractInput {
+                    session_id: &session_id,
+                    run_id: &run_id,
+                    revision_id: &revision_id,
+                    user_request: &run.prompt,
+                    final_artifact: &final_artifact,
+                    rendered_image: &rendered_images,
+                    pass_threshold,
+                    judge_contract: &contract,
+                    structural_report: &evaluation.report,
+                    dfm_report: &dfm_evaluation.report,
+                    app_data_dir,
+                },
+            )
+            .map_err(CliError::invalid_input)?;
+            let queued = service
+                .create_next_validation_evaluation(CadValidationEvaluationCreate {
+                    session_id: session_id.clone(),
+                    run_id: run_id.clone(),
+                    revision_id: revision_id.clone(),
+                    artifact_id: final_artifact.id.clone(),
+                    kind: CadValidationEvaluationKind::Vlm,
+                    input_contract,
+                    pass_threshold,
+                })
                 .map_err(CliError::storage)?;
             Ok(CommandOutput {
                 revision_id: Some(revision_id.clone()),
@@ -208,8 +226,10 @@ pub(super) fn finalize(
                     "renderedImageArtifactId": rendered_images.id,
                     "structuralPassed": true,
                     "dfmPassed": true,
-                    "contractType": "cadastrophe.vlm_judge.v1",
-                    "nextAction": "vlm_judge"
+                    "evaluationId": queued.id,
+                    "evaluationStatus": queued.status,
+                    "attempt": queued.attempt,
+                    "nextAction": "validation_queued"
                 }),
                 data: json!({
                     "contractType": "cadastrophe.finalization.v1",
@@ -224,10 +244,11 @@ pub(super) fn finalize(
                     "locked": true,
                     "structuralReport": evaluation.report,
                     "dfmReport": dfm_evaluation.report,
-                    "vlmContract": contract,
-                    "workflow": workflow,
-                    "nextAction": "vlm_judge",
-                    "next_action": "vlm_judge"
+                    "evaluationId": queued.id,
+                    "evaluationStatus": queued.status,
+                    "attempt": queued.attempt,
+                    "nextAction": "validation_queued",
+                    "next_action": "validation_queued"
                 }),
             })
         },

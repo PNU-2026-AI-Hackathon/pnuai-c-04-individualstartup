@@ -31,6 +31,7 @@ mod runtime_render;
 mod sessions;
 mod state_view;
 mod support;
+mod validation_persistence;
 
 use artifact_paths::*;
 use events::*;
@@ -55,6 +56,8 @@ pub(crate) struct ServiceState {
     pub(crate) agent_runs: HashMap<String, Vec<CadAgentRun>>,
     pub(crate) agent_run_events: HashMap<String, Vec<CadAgentRunEvent>>,
     pub(crate) agent_transport_events: HashMap<String, Vec<CadAgentTransportEvent>>,
+    pub(crate) validation_evaluations: HashMap<String, Vec<CadValidationEvaluation>>,
+    pub(crate) validation_evaluation_events: HashMap<String, Vec<CadValidationEvaluationEvent>>,
     pub(crate) workflow_plans: HashMap<String, CadWorkflowPlan>,
     pub(crate) workflow_outer_iterations: HashMap<String, Vec<CadWorkflowOuterIteration>>,
     pub(crate) workflow_pending_vlm: HashMap<String, CadWorkflowPendingVlm>,
@@ -70,6 +73,8 @@ impl From<SessionRepositorySnapshot> for ServiceState {
         let mut agent_runs = HashMap::new();
         let mut agent_run_events = HashMap::new();
         let mut agent_transport_events = HashMap::new();
+        let mut validation_evaluations = HashMap::new();
+        let mut validation_evaluation_events = HashMap::new();
         let workflow_plans = snapshot.workflow_plans;
         let workflow_outer_iterations = snapshot.workflow_outer_iterations;
         let workflow_pending_vlm = snapshot.workflow_pending_vlm;
@@ -116,6 +121,22 @@ impl From<SessionRepositorySnapshot> for ServiceState {
                     .cloned()
                     .unwrap_or_default(),
             );
+            validation_evaluations.insert(
+                session_id.clone(),
+                snapshot
+                    .validation_evaluations
+                    .get(session_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            validation_evaluation_events.insert(
+                session_id.clone(),
+                snapshot
+                    .validation_evaluation_events
+                    .get(session_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
         }
         Self {
             sessions: snapshot.sessions,
@@ -127,6 +148,8 @@ impl From<SessionRepositorySnapshot> for ServiceState {
             agent_runs,
             agent_run_events,
             agent_transport_events,
+            validation_evaluations,
+            validation_evaluation_events,
             workflow_plans,
             workflow_outer_iterations,
             workflow_pending_vlm,

@@ -10,6 +10,8 @@ pub struct AgentGateway {
     adapter: Arc<dyn AgentAdapter>,
     active_runs: Arc<Mutex<HashSet<String>>>,
     session_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    validation_coordinator:
+        Arc<Mutex<Option<crate::validation_plane::coordinator::ValidationCoordinator>>>,
 }
 
 impl AgentGateway {
@@ -19,7 +21,62 @@ impl AgentGateway {
             adapter,
             active_runs: Arc::new(Mutex::new(HashSet::new())),
             session_locks: Arc::new(Mutex::new(HashMap::new())),
+            validation_coordinator: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub fn attach_validation_coordinator(
+        &self,
+        coordinator: crate::validation_plane::coordinator::ValidationCoordinator,
+    ) -> Result<(), String> {
+        let mut slot = self
+            .validation_coordinator
+            .lock()
+            .map_err(|_| "Agent gateway validation coordinator lock is poisoned.".to_string())?;
+        if slot.is_some() {
+            return Err("Agent gateway validation coordinator is already attached.".to_string());
+        }
+        *slot = Some(coordinator);
+        Ok(())
+    }
+
+    pub fn enqueue_refinement(&self, session_id: &str, run_id: &str) -> Result<(), String> {
+        let run = self
+            .service
+            .get_agent_run(session_id, run_id)?
+            .ok_or_else(|| format!("Agent run not found: {run_id}"))?;
+        let service = Arc::clone(&self.service);
+        let adapter = Arc::clone(&self.adapter);
+        let active_runs = Arc::clone(&self.active_runs);
+        let session_lock = self.session_lock(session_id);
+        let coordinator = self.validation_coordinator()?;
+        tauri::async_runtime::spawn(async move {
+            let _session_guard = session_lock.lock().await;
+            let inserted = match active_runs.lock() {
+                Ok(mut active) => active.insert(run.id.clone()),
+                Err(_) => {
+                    eprintln!("[cadastrophe:refinement] active run lock poisoned");
+                    return;
+                }
+            };
+            if !inserted {
+                eprintln!("[cadastrophe:refinement] duplicate active run: {}", run.id);
+                return;
+            }
+            if let Err(error) = execute_run(service, adapter, active_runs, coordinator, run).await {
+                eprintln!("[cadastrophe:refinement] failed: {error}");
+            }
+        });
+        Ok(())
+    }
+
+    fn validation_coordinator(
+        &self,
+    ) -> Result<Option<crate::validation_plane::coordinator::ValidationCoordinator>, String> {
+        self.validation_coordinator
+            .lock()
+            .map_err(|_| "Agent gateway validation coordinator lock is poisoned.".to_string())
+            .map(|slot| slot.clone())
     }
 
     pub fn start_run(&self, input: CreateAgentRunInput) -> Result<CreateAgentRunResult, String> {
@@ -177,13 +234,23 @@ impl AgentGateway {
         let adapter = Arc::clone(&self.adapter);
         let active_runs = Arc::clone(&self.active_runs);
         let session_lock = self.session_lock(&run.session_id);
+        let validation_coordinator = self
+            .validation_coordinator()
+            .expect("agent gateway validation coordinator lock poisoned");
         active_runs
             .lock()
             .expect("agent gateway active run lock poisoned")
             .insert(run.id.clone());
         tauri::async_runtime::spawn(async move {
             let _session_guard = session_lock.lock().await;
-            let result = execute_run(service, adapter, active_runs.clone(), run).await;
+            let result = execute_run(
+                service,
+                adapter,
+                active_runs.clone(),
+                validation_coordinator,
+                run,
+            )
+            .await;
             if let Err(error) = result {
                 eprintln!("agent gateway failed: {error}");
             }
@@ -207,6 +274,7 @@ async fn execute_run(
     service: Arc<SessionService>,
     adapter: Arc<dyn AgentAdapter>,
     active_runs: Arc<Mutex<HashSet<String>>>,
+    validation_coordinator: Option<crate::validation_plane::coordinator::ValidationCoordinator>,
     run: CadAgentRun,
 ) -> Result<(), String> {
     if !is_active(&active_runs, &run.id) {
@@ -221,19 +289,29 @@ async fn execute_run(
         None,
         Some(serde_json::json!({"activeStep": "Starting agent run"})),
     )?;
+    let prompt_revision_id = run
+        .output_revision_id
+        .as_deref()
+        .or(run.input_revision_id.as_deref());
     let (revision_id, revision_source_language, revision_source) =
-        service.revision_prompt_context(&run.session_id, run.input_revision_id.as_deref())?;
+        service.revision_prompt_context(&run.session_id, prompt_revision_id)?;
     let latest_workflow_failure_report =
         latest_workflow_failure_report(&service.get_session_state(&run.session_id)?, &run.id);
     let event_service = Arc::clone(&service);
     let event_run = run.clone();
     let event_active_runs = Arc::clone(&active_runs);
+    let event_coordinator = validation_coordinator.clone();
     let event_sink: crate::agent_adapter::AgentAdapterEventSink =
         Arc::new(move |event: AgentAdapterEvent| {
             if !is_active(&event_active_runs, &event_run.id) {
                 return Ok(());
             }
-            apply_adapter_event(&event_service, &event_run, event)
+            apply_adapter_event_with_validation(
+                &event_service,
+                &event_run,
+                event,
+                event_coordinator.as_ref(),
+            )
         });
     let events = adapter
         .run(crate::agent_adapter::AgentAdapterRunInput {
@@ -255,9 +333,35 @@ async fn execute_run(
                 if !is_active(&active_runs, &run.id) {
                     return Ok(());
                 }
-                apply_adapter_event(&service, &run, event)?;
+                apply_adapter_event_with_validation(
+                    &service,
+                    &run,
+                    event,
+                    validation_coordinator.as_ref(),
+                )?;
             }
-            if is_active(&active_runs, &run.id)
+            let pending_validation = service
+                .list_validation_evaluations(&run.session_id)?
+                .iter()
+                .any(|evaluation| {
+                    evaluation.run_id == run.id
+                        && matches!(
+                            evaluation.status,
+                            CadValidationEvaluationStatus::Queued
+                                | CadValidationEvaluationStatus::Running
+                        )
+                });
+            if pending_validation {
+                service.update_agent_run(
+                    &run.session_id,
+                    &run.id,
+                    Some(CadAgentRunStatus::Running),
+                    Some(Some("Validation queued".to_string())),
+                    None,
+                    None,
+                    Some(serde_json::json!({"activeStep": "validation"})),
+                )?;
+            } else if is_active(&active_runs, &run.id)
                 && !service
                     .get_agent_run(&run.session_id, &run.id)?
                     .is_some_and(|current| is_terminal_run_status(&current.status))
@@ -304,6 +408,9 @@ async fn execute_run(
         }
     }
     remove_active_run(&active_runs, &run.id)?;
+    if let Some(coordinator) = validation_coordinator {
+        coordinator.enqueue_run(&run.session_id, &run.id)?;
+    }
     Ok(())
 }
 
@@ -325,10 +432,20 @@ fn is_terminal_run_status(status: &CadAgentRunStatus) -> bool {
     )
 }
 
+#[cfg(test)]
 pub(crate) fn apply_adapter_event(
     service: &SessionService,
     run: &CadAgentRun,
     event: AgentAdapterEvent,
+) -> Result<(), String> {
+    apply_adapter_event_with_validation(service, run, event, None)
+}
+
+fn apply_adapter_event_with_validation(
+    service: &SessionService,
+    run: &CadAgentRun,
+    event: AgentAdapterEvent,
+    validation_coordinator: Option<&crate::validation_plane::coordinator::ValidationCoordinator>,
 ) -> Result<(), String> {
     match event {
         AgentAdapterEvent::RunMetadata {
@@ -349,9 +466,6 @@ pub(crate) fn apply_adapter_event(
             content,
             metadata,
         } => {
-            if handle_inline_vlm_judge_report(service, run, &role, &content, metadata.clone())? {
-                return Ok(());
-            }
             let state = service.get_session_state(&run.session_id)?;
             service.create_conversation_message(
                 &run.session_id,
@@ -392,29 +506,7 @@ pub(crate) fn apply_adapter_event(
             is_final,
             metadata,
         } => {
-            let mut content = content;
-            let mut metadata = metadata.unwrap_or_default();
-            if let Some(report) = parse_vlm_judge_report(&content) {
-                let submission = submit_inline_vlm_judge_report(service, run, report)?;
-                content = if submission.passed {
-                    format!(
-                        "VLM accepted final artifact {} with score {:.2} (threshold {:.2}).",
-                        short_id(&submission.artifact_id),
-                        submission.score,
-                        submission.pass_threshold
-                    )
-                } else {
-                    format!(
-                        "VLM requested refinement for artifact {} with score {:.2} (threshold {:.2}).",
-                        short_id(&submission.artifact_id), submission.score, submission.pass_threshold
-                    )
-                };
-                metadata.insert(
-                    "source".to_string(),
-                    Value::String("codex-inline-vlm-report".to_string()),
-                );
-                metadata.insert("rawVlmReportHidden".to_string(), Value::Bool(true));
-            }
+            let metadata = metadata.unwrap_or_default();
             let state = service.get_session_state(&run.session_id)?;
             service.upsert_agent_conversation_message(CadConversationMessage {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -495,6 +587,22 @@ pub(crate) fn apply_adapter_event(
             )?;
             if is_cadastrophe_cli_command(&name) {
                 service.refresh_session_from_repository(&run.session_id)?;
+            }
+            if name.contains("cadastrophe-finalize") {
+                let queued = service
+                    .list_validation_evaluations(&run.session_id)?
+                    .into_iter()
+                    .filter(|evaluation| {
+                        evaluation.run_id == run.id
+                            && evaluation.status == CadValidationEvaluationStatus::Queued
+                    })
+                    .count();
+                if queued > 0 && validation_coordinator.is_none() {
+                    return Err(
+                        "cadastrophe-finalize queued validation, but no coordinator is attached."
+                            .to_string(),
+                    );
+                }
             }
         }
         AgentAdapterEvent::Progress {
@@ -692,254 +800,6 @@ fn is_sensitive_transport_key(key: &str) -> bool {
     .any(|sensitive| normalized == *sensitive || normalized.ends_with(sensitive))
 }
 
-struct InlineVlmSubmission {
-    artifact_id: String,
-    passed: bool,
-    score: f64,
-    pass_threshold: f64,
-}
-
-fn handle_inline_vlm_judge_report(
-    service: &SessionService,
-    run: &CadAgentRun,
-    role: &CadConversationRole,
-    content: &str,
-    metadata: Option<crate::protocol::Metadata>,
-) -> Result<bool, String> {
-    if role != &CadConversationRole::Assistant {
-        return Ok(false);
-    }
-    let Some(report) = parse_vlm_judge_report(content) else {
-        return Ok(false);
-    };
-    let submission = submit_inline_vlm_judge_report(service, run, report)?;
-    let message = if submission.passed {
-        format!(
-            "VLM accepted final artifact {} with score {:.2} (threshold {:.2}).",
-            short_id(&submission.artifact_id),
-            submission.score,
-            submission.pass_threshold
-        )
-    } else {
-        format!(
-            "VLM requested refinement for artifact {} with score {:.2} (threshold {:.2}).",
-            short_id(&submission.artifact_id),
-            submission.score,
-            submission.pass_threshold
-        )
-    };
-    let mut message_metadata = metadata.unwrap_or_default();
-    message_metadata.insert(
-        "source".to_string(),
-        Value::String("codex-inline-vlm-report".to_string()),
-    );
-    message_metadata.insert("rawVlmReportHidden".to_string(), Value::Bool(true));
-    let state = service.get_session_state(&run.session_id)?;
-    service.create_conversation_message(
-        &run.session_id,
-        state.session.active_revision_id,
-        CadConversationRole::Assistant,
-        message,
-        Some(run.id.clone()),
-        Some(message_metadata),
-    )?;
-    Ok(true)
-}
-
-fn submit_inline_vlm_judge_report(
-    service: &SessionService,
-    run: &CadAgentRun,
-    mut report: Value,
-) -> Result<InlineVlmSubmission, String> {
-    let state = service.get_session_state(&run.session_id)?;
-    let pending = state
-        .workflow
-        .pending_vlm
-        .iter()
-        .find(|pending| pending.run_id == run.id)
-        .cloned()
-        .ok_or_else(|| {
-            format!(
-                "Received VLM judge report for run {}, but no pending VLM contract exists.",
-                run.id
-            )
-        })?;
-    validate_inline_vlm_report(&report, &run.id, &pending.artifact_id)?;
-    let report_object = report
-        .as_object_mut()
-        .ok_or_else(|| "VLM judge report must be a JSON object.".to_string())?;
-    report_object
-        .entry("runId".to_string())
-        .or_insert_with(|| Value::String(run.id.clone()));
-    report_object
-        .entry("artifactId".to_string())
-        .or_insert_with(|| Value::String(pending.artifact_id.clone()));
-    let score = report
-        .get("score")
-        .and_then(Value::as_f64)
-        .ok_or_else(|| "VLM judge report missing numeric score.".to_string())?;
-    if !(0.0..=1.0).contains(&score) {
-        return Err("VLM judge report score must be between 0.0 and 1.0.".to_string());
-    }
-    let judge_passed = report
-        .get("passed")
-        .and_then(Value::as_bool)
-        .ok_or_else(|| "VLM judge report missing boolean passed field.".to_string())?;
-    let passed = judge_passed && score >= pending.pass_threshold;
-    let revision_id = pending.revision_id.clone();
-    let structural_report = pending.structural_report.clone().unwrap_or_else(|| {
-        json!({
-            "contractType": "cadastrophe.structural_report.v1",
-            "runId": run.id,
-            "artifactId": pending.artifact_id,
-            "passed": true,
-            "checks": []
-        })
-    });
-    let failure_report = if passed {
-        None
-    } else {
-        Some(vlm_failure_report(&report, score, pending.pass_threshold))
-    };
-    let next_iteration = state
-        .workflow
-        .outer_iterations
-        .iter()
-        .filter(|iteration| iteration.run_id == run.id)
-        .map(|iteration| iteration.iteration)
-        .max()
-        .unwrap_or(0)
-        + 1;
-
-    service.record_agent_tool_event(
-        &run.session_id,
-        &run.id,
-        revision_id.clone(),
-        CadAgentRunEventType::AgentToolStarted,
-        json!({
-            "phase": "vlm-judge-callback",
-            "status": "started",
-            "source": "codex-inline-vlm-report"
-        }),
-    )?;
-    service.save_workflow_outer_iteration(
-        &run.session_id,
-        CadWorkflowOuterIteration {
-            id: format!("workflow-outer-{}-{next_iteration}", run.id),
-            run_id: run.id.clone(),
-            iteration: next_iteration,
-            revision_id: revision_id.clone(),
-            structural_report,
-            dfm_report: pending.dfm_report.clone(),
-            vlm_report: Some(report),
-            failure_report,
-            passed,
-            created_at: pending.created_at.clone(),
-        },
-    )?;
-    let workflow = service.clear_workflow_pending_vlm(&run.session_id, &run.id)?;
-    service.record_agent_tool_event(
-        &run.session_id,
-        &run.id,
-        revision_id,
-        CadAgentRunEventType::AgentToolCompleted,
-        json!({
-            "phase": "vlm-judge-callback",
-            "status": "completed",
-            "ok": true,
-            "artifactId": pending.artifact_id,
-            "passed": passed,
-            "score": score,
-            "passThreshold": pending.pass_threshold,
-            "nextAction": if passed { "complete" } else { "outer_loop_refine_source" },
-            "pendingVlm": workflow.pending_vlm.len()
-        }),
-    )?;
-    if passed {
-        service.update_agent_run(
-            &run.session_id,
-            &run.id,
-            Some(CadAgentRunStatus::Completed),
-            Some(None),
-            None,
-            None,
-            Some(json!({
-                "artifactId": pending.artifact_id,
-                "nextAction": "complete",
-                "vlmPassed": true
-            })),
-        )?;
-    }
-    Ok(InlineVlmSubmission {
-        artifact_id: pending.artifact_id,
-        passed,
-        score,
-        pass_threshold: pending.pass_threshold,
-    })
-}
-
-fn parse_vlm_judge_report(content: &str) -> Option<Value> {
-    let value = parse_json_object(content)?;
-    (value.get("contractType").and_then(Value::as_str) == Some("cadastrophe.vlm_judge_report.v1"))
-        .then_some(value)
-}
-
-fn parse_json_object(content: &str) -> Option<Value> {
-    let trimmed = content.trim();
-    if let Ok(value @ Value::Object(_)) = serde_json::from_str::<Value>(trimmed) {
-        return Some(value);
-    }
-    let fenced = trimmed
-        .strip_prefix("```json")
-        .or_else(|| trimmed.strip_prefix("```"))?
-        .trim();
-    let fenced = fenced.strip_suffix("```")?.trim();
-    match serde_json::from_str::<Value>(fenced).ok()? {
-        value @ Value::Object(_) => Some(value),
-        _ => None,
-    }
-}
-
-fn validate_inline_vlm_report(
-    report: &Value,
-    run_id: &str,
-    artifact_id: &str,
-) -> Result<(), String> {
-    if let Some(value) = report.get("runId") {
-        match value.as_str() {
-            Some(value) if value == run_id => {}
-            _ => return Err("VLM judge report runId does not match pending VLM.".to_string()),
-        }
-    }
-    if let Some(value) = report.get("artifactId") {
-        match value.as_str() {
-            Some(value) if value == artifact_id => {}
-            _ => return Err("VLM judge report artifactId does not match pending VLM.".to_string()),
-        }
-    }
-    Ok(())
-}
-
-fn vlm_failure_report(report: &Value, score: f64, pass_threshold: f64) -> Value {
-    json!({
-        "contractType": "cadastrophe.failure_report.v1",
-        "reason": "vlm_judge_failed",
-        "summary": report
-            .get("diagnostic")
-            .and_then(Value::as_str)
-            .unwrap_or("VLM judge rejected the artifact."),
-        "score": score,
-        "passThreshold": pass_threshold,
-        "vlmReport": report,
-        "nextAction": "outer_loop_refine_source",
-        "next_action": "outer_loop_refine_source"
-    })
-}
-
-fn short_id(value: &str) -> &str {
-    value.get(..8).unwrap_or(value)
-}
-
 fn is_active(active_runs: &Arc<Mutex<HashSet<String>>>, run_id: &str) -> bool {
     active_runs
         .lock()
@@ -963,17 +823,33 @@ fn latest_workflow_failure_report(
     state: &CadSessionState,
     current_run_id: &str,
 ) -> Option<serde_json::Value> {
-    state
+    let same_run = state
         .workflow
         .outer_iterations
         .iter()
-        .filter(|iteration| iteration.run_id != current_run_id)
+        .filter(|iteration| iteration.run_id == current_run_id)
+        .filter(|iteration| !iteration.passed)
         .filter_map(|iteration| {
             iteration
                 .failure_report
                 .as_ref()
-                .map(|report| (iteration.created_at.as_str(), report))
+                .map(|report| (iteration.iteration, iteration.created_at.as_str(), report))
         })
-        .max_by(|left, right| left.0.cmp(right.0))
-        .map(|(_, report)| report.clone())
+        .max_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)))
+        .map(|(_, _, report)| report.clone());
+    same_run.or_else(|| {
+        state
+            .workflow
+            .outer_iterations
+            .iter()
+            .filter(|iteration| iteration.run_id != current_run_id && !iteration.passed)
+            .filter_map(|iteration| {
+                iteration
+                    .failure_report
+                    .as_ref()
+                    .map(|report| (iteration.created_at.as_str(), report))
+            })
+            .max_by(|left, right| left.0.cmp(right.0))
+            .map(|(_, report)| report.clone())
+    })
 }

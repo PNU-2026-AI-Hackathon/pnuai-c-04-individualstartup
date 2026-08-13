@@ -23,7 +23,8 @@ fn prompt_limits_agent_to_modeling_cli_surface() {
             "nextAction": "outer_loop_refine_source"
         })),
         event_sink: None,
-    });
+    })
+    .unwrap();
 
     assert!(prompt.contains("--app-data-dir '/tmp/Cad App Data'"));
     assert!(prompt.contains(
@@ -50,15 +51,17 @@ fn prompt_limits_agent_to_modeling_cli_surface() {
         }
     }
     assert!(!prompt.contains("--language openscad"));
-    assert!(prompt.contains("--revision <revision_id>"));
-    assert!(prompt.contains("sessionId: 'session-1'"));
-    assert!(prompt.contains("runId: 'run-1'"));
-    assert!(prompt.contains("cadastrophe.vlm_judge.v1"));
-    assert!(prompt.contains("the app will consume it and record the VLM result automatically"));
+    assert!(prompt.contains("--revision 'revision-1' --source <file>"));
+    assert!(prompt.contains("\"sessionId\": \"session-1\""));
+    assert!(prompt.contains("\"runId\": \"run-1\""));
+    assert!(prompt.contains("enqueues app-owned VLM evaluation"));
+    assert!(prompt.contains("end this modeling"));
+    assert!(!prompt.contains("cadastrophe-vlm-judge"));
+    assert!(!prompt.contains("separate subagent"));
     assert!(prompt.contains("Do not call `cadastrophe-preview-render`"));
     assert!(prompt.contains("CadModelPlanDraft"));
     assert!(prompt.contains(
-        "Shape it with `summary`, `mainComponent`, `supportingComponents`, and `expectedAspectRatio`"
+        "`CadModelPlanDraft` with `summary`, `mainComponent`,\n`supportingComponents`, and `expectedAspectRatio`"
     ));
     assert!(!prompt.contains("full persisted `CadModelPlan`"));
     assert!(!prompt.contains("Do not include `schemaVersion`"));
@@ -87,6 +90,14 @@ fn codex_turn_uses_workspace_write_with_app_data_writable_root() {
     assert_eq!(turn["cwd"], "/Users/example/cadastrophe");
     assert_eq!(turn["approvalPolicy"], "never");
     assert_eq!(turn["sandboxPolicy"]["type"], "workspaceWrite");
+    assert_eq!(
+        turn["input"],
+        json!([{
+            "type": "text",
+            "text": "prompt",
+            "text_elements": []
+        }])
+    );
     assert_eq!(
         turn["sandboxPolicy"]["writableRoots"][0],
         "/Users/example/Library/Application Support/Cadastrophe"

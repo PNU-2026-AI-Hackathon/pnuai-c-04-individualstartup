@@ -17,6 +17,18 @@ impl SessionService {
                         | CadAgentRunStatus::WaitingForUser
                 )
             })
+            .filter(|run| {
+                !state
+                    .validation_evaluations
+                    .get(&run.session_id)
+                    .into_iter()
+                    .flatten()
+                    .any(|evaluation| {
+                        evaluation.run_id == run.id
+                            && run.output_revision_id.as_deref()
+                                == Some(evaluation.revision_id.as_str())
+                    })
+            })
             .map(|run| {
                 let action = if run.external_turn_id.is_some() {
                     CadAgentRunRecoveryAction::QueryHistory

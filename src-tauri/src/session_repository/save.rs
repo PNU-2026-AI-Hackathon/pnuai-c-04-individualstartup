@@ -251,10 +251,10 @@ pub(super) fn save_agent_thread(
         .execute(
             r#"
             INSERT INTO agent_threads (
-              id, session_id, external_agent, external_thread_id, status,
+              id, session_id, external_agent, external_thread_id, plane, owner_id, status,
               connection_generation, created_at, updated_at, last_resumed_at,
               archived_at, replaced_by_id, metadata_json
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
             ON CONFLICT(id) DO UPDATE SET
               status = excluded.status,
               connection_generation = excluded.connection_generation,
@@ -266,12 +266,16 @@ pub(super) fn save_agent_thread(
             WHERE agent_threads.session_id = excluded.session_id
               AND agent_threads.external_agent = excluded.external_agent
               AND agent_threads.external_thread_id = excluded.external_thread_id
+              AND agent_threads.plane = excluded.plane
+              AND agent_threads.owner_id = excluded.owner_id
             "#,
             params![
                 thread.id,
                 thread.session_id,
                 thread.external_agent,
                 thread.external_thread_id,
+                to_db_text(&thread.plane)?,
+                thread.owner_id,
                 to_db_text(&thread.status)?,
                 thread.connection_generation.map(|value| value as i64),
                 thread.created_at,
@@ -412,6 +416,262 @@ pub(super) fn save_agent_transport_event(
         ));
     }
     Ok(saved)
+}
+
+pub(super) fn create_validation_evaluation(
+    connection: &Connection,
+    evaluation: &CadValidationEvaluation,
+) -> SessionRepositoryResult<CadValidationEvaluation> {
+    let changed = connection
+        .execute(
+            r#"
+            INSERT INTO validation_evaluations (
+              id, session_id, run_id, revision_id, artifact_id, kind, attempt, status,
+              evaluator_thread_id, external_turn_id, input_contract_json, report_json,
+              passed, score, pass_threshold, error, created_at, started_at, completed_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                      ?14, ?15, ?16, ?17, ?18, ?19)
+            ON CONFLICT DO NOTHING
+            "#,
+            params![
+                evaluation.id,
+                evaluation.session_id,
+                evaluation.run_id,
+                evaluation.revision_id,
+                evaluation.artifact_id,
+                to_db_text(&evaluation.kind)?,
+                i64::from(evaluation.attempt),
+                to_db_text(&evaluation.status)?,
+                evaluation.evaluator_thread_id,
+                evaluation.external_turn_id,
+                serde_json::to_string(&evaluation.input_contract)
+                    .map_err(|error| error.to_string())?,
+                optional_json_value_text(evaluation.report.as_ref())?,
+                evaluation.passed.map(i64::from),
+                evaluation.score,
+                evaluation.pass_threshold,
+                evaluation.error,
+                evaluation.created_at,
+                evaluation.started_at,
+                evaluation.completed_at,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed != 1 {
+        return Err(format!(
+            "Validation evaluation attempt already exists or id is already used: {} (attempt {})",
+            evaluation.id, evaluation.attempt
+        ));
+    }
+    Ok(evaluation.clone())
+}
+
+pub(super) fn create_next_validation_evaluation(
+    connection: &mut Connection,
+    evaluation: &CadValidationEvaluation,
+) -> SessionRepositoryResult<CadValidationEvaluation> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let maximum_attempt: i64 = transaction
+        .query_row(
+            r#"
+            SELECT COALESCE(MAX(attempt), 0)
+            FROM validation_evaluations
+            WHERE run_id = ?1 AND revision_id = ?2 AND artifact_id = ?3 AND kind = ?4
+            "#,
+            params![
+                evaluation.run_id,
+                evaluation.revision_id,
+                evaluation.artifact_id,
+                to_db_text(&evaluation.kind)?,
+            ],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let next_attempt = maximum_attempt
+        .checked_add(1)
+        .ok_or_else(|| "Validation evaluation attempt overflowed i64.".to_string())?;
+    let next_attempt = u32::try_from(next_attempt)
+        .map_err(|_| "Validation evaluation attempt exceeds u32.".to_string())?;
+    let mut evaluation = evaluation.clone();
+    evaluation.attempt = next_attempt;
+    set_validation_contract_identity(&mut evaluation.input_contract, &evaluation.id, next_attempt)?;
+    let saved = create_validation_evaluation(&transaction, &evaluation)?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(saved)
+}
+
+fn set_validation_contract_identity(
+    input_contract: &mut Value,
+    evaluation_id: &str,
+    attempt: u32,
+) -> SessionRepositoryResult<()> {
+    let object = input_contract
+        .as_object_mut()
+        .ok_or_else(|| "Validation evaluation input_contract must be a JSON object.".to_string())?;
+    if let Some(existing_id) = object.get("evaluationId") {
+        if existing_id.as_str() != Some(evaluation_id) {
+            return Err(format!(
+                "Validation evaluation contract evaluationId does not match generated id: {evaluation_id}"
+            ));
+        }
+    }
+    if let Some(existing_attempt) = object.get("attempt") {
+        if existing_attempt.as_u64() != Some(u64::from(attempt)) {
+            return Err(format!(
+                "Validation evaluation contract attempt does not match allocated attempt: {attempt}"
+            ));
+        }
+    }
+    object.insert(
+        "evaluationId".to_string(),
+        Value::String(evaluation_id.to_string()),
+    );
+    object.insert(
+        "attempt".to_string(),
+        Value::Number(serde_json::Number::from(attempt)),
+    );
+    Ok(())
+}
+
+pub(super) fn update_validation_evaluation(
+    connection: &Connection,
+    evaluation: &CadValidationEvaluation,
+) -> SessionRepositoryResult<CadValidationEvaluation> {
+    let persisted = load_validation_evaluation_by_id(connection, &evaluation.id)?
+        .ok_or_else(|| format!("Validation evaluation not found: {}", evaluation.id))?;
+    if persisted == *evaluation {
+        return Ok(persisted);
+    }
+    if persisted.session_id != evaluation.session_id
+        || persisted.run_id != evaluation.run_id
+        || persisted.revision_id != evaluation.revision_id
+        || persisted.artifact_id != evaluation.artifact_id
+        || persisted.kind != evaluation.kind
+        || persisted.attempt != evaluation.attempt
+        || persisted.input_contract != evaluation.input_contract
+        || persisted.pass_threshold != evaluation.pass_threshold
+        || persisted.created_at != evaluation.created_at
+    {
+        return Err(format!(
+            "Validation evaluation attempt fields are immutable: {}",
+            evaluation.id
+        ));
+    }
+    let changed = connection
+        .execute(
+            r#"
+            UPDATE validation_evaluations
+            SET status = ?1,
+                evaluator_thread_id = ?2,
+                external_turn_id = ?3,
+                report_json = ?4,
+                passed = ?5,
+                score = ?6,
+                error = ?7,
+                started_at = ?8,
+                completed_at = ?9
+            WHERE id = ?10
+            "#,
+            params![
+                to_db_text(&evaluation.status)?,
+                evaluation.evaluator_thread_id,
+                evaluation.external_turn_id,
+                optional_json_value_text(evaluation.report.as_ref())?,
+                evaluation.passed.map(i64::from),
+                evaluation.score,
+                evaluation.error,
+                evaluation.started_at,
+                evaluation.completed_at,
+                evaluation.id,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed != 1 {
+        return Err(format!(
+            "Expected one validation evaluation update, changed {changed}: {}",
+            evaluation.id
+        ));
+    }
+    Ok(evaluation.clone())
+}
+
+fn load_validation_evaluation_by_id(
+    connection: &Connection,
+    evaluation_id: &str,
+) -> SessionRepositoryResult<Option<CadValidationEvaluation>> {
+    connection
+        .query_row(
+            r#"
+            SELECT id, session_id, run_id, revision_id, artifact_id, kind, attempt, status,
+                   evaluator_thread_id, external_turn_id, input_contract_json, report_json,
+                   passed, score, pass_threshold, error, created_at, started_at, completed_at
+            FROM validation_evaluations WHERE id = ?1
+            "#,
+            params![evaluation_id],
+            validation_evaluation_from_row,
+        )
+        .optional()
+        .map_err(|error| error.to_string())
+}
+
+pub(super) fn save_validation_evaluation_event(
+    connection: &Connection,
+    event: &CadValidationEvaluationEvent,
+) -> SessionRepositoryResult<CadValidationEvaluationEvent> {
+    let changed = connection
+        .execute(
+            r#"
+            INSERT INTO validation_evaluation_events (
+              id, session_id, evaluation_id, evaluator_thread_id, external_turn_id,
+              external_item_id, method, sequence, payload_json, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(id) DO NOTHING
+            "#,
+            params![
+                event.id,
+                event.session_id,
+                event.evaluation_id,
+                event.evaluator_thread_id,
+                event.external_turn_id,
+                event.external_item_id,
+                event.method,
+                i64::try_from(event.sequence)
+                    .map_err(|_| "Validation evaluation event sequence exceeds i64".to_string())?,
+                serde_json::to_string(&event.payload).map_err(|error| error.to_string())?,
+                event.created_at,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed == 1 {
+        return Ok(event.clone());
+    }
+    let persisted = connection
+        .query_row(
+            r#"
+            SELECT id, session_id, evaluation_id, evaluator_thread_id, external_turn_id,
+                   external_item_id, method, sequence, payload_json, created_at
+            FROM validation_evaluation_events WHERE id = ?1
+            "#,
+            params![event.id],
+            validation_evaluation_event_from_row,
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "Validation evaluation event sequence already exists: {}:{}",
+                event.evaluation_id, event.sequence
+            )
+        })?;
+    if persisted != *event {
+        return Err(format!(
+            "Validation evaluation event id was replayed with different content: {}",
+            event.id
+        ));
+    }
+    Ok(persisted)
 }
 
 pub(super) fn save_agent_run_event(

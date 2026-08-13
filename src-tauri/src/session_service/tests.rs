@@ -7,6 +7,7 @@ mod operations_recovery;
 mod recovery;
 mod runtime_revision;
 mod session_repository;
+mod validation_persistence;
 mod workflow_repository;
 
 fn create_test_revision(service: &SessionService, session_id: &str, source: &str) -> String {

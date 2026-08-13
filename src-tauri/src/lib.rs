@@ -5,12 +5,15 @@ pub mod cli;
 pub mod codex_agent_adapter;
 pub mod codex_process_client;
 pub mod dfm;
+pub mod modeling_plane;
 pub mod notification_router;
+mod prompt_template;
 pub mod protocol;
 mod runtime;
 mod session_repository;
 mod session_service;
 mod storage;
+pub mod validation_plane;
 
 use agent_adapter::AgentAdapter;
 use agent_gateway::AgentGateway;
@@ -375,11 +378,37 @@ pub fn run() {
             );
             let adapter: Arc<dyn AgentAdapter> = codex_adapter.clone();
             let gateway = Arc::new(AgentGateway::new(Arc::clone(&service), adapter));
+            let evaluator = Arc::new(
+                validation_plane::codex_vlm_evaluator::CodexVlmEvaluator::new(
+                    Arc::clone(&service),
+                    codex_adapter.process_client(),
+                    validation_plane::codex_vlm_evaluator::CodexVlmEvaluatorConfig::default(),
+                )
+                .map_err(|error| format!("Failed to initialize VLM evaluator: {error}"))?,
+            );
+            let weak_gateway = Arc::downgrade(&gateway);
+            let refinement_enqueue: validation_plane::coordinator::RefinementEnqueue =
+                Arc::new(move |session_id, run_id| {
+                    let gateway = weak_gateway.upgrade().ok_or_else(|| {
+                        "Agent gateway was dropped before validation refinement.".to_string()
+                    })?;
+                    gateway.enqueue_refinement(session_id, run_id)
+                });
+            let validation_coordinator = validation_plane::coordinator::ValidationCoordinator::new(
+                Arc::clone(&service),
+                evaluator,
+                refinement_enqueue,
+                codex_agent_adapter::codex_cwd()?,
+            )?;
+            gateway.attach_validation_coordinator(validation_coordinator.clone())?;
             forward_bridge_events(app.handle().clone(), Arc::clone(&service));
             forward_agent_stream_events(app.handle().clone(), Arc::clone(&service));
             gateway
                 .recover_startup_runs()
                 .map_err(|error| format!("Failed to start agent run recovery: {error}"))?;
+            validation_coordinator
+                .recover_startup()
+                .map_err(|error| format!("Failed to start validation recovery: {error}"))?;
             app.manage(AppState {
                 service,
                 gateway,

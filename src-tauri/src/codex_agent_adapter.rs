@@ -26,6 +26,10 @@ pub struct CodexAgentAdapter {
 }
 
 impl CodexAgentAdapter {
+    pub(crate) fn process_client(&self) -> CodexProcessClient {
+        self.process_client.clone()
+    }
+
     pub fn new(service: Arc<SessionService>, client: CodexProcessClient) -> Result<Self, String> {
         Ok(Self {
             threads: AgentThreadManager::new(
@@ -70,7 +74,7 @@ impl AgentAdapter for CodexAgentAdapter {
 
     async fn run(&self, input: AgentAdapterRunInput) -> Result<Vec<AgentAdapterEvent>, String> {
         let cwd = codex_cwd()?;
-        let prompt = build_cad_prompt(&input);
+        let prompt = build_cad_prompt(&input)?;
         let replacement_context = format!(
             "The previous Codex thread could not be loaded. Continue this Cadastrophe session using the immutable scope --session '{}' --run '{}'. Re-read the persisted session/revision/workflow state before making changes.",
             input.session_id, input.run_id
@@ -283,7 +287,7 @@ fn terminal_result(
     }
 }
 
-fn codex_cwd() -> Result<PathBuf, String> {
+pub(crate) fn codex_cwd() -> Result<PathBuf, String> {
     if let Ok(value) = std::env::var("CADASTROPHE_CODEX_CWD") {
         if value.trim().is_empty() {
             return Err("CADASTROPHE_CODEX_CWD cannot be empty when set.".to_string());

@@ -440,6 +440,43 @@ fn refresh_session_from_repository_merges_external_workflow_state() {
             },
         )
         .unwrap();
+    let revision_id = create_test_revision(
+        &external_cli_service,
+        &created.session_id,
+        "cube([4, 4, 4]);",
+    );
+    external_cli_service
+        .link_agent_run_output_revision(&created.session_id, &run.id, revision_id.clone())
+        .unwrap();
+    let artifact = external_cli_service
+        .persist_runtime_artifact(PersistRuntimeArtifactInput {
+            session_id: created.session_id.clone(),
+            revision_id: revision_id.clone(),
+            kind: CadArtifactKind::Stl,
+            format: "stl".to_string(),
+            contents_base64: {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD
+                    .encode(b"solid refresh\nendsolid refresh\n")
+            },
+            diagnostics: ok_diagnostics(0),
+            metadata: Metadata::new(),
+        })
+        .unwrap()
+        .artifact;
+    let queued = external_cli_service
+        .create_next_validation_evaluation(CadValidationEvaluationCreate {
+            session_id: created.session_id.clone(),
+            run_id: run.id.clone(),
+            revision_id,
+            artifact_id: artifact.id,
+            kind: CadValidationEvaluationKind::Vlm,
+            input_contract: json!({
+                "contractType": "cadastrophe.vlm_evaluation_input.v1"
+            }),
+            pass_threshold: 0.8,
+        })
+        .unwrap();
 
     assert!(app_service
         .get_session_state(&created.session_id)
@@ -447,12 +484,23 @@ fn refresh_session_from_repository_merges_external_workflow_state() {
         .workflow
         .plans
         .is_empty());
+    assert!(app_service
+        .get_session_state(&created.session_id)
+        .unwrap()
+        .validation_evaluations
+        .is_empty());
 
     let refreshed = app_service
         .refresh_session_from_repository(&created.session_id)
         .unwrap();
     assert_eq!(refreshed.workflow.plans.len(), 1);
     assert_eq!(refreshed.workflow.plans[0].run_id, run.id);
+    assert_eq!(refreshed.validation_evaluations.len(), 1);
+    assert_eq!(refreshed.validation_evaluations[0].id, queued.id);
+    assert_eq!(
+        refreshed.validation_evaluations[0].input_contract["evaluationId"],
+        queued.id
+    );
     assert_eq!(
         refreshed.workflow.plans[0].plan.main_component.name,
         "wall_bracket"

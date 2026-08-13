@@ -4,33 +4,44 @@ use super::*;
 impl SessionService {
     pub fn prepare_agent_thread_replacement(
         &self,
-        session_id: &str,
+        scope: &ThreadScope,
         external_agent: &str,
     ) -> Result<CadAgentThreadReplacementPreparation, String> {
         if external_agent.trim().is_empty() {
             return Err("External agent cannot be empty.".to_string());
         }
         let state = self.inner.lock().map_err(lock_error)?;
-        require_session(&state, session_id)?;
-        reject_all_active_agent_runs(&state, session_id)?;
+        require_session(&state, &scope.session_id)?;
+        if scope.plane == CadAgentPlane::Modeling && scope.owner_id != scope.session_id {
+            return Err("Modeling agent thread owner_id must equal session_id.".to_string());
+        }
+        if scope.owner_id.trim().is_empty() {
+            return Err("Agent thread scope owner_id cannot be empty.".to_string());
+        }
+        if scope.plane == CadAgentPlane::Modeling {
+            reject_all_active_agent_runs(&state, &scope.session_id)?;
+        }
         let mut active_threads = state
             .agent_threads
-            .get(session_id)
+            .get(&scope.session_id)
             .into_iter()
             .flatten()
             .filter(|thread| {
                 thread.external_agent == external_agent
+                    && thread.plane == scope.plane
+                    && thread.owner_id == scope.owner_id
                     && thread.archived_at.is_none()
                     && thread.replaced_by_id.is_none()
             });
         let active_thread = active_threads.next().cloned();
         if active_threads.next().is_some() {
             return Err(format!(
-                "Multiple active agent threads exist for session {session_id} and agent {external_agent}."
+                "Multiple active agent threads exist for scope {:?} and agent {external_agent}.",
+                scope
             ));
         }
         Ok(CadAgentThreadReplacementPreparation {
-            session_id: session_id.to_string(),
+            session_id: scope.session_id.clone(),
             external_agent: external_agent.to_string(),
             active_thread,
         })
@@ -71,6 +82,8 @@ impl SessionService {
         }
         if old_thread.session_id != replacement.session_id
             || old_thread.external_agent != replacement.external_agent
+            || old_thread.plane != replacement.plane
+            || old_thread.owner_id != replacement.owner_id
         {
             return Err(
                 "Replacement agent thread must belong to the same session and external agent."
@@ -100,6 +113,7 @@ impl SessionService {
         if session_threads.iter().any(|thread| {
             thread.id != old_thread.id
                 && thread.external_agent == old_thread.external_agent
+                && thread.plane == old_thread.plane
                 && thread.archived_at.is_none()
                 && thread.replaced_by_id.is_none()
         }) {
@@ -170,7 +184,9 @@ impl SessionService {
         }
         let mut state = self.inner.lock().map_err(lock_error)?;
         require_session(&state, &thread.session_id)?;
-        reject_all_active_agent_runs(&state, &thread.session_id)?;
+        if thread.plane == CadAgentPlane::Modeling {
+            reject_all_active_agent_runs(&state, &thread.session_id)?;
+        }
         let threads = state
             .agent_threads
             .entry(thread.session_id.clone())
@@ -180,6 +196,7 @@ impl SessionService {
         }
         if threads.iter().any(|candidate| {
             candidate.external_agent == thread.external_agent
+                && candidate.plane == thread.plane
                 && candidate.archived_at.is_none()
                 && candidate.replaced_by_id.is_none()
         }) {

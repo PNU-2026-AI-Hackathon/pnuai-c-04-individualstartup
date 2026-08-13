@@ -1,0 +1,232 @@
+use crate::agent_adapter::AgentAdapterRunInput;
+use crate::prompt_template::render_strict_template;
+use crate::protocol::CadSourceLanguage;
+use serde::Serialize;
+use std::path::Path;
+
+const MODELING_PROMPT_TEMPLATE: &str = include_str!("../../prompts/modeling_agent.md");
+const TEMPLATE_NAME: &str = "modeling_agent.md";
+const PLACEHOLDERS: &[&str] = &[
+    "USER_REQUEST_JSON",
+    "SESSION_STATE_COMMAND",
+    "PLAN_COMMIT_COMMAND",
+    "SOURCE_APPLY_COMMAND",
+    "FINALIZE_COMMAND",
+    "APP_DATA_DIR_JSON",
+    "SESSION_ID_JSON",
+    "RUN_ID_JSON",
+    "INPUT_REVISION_ID_JSON",
+    "SOURCE_LANGUAGE_JSON",
+    "FAILURE_REPORT_JSON",
+    "SOURCE_JSON",
+];
+
+pub fn render_modeling_prompt(input: &AgentAdapterRunInput) -> Result<String, String> {
+    require_non_empty("session_id", &input.session_id)?;
+    require_non_empty("run_id", &input.run_id)?;
+    require_non_empty("user request", &input.prompt)?;
+    if !input.app_data_dir.is_absolute() {
+        return Err("Cadastrophe app-data directory must be an absolute path.".to_string());
+    }
+
+    let app_data_dir = shell_quote_path(&input.app_data_dir)?;
+    let session_id = shell_quote_arg("session_id", &input.session_id)?;
+    let run_id = shell_quote_arg("run_id", &input.run_id)?;
+    let input_revision_scope = match input.revision_id.as_deref() {
+        Some(revision_id) => format!(
+            " --revision {}",
+            shell_quote_arg("revision_id", revision_id)?
+        ),
+        None => String::new(),
+    };
+
+    let session_state_command = format!(
+        "cadastrophe-session-state --app-data-dir {app_data_dir} --session {session_id} --run {run_id}"
+    );
+    let plan_commit_command = format!(
+        "cadastrophe-plan-commit --app-data-dir {app_data_dir} --session {session_id} --run {run_id}{input_revision_scope} --plan <file>"
+    );
+    let source_apply_command = format!(
+        "cadastrophe-source-apply --app-data-dir {app_data_dir} --session {session_id} --run {run_id}{input_revision_scope} --source <file>"
+    );
+    let finalize_command = format!(
+        "cadastrophe-finalize --app-data-dir {app_data_dir} --session {session_id} --run {run_id} --revision <revision_id_from_source_apply>"
+    );
+
+    render_strict_template(
+        TEMPLATE_NAME,
+        MODELING_PROMPT_TEMPLATE,
+        PLACEHOLDERS,
+        vec![
+            ("USER_REQUEST_JSON", to_json("user request", &input.prompt)?),
+            ("SESSION_STATE_COMMAND", session_state_command),
+            ("PLAN_COMMIT_COMMAND", plan_commit_command),
+            ("SOURCE_APPLY_COMMAND", source_apply_command),
+            ("FINALIZE_COMMAND", finalize_command),
+            (
+                "APP_DATA_DIR_JSON",
+                to_json("app-data directory", &path_text(&input.app_data_dir)?)?,
+            ),
+            ("SESSION_ID_JSON", to_json("session ID", &input.session_id)?),
+            ("RUN_ID_JSON", to_json("run ID", &input.run_id)?),
+            (
+                "INPUT_REVISION_ID_JSON",
+                to_json("input revision ID", &input.revision_id)?,
+            ),
+            (
+                "SOURCE_LANGUAGE_JSON",
+                to_json(
+                    "source language",
+                    &input
+                        .revision_source_language
+                        .as_ref()
+                        .map(source_language_name),
+                )?,
+            ),
+            (
+                "FAILURE_REPORT_JSON",
+                to_pretty_json(
+                    "latest workflow failure report",
+                    &input.latest_workflow_failure_report,
+                )?,
+            ),
+            (
+                "SOURCE_JSON",
+                to_json("active revision source", &input.revision_source)?,
+            ),
+        ],
+    )
+}
+
+fn source_language_name(language: &CadSourceLanguage) -> &'static str {
+    match language {
+        CadSourceLanguage::Openscad => "openscad",
+        CadSourceLanguage::Cadquery => "cadquery",
+        CadSourceLanguage::FreecadPython => "freecad-python",
+        CadSourceLanguage::CadastropheIr => "cadastrophe-ir",
+    }
+}
+
+fn to_json(label: &str, value: &impl Serialize) -> Result<String, String> {
+    serde_json::to_string(value)
+        .map_err(|error| format!("Failed to serialize modeling prompt {label}: {error}"))
+}
+
+fn to_pretty_json(label: &str, value: &impl Serialize) -> Result<String, String> {
+    serde_json::to_string_pretty(value)
+        .map_err(|error| format!("Failed to serialize modeling prompt {label}: {error}"))
+}
+
+fn require_non_empty(label: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("Modeling prompt {label} cannot be empty."));
+    }
+    Ok(())
+}
+
+fn path_text(path: &Path) -> Result<&str, String> {
+    path.to_str()
+        .ok_or_else(|| "Cadastrophe app-data path is not valid UTF-8.".to_string())
+}
+
+fn shell_quote_path(path: &Path) -> Result<String, String> {
+    shell_quote_arg("app-data path", path_text(path)?)
+}
+
+fn shell_quote_arg(label: &str, value: &str) -> Result<String, String> {
+    require_non_empty(label, value)?;
+    if value.contains(['\0', '\n', '\r']) {
+        return Err(format!(
+            "Modeling prompt {label} contains a forbidden control character."
+        ));
+    }
+    Ok(format!("'{}'", value.replace('\'', "'\\''")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{render_modeling_prompt, to_json};
+    use crate::agent_adapter::AgentAdapterRunInput;
+    use crate::protocol::CadSourceLanguage;
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    struct SerializationFailure;
+
+    impl serde::Serialize for SerializationFailure {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(serde::ser::Error::custom(
+                "intentional serialization failure",
+            ))
+        }
+    }
+
+    #[test]
+    fn rendered_modeling_prompt_is_app_owned_and_ends_after_evaluation_enqueue() {
+        let prompt = render_modeling_prompt(&AgentAdapterRunInput {
+            session_id: "session-1".into(),
+            run_id: "run-1".into(),
+            app_data_dir: PathBuf::from("/tmp/Cad App Data"),
+            prompt: "Create a wall bracket.".into(),
+            revision_id: Some("revision-1".into()),
+            revision_source_language: Some(CadSourceLanguage::Openscad),
+            revision_source: Some("cube([1, 1, 1]);".into()),
+            latest_workflow_failure_report: Some(json!({
+                "contractType": "cadastrophe.failure_report.v1",
+                "reason": "missing_support_tab",
+                "nextAction": "outer_loop_refine_source"
+            })),
+            event_sink: None,
+        })
+        .unwrap();
+
+        assert!(prompt.starts_with("# Cadastrophe modeling agent\n"));
+        assert!(prompt.contains("\"Create a wall bracket.\""));
+        assert!(prompt.contains("--app-data-dir '/tmp/Cad App Data'"));
+        assert!(prompt.contains("--revision 'revision-1' --plan <file>"));
+        assert!(prompt.contains("\"latestWorkflowFailureReport\": {"));
+        assert!(prompt.contains("\"reason\": \"missing_support_tab\""));
+        assert!(prompt.contains("enqueues app-owned VLM evaluation"));
+        assert!(prompt.contains(
+            "When finalize confirms that VLM evaluation was enqueued, end this modeling"
+        ));
+        assert!(prompt.contains("Do not inspect or judge the rendered image"));
+        assert!(!prompt.contains("cadastrophe-vlm-judge"));
+        assert!(!prompt.contains("separate subagent"));
+        assert!(!prompt.contains("{{"));
+        assert!(!prompt.contains("}}"));
+    }
+
+    #[test]
+    fn modeling_prompt_rejects_invalid_dynamic_scope() {
+        let mut input = AgentAdapterRunInput {
+            session_id: "session-1".into(),
+            run_id: "run-1".into(),
+            app_data_dir: PathBuf::from("relative"),
+            prompt: "Create a cube.".into(),
+            revision_id: None,
+            revision_source_language: None,
+            revision_source: None,
+            latest_workflow_failure_report: None,
+            event_sink: None,
+        };
+        assert!(render_modeling_prompt(&input)
+            .unwrap_err()
+            .contains("must be an absolute path"));
+        input.app_data_dir = PathBuf::from("/tmp/cadastrophe");
+        input.run_id = "bad\nrun".into();
+        assert!(render_modeling_prompt(&input)
+            .unwrap_err()
+            .contains("forbidden control character"));
+    }
+
+    #[test]
+    fn modeling_prompt_serialization_failure_is_an_error() {
+        let error = to_json("test value", &SerializationFailure).unwrap_err();
+        assert!(error.contains("Failed to serialize modeling prompt test value"));
+        assert!(error.contains("intentional serialization failure"));
+    }
+}

@@ -195,7 +195,7 @@ fn finalize_structural_fail_returns_report_without_prusaslicer() {
 
 #[cfg(unix)]
 #[test]
-fn finalize_structural_pass_creates_pending_vlm_contract() {
+fn finalize_structural_pass_queues_validation_evaluation() {
     let app_data_dir = temp_app_data_dir("finalize-structural-pass");
     let service = sqlite_service(&app_data_dir);
     let setup = setup_run_with_plan(&service);
@@ -223,32 +223,29 @@ fn finalize_structural_pass_creates_pending_vlm_contract() {
     )
     .unwrap();
 
-    assert_eq!(output.data["next_action"].as_str(), Some("vlm_judge"));
     assert_eq!(
-        output.data["vlmContract"]["contractType"].as_str(),
-        Some("cadastrophe.vlm_judge.v1")
+        output.data["next_action"].as_str(),
+        Some("validation_queued")
     );
-    assert_eq!(
-        output.data["vlmContract"]["renderedImages"]["available"].as_bool(),
-        Some(true)
-    );
-    assert_eq!(
-        output.data["vlmContract"]["handoff"].as_str(),
-        Some("VLM Judge Handoff needed.")
-    );
-    assert!(output.data["vlmContract"].get("plan").is_none());
-    assert!(output.data["vlmContract"].get("artifact").is_none());
-    assert!(output.data["vlmContract"].get("structuralReport").is_none());
-    assert!(output.data["vlmContract"].get("runId").is_none());
+    let evaluation_id = output.data["evaluationId"].as_str().unwrap();
     let state = service.get_session_state(&setup.session_id).unwrap();
-    assert_eq!(state.workflow.pending_vlm.len(), 1);
-    assert_eq!(state.workflow.pending_vlm[0].run_id, setup.run_id);
+    let queued = state
+        .validation_evaluations
+        .iter()
+        .find(|evaluation| evaluation.id == evaluation_id)
+        .unwrap();
     assert_eq!(
-        state.workflow.pending_vlm[0].revision_id.as_deref(),
-        Some(setup.revision_id.as_str())
+        queued.input_contract["contractType"].as_str(),
+        Some("cadastrophe.vlm_evaluation_input.v1")
     );
-    assert!(state.workflow.pending_vlm[0].structural_report.is_some());
-    assert!(state.workflow.pending_vlm[0].dfm_report.is_some());
+    assert_eq!(
+        queued.input_contract["evaluationId"].as_str(),
+        Some(evaluation_id)
+    );
+    assert_eq!(queued.input_contract["attempt"].as_u64(), Some(1));
+    assert_eq!(queued.run_id, setup.run_id);
+    assert_eq!(queued.revision_id, setup.revision_id);
+    assert!(state.workflow.pending_vlm.is_empty());
     assert_eq!(state.workflow.outer_iterations.len(), 0);
     assert!(state
         .active_revision
@@ -526,7 +523,8 @@ fn cli_workflow_persists_required_tool_event_order() {
             && event.payload.get("phase").and_then(Value::as_str) == Some("structural-anchor")
     }));
     assert_eq!(state.workflow.plans.len(), 1);
-    assert_eq!(state.workflow.pending_vlm.len(), 1);
+    assert_eq!(state.validation_evaluations.len(), 1);
+    assert!(state.workflow.pending_vlm.is_empty());
 }
 
 #[test]

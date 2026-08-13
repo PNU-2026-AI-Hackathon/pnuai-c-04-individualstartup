@@ -366,6 +366,8 @@ fn restart_marks_persisted_loaded_thread_not_loaded_without_changing_mapping() {
         .upsert_agent_thread(CadAgentThread {
             id: uuid(),
             session_id: created.session_id.clone(),
+            plane: CadAgentPlane::Modeling,
+            owner_id: created.session_id.clone(),
             external_agent: "codex".to_string(),
             external_thread_id: "persisted-thread".to_string(),
             status: CadAgentThreadStatus::Active,
@@ -475,6 +477,8 @@ fn sqlite_repository_restores_agent_thread_run_message_and_transport_graph_idemp
     let thread = CadAgentThread {
         id: uuid(),
         session_id: created.session_id.clone(),
+        plane: CadAgentPlane::Modeling,
+        owner_id: created.session_id.clone(),
         external_agent: "codex".to_string(),
         external_thread_id: "external-thread-1".to_string(),
         status: CadAgentThreadStatus::Ready,
@@ -636,6 +640,8 @@ fn duplicate_never_shares_agent_thread_and_archive_requires_terminal_runs() {
     let thread = CadAgentThread {
         id: uuid(),
         session_id: created.session_id.clone(),
+        plane: CadAgentPlane::Modeling,
+        owner_id: created.session_id.clone(),
         external_agent: "codex".to_string(),
         external_thread_id: "external-original".to_string(),
         status: CadAgentThreadStatus::Ready,

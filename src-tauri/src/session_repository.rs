@@ -26,6 +26,8 @@ pub(crate) struct SessionRepositorySnapshot {
     pub agent_runs: HashMap<String, Vec<CadAgentRun>>,
     pub agent_run_events: HashMap<String, Vec<CadAgentRunEvent>>,
     pub agent_transport_events: HashMap<String, Vec<CadAgentTransportEvent>>,
+    pub validation_evaluations: HashMap<String, Vec<CadValidationEvaluation>>,
+    pub validation_evaluation_events: HashMap<String, Vec<CadValidationEvaluationEvent>>,
     pub workflow_plans: HashMap<String, CadWorkflowPlan>,
     pub workflow_outer_iterations: HashMap<String, Vec<CadWorkflowOuterIteration>>,
     pub workflow_pending_vlm: HashMap<String, CadWorkflowPendingVlm>,
@@ -77,6 +79,23 @@ pub(crate) trait SessionRepository: Send + Sync {
         &self,
         event: &CadAgentTransportEvent,
     ) -> SessionRepositoryResult<CadAgentTransportEvent>;
+    #[cfg(test)]
+    fn create_validation_evaluation(
+        &self,
+        evaluation: &CadValidationEvaluation,
+    ) -> SessionRepositoryResult<CadValidationEvaluation>;
+    fn create_next_validation_evaluation(
+        &self,
+        evaluation: &CadValidationEvaluation,
+    ) -> SessionRepositoryResult<CadValidationEvaluation>;
+    fn update_validation_evaluation(
+        &self,
+        evaluation: &CadValidationEvaluation,
+    ) -> SessionRepositoryResult<CadValidationEvaluation>;
+    fn save_validation_evaluation_event(
+        &self,
+        event: &CadValidationEvaluationEvent,
+    ) -> SessionRepositoryResult<CadValidationEvaluationEvent>;
     fn delete_agent_transport_events(&self, event_ids: &[String])
         -> SessionRepositoryResult<usize>;
     fn save_workflow_plan(&self, plan: &CadWorkflowPlan) -> SessionRepositoryResult<()>;
@@ -188,6 +207,59 @@ impl SessionRepository for InMemorySessionRepository {
         Ok(event.clone())
     }
 
+    #[cfg(test)]
+    fn create_validation_evaluation(
+        &self,
+        evaluation: &CadValidationEvaluation,
+    ) -> SessionRepositoryResult<CadValidationEvaluation> {
+        Ok(evaluation.clone())
+    }
+
+    fn create_next_validation_evaluation(
+        &self,
+        evaluation: &CadValidationEvaluation,
+    ) -> SessionRepositoryResult<CadValidationEvaluation> {
+        let mut evaluation = evaluation.clone();
+        let contract = evaluation.input_contract.as_object_mut().ok_or_else(|| {
+            "Validation evaluation input_contract must be a JSON object.".to_string()
+        })?;
+        if contract
+            .get("evaluationId")
+            .is_some_and(|value| value.as_str() != Some(evaluation.id.as_str()))
+        {
+            return Err("Validation evaluation contract evaluationId mismatch.".to_string());
+        }
+        if contract
+            .get("attempt")
+            .is_some_and(|value| value.as_u64() != Some(u64::from(evaluation.attempt)))
+        {
+            return Err("Validation evaluation contract attempt mismatch.".to_string());
+        }
+        contract.insert(
+            "evaluationId".to_string(),
+            Value::String(evaluation.id.clone()),
+        );
+        contract.insert(
+            "attempt".to_string(),
+            Value::Number(serde_json::Number::from(evaluation.attempt)),
+        );
+        Ok(evaluation)
+    }
+
+    fn update_validation_evaluation(
+        &self,
+        evaluation: &CadValidationEvaluation,
+    ) -> SessionRepositoryResult<CadValidationEvaluation> {
+        Ok(evaluation.clone())
+    }
+
+    fn save_validation_evaluation_event(
+        &self,
+        event: &CadValidationEvaluationEvent,
+    ) -> SessionRepositoryResult<CadValidationEvaluationEvent> {
+        Ok(event.clone())
+    }
+
     fn delete_agent_transport_events(
         &self,
         event_ids: &[String],
@@ -280,6 +352,8 @@ impl SessionRepository for SqliteSessionRepository {
         let agent_runs = load_agent_runs(&connection)?;
         let agent_run_events = load_agent_run_events(&connection)?;
         let agent_transport_events = load_agent_transport_events(&connection)?;
+        let validation_evaluations = load_validation_evaluations(&connection)?;
+        let validation_evaluation_events = load_validation_evaluation_events(&connection)?;
         let workflow_plans = load_workflow_plans(&connection)?;
         let workflow_outer_iterations = load_workflow_outer_iterations(&connection)?;
         let workflow_pending_vlm = load_workflow_pending_vlm(&connection)?;
@@ -298,6 +372,8 @@ impl SessionRepository for SqliteSessionRepository {
             agent_runs,
             agent_run_events,
             agent_transport_events,
+            validation_evaluations,
+            validation_evaluation_events,
             workflow_plans,
             workflow_outer_iterations,
             workflow_pending_vlm,
@@ -536,6 +612,39 @@ impl SessionRepository for SqliteSessionRepository {
     ) -> SessionRepositoryResult<CadAgentTransportEvent> {
         let connection = self.connection()?;
         save_agent_transport_event(&connection, event)
+    }
+
+    #[cfg(test)]
+    fn create_validation_evaluation(
+        &self,
+        evaluation: &CadValidationEvaluation,
+    ) -> SessionRepositoryResult<CadValidationEvaluation> {
+        let connection = self.connection()?;
+        create_validation_evaluation(&connection, evaluation)
+    }
+
+    fn create_next_validation_evaluation(
+        &self,
+        evaluation: &CadValidationEvaluation,
+    ) -> SessionRepositoryResult<CadValidationEvaluation> {
+        let mut connection = self.connection()?;
+        create_next_validation_evaluation(&mut connection, evaluation)
+    }
+
+    fn update_validation_evaluation(
+        &self,
+        evaluation: &CadValidationEvaluation,
+    ) -> SessionRepositoryResult<CadValidationEvaluation> {
+        let connection = self.connection()?;
+        update_validation_evaluation(&connection, evaluation)
+    }
+
+    fn save_validation_evaluation_event(
+        &self,
+        event: &CadValidationEvaluationEvent,
+    ) -> SessionRepositoryResult<CadValidationEvaluationEvent> {
+        let connection = self.connection()?;
+        save_validation_evaluation_event(&connection, event)
     }
 
     fn delete_agent_transport_events(

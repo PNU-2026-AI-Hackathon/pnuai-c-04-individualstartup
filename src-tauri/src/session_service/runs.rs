@@ -449,6 +449,78 @@ impl SessionService {
         Ok(snapshot)
     }
 
+    pub fn prepare_agent_run_refinement_turn(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        evaluation_id: &str,
+    ) -> Result<CadAgentRun, String> {
+        let (run, snapshot) = {
+            let mut state = self.inner.lock().map_err(lock_error)?;
+            let evaluation = state
+                .validation_evaluations
+                .get(session_id)
+                .into_iter()
+                .flatten()
+                .find(|evaluation| evaluation.id == evaluation_id)
+                .ok_or_else(|| format!("Validation evaluation not found: {evaluation_id}"))?
+                .clone();
+            if evaluation.run_id != run_id
+                || evaluation.status != CadValidationEvaluationStatus::Succeeded
+                || evaluation.passed != Some(false)
+            {
+                return Err(format!(
+                    "Only a succeeded rejecting evaluation can start refinement: {evaluation_id}"
+                ));
+            }
+            let evaluation_revision_id = evaluation.revision_id.clone();
+            let now = timestamp();
+            let run = require_agent_run_mut(&mut state, session_id, run_id)?;
+            if matches!(
+                run.status,
+                CadAgentRunStatus::Completed
+                    | CadAgentRunStatus::Failed
+                    | CadAgentRunStatus::Cancelled
+            ) {
+                return Err(format!(
+                    "Terminal agent run {run_id} cannot start refinement."
+                ));
+            }
+            run.status = CadAgentRunStatus::Running;
+            run.active_step = Some("Refining after validation".to_string());
+            run.external_turn_id = None;
+            run.connection_generation = None;
+            run.recovery_status = CadAgentRecoveryStatus::None;
+            run.error = None;
+            run.completed_at = None;
+            run.updated_at = now.clone();
+            let run = run.clone();
+            self.repository.save_agent_run(&run)?;
+            let event = append_agent_run_event(
+                &mut state,
+                session_id,
+                run_id,
+                Some(evaluation_revision_id),
+                CadAgentRunEventType::AgentRunUpdated,
+                json!({
+                    "status": "running",
+                    "activeStep": "Refining after validation",
+                    "evaluationId": evaluation_id,
+                    "nextAction": "outer_loop_refine_source",
+                    "externalTurnBindingCleared": true
+                }),
+                None,
+            );
+            persist_agent_run_event(self.repository.as_ref(), &mut state, session_id, event)?;
+            let session = require_session_mut(&mut state, session_id)?;
+            session.updated_at = now;
+            let snapshot = build_state(&state, session_id)?;
+            (run, snapshot)
+        };
+        self.emit(CadBridgeEventType::AgentRunUpdated, session_id, snapshot);
+        Ok(run)
+    }
+
     pub fn save_workflow_plan(
         &self,
         session_id: &str,

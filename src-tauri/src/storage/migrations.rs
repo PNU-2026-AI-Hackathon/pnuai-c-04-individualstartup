@@ -2,7 +2,7 @@ use super::{sha256_hex, StorageResult};
 use rusqlite::{params, Connection};
 
 #[cfg(test)]
-pub(super) const SCHEMA_VERSION: i64 = 6;
+pub(super) const SCHEMA_VERSION: i64 = 7;
 
 pub fn run_migrations(connection: &mut Connection) -> StorageResult<()> {
     connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -594,6 +594,265 @@ pub(super) const MIGRATIONS: &[Migration] = &[
       ALTER TABLE workflow_pending_vlm ADD COLUMN dfm_report_json TEXT;
       CREATE INDEX idx_artifacts_revision_hash ON artifacts(revision_hash);
       CREATE INDEX idx_artifacts_profile_hash ON artifacts(profile_hash);
+    "#,
+    },
+    Migration {
+        version: 7,
+        name: "separate_validation_plane_persistence",
+        sql: r#"
+      ALTER TABLE agent_threads
+        ADD COLUMN plane TEXT NOT NULL DEFAULT 'modeling'
+          CHECK(plane IN ('modeling', 'validation'));
+      ALTER TABLE agent_threads ADD COLUMN owner_id TEXT;
+      UPDATE agent_threads SET plane = 'modeling', owner_id = session_id;
+
+      DROP INDEX agent_threads_active_session_agent_uq;
+      CREATE UNIQUE INDEX agent_threads_active_session_agent_plane_uq
+        ON agent_threads(session_id, external_agent, plane)
+        WHERE archived_at IS NULL AND replaced_by_id IS NULL;
+
+      DROP TRIGGER agent_runs_thread_session_insert;
+      DROP TRIGGER agent_runs_thread_session_update;
+
+      CREATE TRIGGER agent_threads_scope_insert
+      BEFORE INSERT ON agent_threads
+      WHEN NEW.owner_id IS NULL OR trim(NEW.owner_id) = ''
+        OR (NEW.plane = 'modeling' AND NEW.owner_id <> NEW.session_id)
+      BEGIN
+        SELECT RAISE(ABORT, 'agent thread plane/owner scope is invalid');
+      END;
+
+      CREATE TRIGGER agent_threads_scope_update
+      BEFORE UPDATE OF session_id, plane, owner_id ON agent_threads
+      WHEN NEW.owner_id IS NULL OR trim(NEW.owner_id) = ''
+        OR (NEW.plane = 'modeling' AND NEW.owner_id <> NEW.session_id)
+      BEGIN
+        SELECT RAISE(ABORT, 'agent thread plane/owner scope is invalid');
+      END;
+
+      CREATE TRIGGER agent_threads_replacement_scope_insert
+      BEFORE INSERT ON agent_threads
+      WHEN NEW.replaced_by_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM agent_threads replacement
+        WHERE replacement.id = NEW.replaced_by_id
+          AND replacement.session_id = NEW.session_id
+          AND replacement.external_agent = NEW.external_agent
+          AND replacement.plane = NEW.plane
+          AND replacement.owner_id = NEW.owner_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'replacement agent thread scope mismatch');
+      END;
+
+      CREATE TRIGGER agent_threads_replacement_scope_update
+      BEFORE UPDATE OF replaced_by_id, session_id, external_agent, plane, owner_id ON agent_threads
+      WHEN NEW.replaced_by_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM agent_threads replacement
+        WHERE replacement.id = NEW.replaced_by_id
+          AND replacement.session_id = NEW.session_id
+          AND replacement.external_agent = NEW.external_agent
+          AND replacement.plane = NEW.plane
+          AND replacement.owner_id = NEW.owner_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'replacement agent thread scope mismatch');
+      END;
+
+      CREATE TRIGGER agent_runs_thread_session_insert
+      BEFORE INSERT ON agent_runs
+      WHEN NEW.agent_thread_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM agent_threads
+        WHERE id = NEW.agent_thread_id
+          AND session_id = NEW.session_id
+          AND external_agent IS NEW.external_agent
+          AND external_thread_id IS NEW.external_thread_id
+          AND plane = 'modeling'
+          AND owner_id = NEW.session_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'agent run requires matching modeling thread scope');
+      END;
+
+      CREATE TRIGGER agent_runs_thread_session_update
+      BEFORE UPDATE OF agent_thread_id, session_id, external_agent, external_thread_id
+      ON agent_runs
+      WHEN NEW.agent_thread_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM agent_threads
+        WHERE id = NEW.agent_thread_id
+          AND session_id = NEW.session_id
+          AND external_agent IS NEW.external_agent
+          AND external_thread_id IS NEW.external_thread_id
+          AND plane = 'modeling'
+          AND owner_id = NEW.session_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'agent run requires matching modeling thread scope');
+      END;
+
+      CREATE TABLE validation_evaluations (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        revision_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('vlm')),
+        attempt INTEGER NOT NULL CHECK(attempt >= 1),
+        status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'succeeded', 'failed')),
+        evaluator_thread_id TEXT,
+        external_turn_id TEXT,
+        input_contract_json TEXT NOT NULL CHECK(json_valid(input_contract_json)),
+        report_json TEXT CHECK(report_json IS NULL OR json_valid(report_json)),
+        passed INTEGER CHECK(passed IS NULL OR passed IN (0, 1)),
+        score REAL,
+        pass_threshold REAL NOT NULL CHECK(pass_threshold >= 0.0 AND pass_threshold <= 1.0),
+        error TEXT,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE,
+        FOREIGN KEY(revision_id) REFERENCES revisions(id) ON DELETE CASCADE,
+        FOREIGN KEY(artifact_id) REFERENCES artifacts(id) ON DELETE CASCADE,
+        FOREIGN KEY(evaluator_thread_id) REFERENCES agent_threads(id),
+        UNIQUE(run_id, revision_id, artifact_id, kind, attempt),
+        CHECK(
+          (status = 'queued'
+            AND evaluator_thread_id IS NULL AND external_turn_id IS NULL
+            AND started_at IS NULL AND completed_at IS NULL
+            AND report_json IS NULL AND passed IS NULL AND score IS NULL AND error IS NULL)
+          OR
+          (status = 'running'
+            AND evaluator_thread_id IS NOT NULL AND external_turn_id IS NOT NULL
+            AND trim(external_turn_id) <> ''
+            AND started_at IS NOT NULL AND completed_at IS NULL
+            AND report_json IS NULL AND passed IS NULL AND score IS NULL AND error IS NULL)
+          OR
+          (status = 'succeeded'
+            AND evaluator_thread_id IS NOT NULL AND external_turn_id IS NOT NULL
+            AND trim(external_turn_id) <> ''
+            AND started_at IS NOT NULL AND completed_at IS NOT NULL
+            AND report_json IS NOT NULL AND passed IS NOT NULL AND score IS NOT NULL
+            AND score >= 0.0 AND score <= 1.0 AND error IS NULL
+            AND (passed = 0 OR score >= pass_threshold))
+          OR
+          (status = 'failed'
+            AND completed_at IS NOT NULL AND error IS NOT NULL AND trim(error) <> ''
+            AND report_json IS NULL AND passed IS NULL AND score IS NULL
+            AND (external_turn_id IS NULL OR (evaluator_thread_id IS NOT NULL AND trim(external_turn_id) <> '')))
+        )
+      );
+
+      CREATE TRIGGER validation_evaluations_graph_insert
+      BEFORE INSERT ON validation_evaluations
+      WHEN NOT EXISTS (
+          SELECT 1 FROM agent_runs
+          WHERE id = NEW.run_id AND session_id = NEW.session_id
+            AND output_revision_id = NEW.revision_id
+        )
+        OR NOT EXISTS (
+          SELECT 1 FROM revisions
+          WHERE id = NEW.revision_id AND session_id = NEW.session_id
+        )
+        OR NOT EXISTS (
+          SELECT 1 FROM artifacts
+          WHERE id = NEW.artifact_id AND session_id = NEW.session_id
+            AND revision_id = NEW.revision_id AND deleted_at IS NULL
+        )
+        OR (NEW.evaluator_thread_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM agent_threads
+          WHERE id = NEW.evaluator_thread_id AND session_id = NEW.session_id
+            AND plane = 'validation' AND owner_id = NEW.id
+        ))
+      BEGIN
+        SELECT RAISE(ABORT, 'validation evaluation graph mismatch');
+      END;
+
+      CREATE TRIGGER validation_evaluations_graph_update
+      BEFORE UPDATE OF evaluator_thread_id, external_turn_id ON validation_evaluations
+      WHEN NEW.evaluator_thread_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM agent_threads
+        WHERE id = NEW.evaluator_thread_id AND session_id = NEW.session_id
+          AND plane = 'validation' AND owner_id = NEW.id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'validation evaluation thread scope mismatch');
+      END;
+
+      CREATE TRIGGER validation_evaluations_immutable_update
+      BEFORE UPDATE OF session_id, run_id, revision_id, artifact_id, kind, attempt,
+                       input_contract_json, pass_threshold, created_at
+      ON validation_evaluations
+      BEGIN
+        SELECT RAISE(ABORT, 'validation evaluation attempt fields are immutable');
+      END;
+
+      CREATE TRIGGER validation_evaluations_status_transition
+      BEFORE UPDATE OF status ON validation_evaluations
+      WHEN NOT (
+        (OLD.status = 'queued' AND NEW.status IN ('running', 'failed'))
+        OR (OLD.status = 'running' AND NEW.status IN ('succeeded', 'failed'))
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'invalid validation evaluation status transition');
+      END;
+
+      CREATE TRIGGER validation_thread_owner_insert
+      BEFORE INSERT ON agent_threads
+      WHEN NEW.plane = 'validation' AND NOT EXISTS (
+        SELECT 1 FROM validation_evaluations
+        WHERE id = NEW.owner_id AND session_id = NEW.session_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'validation thread owner evaluation mismatch');
+      END;
+
+      CREATE TRIGGER validation_thread_owner_update
+      BEFORE UPDATE OF session_id, plane, owner_id ON agent_threads
+      WHEN NEW.plane = 'validation' AND NOT EXISTS (
+        SELECT 1 FROM validation_evaluations
+        WHERE id = NEW.owner_id AND session_id = NEW.session_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'validation thread owner evaluation mismatch');
+      END;
+
+      CREATE TABLE validation_evaluation_events (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        evaluation_id TEXT NOT NULL,
+        evaluator_thread_id TEXT NOT NULL,
+        external_turn_id TEXT,
+        external_item_id TEXT,
+        method TEXT NOT NULL CHECK(trim(method) <> ''),
+        sequence INTEGER NOT NULL CHECK(sequence >= 0),
+        payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY(evaluation_id) REFERENCES validation_evaluations(id) ON DELETE CASCADE,
+        FOREIGN KEY(evaluator_thread_id) REFERENCES agent_threads(id),
+        UNIQUE(evaluation_id, sequence)
+      );
+
+      CREATE TRIGGER validation_evaluation_events_graph_insert
+      BEFORE INSERT ON validation_evaluation_events
+      WHEN NOT EXISTS (
+        SELECT 1 FROM validation_evaluations evaluation
+        WHERE evaluation.id = NEW.evaluation_id
+          AND evaluation.session_id = NEW.session_id
+          AND evaluation.evaluator_thread_id = NEW.evaluator_thread_id
+          AND (NEW.external_turn_id IS NULL OR evaluation.external_turn_id = NEW.external_turn_id)
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'validation evaluation event graph mismatch');
+      END;
+
+      CREATE INDEX idx_validation_evaluations_session_created_at
+        ON validation_evaluations(session_id, created_at);
+      CREATE INDEX idx_validation_evaluations_recovery
+        ON validation_evaluations(status, created_at)
+        WHERE status IN ('queued', 'running');
+      CREATE INDEX idx_validation_evaluation_events_thread_turn
+        ON validation_evaluation_events(evaluator_thread_id, external_turn_id, sequence);
     "#,
     },
 ];

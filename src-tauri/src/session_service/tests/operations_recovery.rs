@@ -10,6 +10,8 @@ fn test_thread(session_id: &str, id: &str, external_thread_id: &str) -> CadAgent
     CadAgentThread {
         id: id.to_string(),
         session_id: session_id.to_string(),
+        plane: CadAgentPlane::Modeling,
+        owner_id: session_id.to_string(),
         external_agent: "codex".to_string(),
         external_thread_id: external_thread_id.to_string(),
         status: CadAgentThreadStatus::Ready,
@@ -347,7 +349,14 @@ fn thread_replacement_is_atomic_persists_reason_and_allows_only_named_recovery_r
         .is_err());
     assert_eq!(
         service
-            .get_active_agent_thread(&created.session_id, "codex")
+            .get_active_agent_thread(
+                &ThreadScope {
+                    session_id: created.session_id.clone(),
+                    plane: CadAgentPlane::Modeling,
+                    owner_id: created.session_id.clone(),
+                },
+                "codex",
+            )
             .unwrap()
             .unwrap()
             .id,
@@ -400,7 +409,14 @@ fn thread_replacement_is_atomic_persists_reason_and_allows_only_named_recovery_r
     assert_eq!(threads.len(), 2);
     assert_eq!(
         reloaded
-            .get_active_agent_thread(&created.session_id, "codex")
+            .get_active_agent_thread(
+                &ThreadScope {
+                    session_id: created.session_id.clone(),
+                    plane: CadAgentPlane::Modeling,
+                    owner_id: created.session_id.clone(),
+                },
+                "codex",
+            )
             .unwrap()
             .unwrap()
             .id,
