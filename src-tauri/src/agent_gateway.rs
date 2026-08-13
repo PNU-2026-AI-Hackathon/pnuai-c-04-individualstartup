@@ -830,6 +830,7 @@ fn submit_inline_vlm_judge_report(
             iteration: next_iteration,
             revision_id: revision_id.clone(),
             structural_report,
+            dfm_report: pending.dfm_report.clone(),
             vlm_report: Some(report),
             failure_report,
             passed,

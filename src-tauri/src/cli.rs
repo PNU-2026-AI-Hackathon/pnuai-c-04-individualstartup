@@ -21,8 +21,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use structural::{
-    evaluate_structural_for_revision, structural_failure_report, validate_structural_report,
-    StructuralEvaluation,
+    evaluate_structural_for_revision, validate_structural_report, StructuralEvaluation,
 };
 use support::*;
 use vlm::{build_vlm_contract, render_vlm_images_for_artifact, validate_vlm_contract};

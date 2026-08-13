@@ -1,0 +1,635 @@
+use crate::protocol::{CadArtifact, CadArtifactKind, CadDiagnostics, PersistRuntimeArtifactInput};
+use crate::session_service::SessionService;
+use crate::storage;
+use base64::Engine;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use uuid::Uuid;
+
+const SETTINGS_DIRECTORY: &str = "dfm";
+const SETTINGS_FILE: &str = "settings.json";
+const PROFILE_FILE: &str = "profile.ini";
+const DEFAULT_PROFILE: &str = include_str!("../../profile.ini");
+const REQUIRED_PROFILE_KEYS: &[&str] = &[
+    "printer_technology",
+    "nozzle_diameter",
+    "filament_diameter",
+    "layer_height",
+    "gcode_flavor",
+];
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathInput {
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileContentsInput {
+    pub contents: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportProfileInput {
+    pub path: String,
+    pub contents: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutableValidation {
+    pub path: String,
+    pub version: String,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileValidation {
+    pub hash: String,
+    pub key_settings: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DfmProfileSettings {
+    pub contents: String,
+    pub hash: String,
+    pub key_settings: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DfmSettings {
+    pub prusaslicer_executable: Option<String>,
+    pub executable_validation: Option<ExecutableValidation>,
+    pub profile: DfmProfileSettings,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedProfile {
+    pub contents: String,
+    pub source_path: String,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportedProfile {
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredSettings {
+    prusaslicer_executable: Option<String>,
+    executable_validation: Option<ExecutableValidation>,
+}
+
+#[derive(Debug)]
+pub(crate) struct DfmEvaluation {
+    pub report: Value,
+    pub passed: bool,
+    pub gcode_artifact: CadArtifact,
+    pub report_artifact: CadArtifact,
+    pub stl_artifact: CadArtifact,
+}
+
+pub fn get_settings(app_data_dir: &Path) -> Result<DfmSettings, String> {
+    ensure_profile_exists(app_data_dir)?;
+    let stored = read_stored_settings(app_data_dir)?;
+    let contents = fs::read_to_string(profile_path(app_data_dir))
+        .map_err(|error| format!("Failed to read the saved DFM profile: {error}"))?;
+    let validation = validate_profile(&contents)?;
+    Ok(DfmSettings {
+        prusaslicer_executable: stored.prusaslicer_executable,
+        executable_validation: stored.executable_validation,
+        profile: DfmProfileSettings {
+            contents,
+            hash: validation.hash,
+            key_settings: validation.key_settings,
+        },
+    })
+}
+
+pub fn validate_executable(path: &str) -> Result<ExecutableValidation, String> {
+    let resolved = resolve_executable_path(Path::new(path))?;
+    if !resolved.is_absolute() {
+        return Err("PrusaSlicer executable path must be absolute.".to_string());
+    }
+    let metadata = fs::metadata(&resolved).map_err(|error| {
+        format!(
+            "PrusaSlicer executable does not exist at {}: {error}",
+            resolved.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "PrusaSlicer executable path is not a file: {}",
+            resolved.display()
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err(format!(
+                "PrusaSlicer executable is not executable: {}",
+                resolved.display()
+            ));
+        }
+    }
+    let output = Command::new(&resolved)
+        .arg("--version")
+        .output()
+        .map_err(|error| format!("Failed to execute PrusaSlicer --version: {error}"))?;
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|error| format!("PrusaSlicer --version stdout is not UTF-8: {error}"))?;
+    let stderr = String::from_utf8(output.stderr)
+        .map_err(|error| format!("PrusaSlicer --version stderr is not UTF-8: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "PrusaSlicer --version exited with status {}. stdout: {} stderr: {}",
+            output.status,
+            stdout.trim(),
+            stderr.trim()
+        ));
+    }
+    let version = stdout
+        .lines()
+        .chain(stderr.lines())
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .ok_or_else(|| "PrusaSlicer --version returned no version text.".to_string())?
+        .to_string();
+    if !version.to_ascii_lowercase().contains("prusa") {
+        return Err(format!(
+            "Configured executable is not a compatible PrusaSlicer binary: {version}"
+        ));
+    }
+    Ok(ExecutableValidation {
+        path: resolved.to_string_lossy().to_string(),
+        version,
+    })
+}
+
+pub fn save_executable(app_data_dir: &Path, path: &str) -> Result<ExecutableValidation, String> {
+    let validation = validate_executable(path)?;
+    let stored = StoredSettings {
+        prusaslicer_executable: Some(validation.path.clone()),
+        executable_validation: Some(validation.clone()),
+    };
+    write_stored_settings(app_data_dir, &stored)?;
+    Ok(validation)
+}
+
+pub fn validate_profile(contents: &str) -> Result<ProfileValidation, String> {
+    if contents.trim().is_empty() {
+        return Err("DFM profile must not be empty.".to_string());
+    }
+    let mut entries = BTreeMap::new();
+    for (index, line) in contents.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty()
+            || line.starts_with('#')
+            || line.starts_with(';')
+            || line.starts_with('[')
+        {
+            continue;
+        }
+        let (key, value) = line.split_once('=').ok_or_else(|| {
+            format!(
+                "Invalid DFM profile syntax at line {}: expected key = value.",
+                index + 1
+            )
+        })?;
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(format!(
+                "Invalid DFM profile syntax at line {}: key is empty.",
+                index + 1
+            ));
+        }
+        if entries
+            .insert(key.to_string(), value.trim().to_string())
+            .is_some()
+        {
+            return Err(format!("DFM profile contains duplicate key {key:?}."));
+        }
+    }
+    let mut key_settings = BTreeMap::new();
+    for key in REQUIRED_PROFILE_KEYS {
+        let value = entries
+            .get(*key)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("DFM profile is missing required setting {key}."))?;
+        key_settings.insert((*key).to_string(), value.clone());
+    }
+    if key_settings.get("printer_technology").map(String::as_str) != Some("FFF") {
+        return Err("DFM profile printer_technology must be FFF.".to_string());
+    }
+    for key in ["nozzle_diameter", "filament_diameter", "layer_height"] {
+        let value = key_settings[key]
+            .parse::<f64>()
+            .map_err(|error| format!("DFM profile {key} must be numeric: {error}"))?;
+        if !value.is_finite() || value <= 0.0 {
+            return Err(format!("DFM profile {key} must be greater than zero."));
+        }
+    }
+    Ok(ProfileValidation {
+        hash: storage::sha256_hex(contents.as_bytes()),
+        key_settings,
+    })
+}
+
+pub fn save_profile(app_data_dir: &Path, contents: &str) -> Result<DfmProfileSettings, String> {
+    let validation = validate_profile(contents)?;
+    fs::create_dir_all(settings_dir(app_data_dir))
+        .map_err(|error| format!("Failed to create DFM settings directory: {error}"))?;
+    fs::write(profile_path(app_data_dir), contents)
+        .map_err(|error| format!("Failed to save DFM profile: {error}"))?;
+    Ok(DfmProfileSettings {
+        contents: contents.to_string(),
+        hash: validation.hash,
+        key_settings: validation.key_settings,
+    })
+}
+
+pub fn restore_default_profile(app_data_dir: &Path) -> Result<DfmProfileSettings, String> {
+    save_profile(app_data_dir, DEFAULT_PROFILE)
+}
+
+pub fn import_profile(path: &str) -> Result<ImportedProfile, String> {
+    let path = require_absolute_file(path, "DFM profile import")?;
+    let contents = fs::read_to_string(&path)
+        .map_err(|error| format!("Failed to import DFM profile {}: {error}", path.display()))?;
+    validate_profile(&contents)?;
+    Ok(ImportedProfile {
+        contents,
+        source_path: path.to_string_lossy().to_string(),
+    })
+}
+
+pub fn export_profile(path: &str, contents: &str) -> Result<ExportedProfile, String> {
+    validate_profile(contents)?;
+    let path = PathBuf::from(path);
+    if !path.is_absolute() {
+        return Err("DFM profile export path must be absolute.".to_string());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create DFM profile export directory: {error}"))?;
+    }
+    fs::write(&path, contents)
+        .map_err(|error| format!("Failed to export DFM profile {}: {error}", path.display()))?;
+    Ok(ExportedProfile {
+        path: path.to_string_lossy().to_string(),
+    })
+}
+
+pub(crate) fn evaluate(
+    service: &SessionService,
+    app_data_dir: &Path,
+    session_id: &str,
+    run_id: &str,
+    revision_id: &str,
+    stl_artifact: &CadArtifact,
+    executable_override: Option<&str>,
+    profile_override: Option<&str>,
+) -> Result<DfmEvaluation, String> {
+    let (executable, profile_contents, profile_source) =
+        if executable_override.is_some() || profile_override.is_some() {
+            let settings = get_settings(app_data_dir)?;
+            let executable = executable_override
+                .map(str::to_string)
+                .or(settings.prusaslicer_executable)
+                .ok_or_else(|| "PrusaSlicer executable is not configured.".to_string())?;
+            let (contents, source) = if let Some(path) = profile_override {
+                let imported = import_profile(path)?;
+                (imported.contents, imported.source_path)
+            } else {
+                (
+                    settings.profile.contents,
+                    profile_path(app_data_dir).to_string_lossy().to_string(),
+                )
+            };
+            (executable, contents, source)
+        } else {
+            let settings = get_settings(app_data_dir)?;
+            let executable = settings
+                .prusaslicer_executable
+                .ok_or_else(|| "PrusaSlicer executable is not configured.".to_string())?;
+            (
+                executable,
+                settings.profile.contents,
+                profile_path(app_data_dir).to_string_lossy().to_string(),
+            )
+        };
+    let executable = validate_executable(&executable)?;
+    let profile = validate_profile(&profile_contents)?;
+    let stl_path = stl_artifact
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("path"))
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .ok_or_else(|| "Final STL artifact metadata is missing an absolute path.".to_string())?;
+    if !stl_path.is_absolute() || !stl_path.is_file() {
+        return Err(format!(
+            "Final STL artifact is unavailable at {}.",
+            stl_path.display()
+        ));
+    }
+
+    let work_dir = app_data_dir
+        .join("dfm-work")
+        .join(Uuid::new_v4().to_string());
+    fs::create_dir_all(&work_dir)
+        .map_err(|error| format!("Failed to create PrusaSlicer work directory: {error}"))?;
+    let work_stl = work_dir.join("model.stl");
+    let work_profile = work_dir.join(PROFILE_FILE);
+    fs::copy(&stl_path, &work_stl)
+        .map_err(|error| format!("Failed to stage STL for PrusaSlicer: {error}"))?;
+    fs::write(&work_profile, &profile_contents)
+        .map_err(|error| format!("Failed to stage DFM profile for PrusaSlicer: {error}"))?;
+
+    let output = Command::new(&executable.path)
+        .arg("--load")
+        .arg(&work_profile)
+        .arg("--export-gcode")
+        .arg(&work_stl)
+        .current_dir(&work_dir)
+        .output()
+        .map_err(|error| format!("Failed to execute PrusaSlicer: {error}"))?;
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|error| format!("PrusaSlicer stdout is not UTF-8: {error}"))?;
+    let stderr = String::from_utf8(output.stderr)
+        .map_err(|error| format!("PrusaSlicer stderr is not UTF-8: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "PrusaSlicer exited with status {}. stdout: {} stderr: {}",
+            output.status,
+            stdout.trim(),
+            stderr.trim()
+        ));
+    }
+    let gcode_path = work_stl.with_extension("gcode");
+    let gcode = fs::read(&gcode_path).map_err(|error| {
+        format!(
+            "PrusaSlicer completed without producing G-code at {}: {error}",
+            gcode_path.display()
+        )
+    })?;
+    if gcode.is_empty() {
+        return Err("PrusaSlicer produced an empty G-code file.".to_string());
+    }
+
+    let diagnostics = parse_diagnostics(&stdout, &stderr);
+    let passed = !diagnostics.iter().any(|item| item["severity"] == "error");
+    let gcode_metadata = json!({
+        "contractType": "cadastrophe.gcode_artifact.v1",
+        "runId": run_id,
+        "revisionId": revision_id,
+        "sourceArtifactId": stl_artifact.id,
+        "profileHash": profile.hash,
+        "profileSource": profile_source,
+        "prusaslicerVersion": executable.version
+    });
+    let gcode_artifact = service
+        .persist_runtime_artifact(PersistRuntimeArtifactInput {
+            session_id: session_id.to_string(),
+            revision_id: revision_id.to_string(),
+            kind: CadArtifactKind::Gcode,
+            format: "gcode".to_string(),
+            contents_base64: base64::engine::general_purpose::STANDARD.encode(&gcode),
+            diagnostics: CadDiagnostics {
+                ok: true,
+                elapsed_ms: 0,
+                items: Vec::new(),
+            },
+            metadata: object(gcode_metadata)?,
+        })
+        .map_err(|error| format!("Failed to persist generated G-code: {error}"))?
+        .artifact;
+    let stl_artifact = service
+        .update_artifact_profile_hash(session_id, &stl_artifact.id, &profile.hash)
+        .map_err(|error| format!("Failed to link STL to DFM profile: {error}"))?;
+
+    let checks = vec![
+        json!({"name":"prusaslicer_execution","passed":true,"severity":"info","message":"PrusaSlicer exited successfully."}),
+        json!({"name":"gcode_generated","passed":true,"severity":"info","message":format!("Generated {} bytes of G-code.", gcode.len())}),
+        json!({"name":"slicer_diagnostics","passed":passed,"severity":if passed {"info"} else {"error"},"message":if passed {"No error diagnostics were emitted."} else {"PrusaSlicer emitted error diagnostics."}}),
+    ];
+    let report = json!({
+        "contractType": "cadastrophe.dfm_report.v1",
+        "runId": run_id,
+        "revisionId": revision_id,
+        "artifactId": stl_artifact.id,
+        "passed": passed,
+        "checks": checks,
+        "diagnostics": diagnostics,
+        "profileHash": profile.hash,
+        "keySettings": profile.key_settings,
+        "gcodeArtifactId": gcode_artifact.id,
+        "process": {"exitCode": output.status.code(), "stdout": stdout, "stderr": stderr},
+        "prusaslicer": {"path": executable.path, "version": executable.version}
+    });
+    validate_report(&report, run_id, revision_id)?;
+    let report_bytes = serde_json::to_vec_pretty(&report)
+        .map_err(|error| format!("Failed to serialize DFM report: {error}"))?;
+    let report_artifact = service
+        .persist_runtime_artifact(PersistRuntimeArtifactInput {
+            session_id: session_id.to_string(),
+            revision_id: revision_id.to_string(),
+            kind: CadArtifactKind::Metadata,
+            format: "json".to_string(),
+            contents_base64: base64::engine::general_purpose::STANDARD.encode(report_bytes),
+            diagnostics: CadDiagnostics {
+                ok: true,
+                elapsed_ms: 0,
+                items: Vec::new(),
+            },
+            metadata: object(json!({
+                "contractType": "cadastrophe.dfm_report_artifact.v1",
+                "runId": run_id,
+                "sourceArtifactId": stl_artifact.id,
+                "gcodeArtifactId": gcode_artifact.id,
+                "profileHash": profile.hash
+            }))?,
+        })
+        .map_err(|error| format!("Failed to persist DFM report: {error}"))?
+        .artifact;
+    Ok(DfmEvaluation {
+        report,
+        passed,
+        gcode_artifact,
+        report_artifact,
+        stl_artifact,
+    })
+}
+
+pub(crate) fn validate_report(
+    report: &Value,
+    run_id: &str,
+    revision_id: &str,
+) -> Result<(), String> {
+    if report.get("contractType").and_then(Value::as_str) != Some("cadastrophe.dfm_report.v1") {
+        return Err("DFM report contractType must be cadastrophe.dfm_report.v1.".to_string());
+    }
+    if report.get("runId").and_then(Value::as_str) != Some(run_id)
+        || report.get("revisionId").and_then(Value::as_str) != Some(revision_id)
+    {
+        return Err("DFM report runId or revisionId does not match finalization.".to_string());
+    }
+    if report.get("passed").and_then(Value::as_bool).is_none()
+        || report.get("checks").and_then(Value::as_array).is_none()
+        || report
+            .get("diagnostics")
+            .and_then(Value::as_array)
+            .is_none()
+        || report.get("profileHash").and_then(Value::as_str).is_none()
+        || report
+            .get("gcodeArtifactId")
+            .and_then(Value::as_str)
+            .is_none()
+    {
+        return Err("DFM report is missing required fields.".to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn failure_report(structural_report: &Value, dfm_report: &Value) -> Value {
+    json!({
+        "contractType": "cadastrophe.failure_report.v1",
+        "reason": "validation_failed",
+        "structuralPassed": structural_report.get("passed").and_then(Value::as_bool).unwrap_or(false),
+        "dfmPassed": dfm_report.get("passed").and_then(Value::as_bool).unwrap_or(false),
+        "structuralReport": structural_report,
+        "dfmReport": dfm_report,
+        "nextAction": "outer_loop_refine_source"
+    })
+}
+
+fn parse_diagnostics(stdout: &str, stderr: &str) -> Vec<Value> {
+    stdout
+        .lines()
+        .map(|line| ("stdout", line))
+        .chain(stderr.lines().map(|line| ("stderr", line)))
+        .filter_map(|(stream, line)| {
+            let message = line.trim();
+            if message.is_empty() {
+                return None;
+            }
+            let lower = message.to_ascii_lowercase();
+            let severity = if lower.contains("error") || lower.contains("fatal") {
+                "error"
+            } else if lower.contains("warning") || lower.contains("warn:") {
+                "warning"
+            } else {
+                return None;
+            };
+            Some(json!({"severity":severity,"stream":stream,"message":message}))
+        })
+        .collect()
+}
+
+fn object(value: Value) -> Result<Map<String, Value>, String> {
+    value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "Artifact metadata must be a JSON object.".to_string())
+}
+
+fn resolve_executable_path(path: &Path) -> Result<PathBuf, String> {
+    #[cfg(target_os = "macos")]
+    if path.extension().and_then(|extension| extension.to_str()) == Some("app") {
+        let candidate = path.join("Contents/MacOS/PrusaSlicer");
+        if !candidate.is_file() {
+            return Err(format!(
+                "Selected .app does not contain Contents/MacOS/PrusaSlicer: {}",
+                path.display()
+            ));
+        }
+        return Ok(candidate);
+    }
+    Ok(path.to_path_buf())
+}
+
+fn require_absolute_file(path: &str, label: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(path);
+    if !path.is_absolute() {
+        return Err(format!("{label} path must be absolute."));
+    }
+    if !path.is_file() {
+        return Err(format!("{label} file does not exist: {}", path.display()));
+    }
+    Ok(path)
+}
+
+fn settings_dir(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join(SETTINGS_DIRECTORY)
+}
+fn settings_path(app_data_dir: &Path) -> PathBuf {
+    settings_dir(app_data_dir).join(SETTINGS_FILE)
+}
+fn profile_path(app_data_dir: &Path) -> PathBuf {
+    settings_dir(app_data_dir).join(PROFILE_FILE)
+}
+
+fn ensure_profile_exists(app_data_dir: &Path) -> Result<(), String> {
+    if !profile_path(app_data_dir).exists() {
+        restore_default_profile(app_data_dir)?;
+    }
+    Ok(())
+}
+
+fn read_stored_settings(app_data_dir: &Path) -> Result<StoredSettings, String> {
+    let path = settings_path(app_data_dir);
+    if !path.exists() {
+        return Ok(StoredSettings::default());
+    }
+    let bytes = fs::read(&path)
+        .map_err(|error| format!("Failed to read DFM settings {}: {error}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("DFM settings file is invalid JSON: {error}"))
+}
+
+fn write_stored_settings(app_data_dir: &Path, settings: &StoredSettings) -> Result<(), String> {
+    fs::create_dir_all(settings_dir(app_data_dir))
+        .map_err(|error| format!("Failed to create DFM settings directory: {error}"))?;
+    let bytes = serde_json::to_vec_pretty(settings)
+        .map_err(|error| format!("Failed to serialize DFM settings: {error}"))?;
+    fs::write(settings_path(app_data_dir), bytes)
+        .map_err(|error| format!("Failed to save DFM settings: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_validation_is_stable_and_extracts_key_settings() {
+        let first = validate_profile(DEFAULT_PROFILE).unwrap();
+        let second = validate_profile(DEFAULT_PROFILE).unwrap();
+        assert_eq!(first.hash, second.hash);
+        assert_eq!(first.hash.len(), 64);
+        assert_eq!(first.key_settings["printer_technology"], "FFF");
+    }
+
+    #[test]
+    fn profile_validation_rejects_missing_required_setting() {
+        let error = validate_profile("printer_technology = FFF\n").unwrap_err();
+        assert!(error.contains("nozzle_diameter"));
+    }
+
+    #[test]
+    fn profile_validation_rejects_malformed_line() {
+        let error = validate_profile("not-an-assignment\n").unwrap_err();
+        assert!(error.contains("line 1"));
+    }
+}

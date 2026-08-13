@@ -4,6 +4,7 @@ pub mod agent_thread_manager;
 pub mod cli;
 pub mod codex_agent_adapter;
 pub mod codex_process_client;
+pub mod dfm;
 pub mod notification_router;
 pub mod protocol;
 mod runtime;

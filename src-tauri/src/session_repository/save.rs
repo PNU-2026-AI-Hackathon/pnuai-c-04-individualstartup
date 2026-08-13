@@ -15,13 +15,41 @@ pub(super) fn save_artifact_manifest(
         .get("sha256")
         .and_then(Value::as_str)
         .ok_or_else(|| format!("Artifact manifest {} is missing sha256.", artifact.id))?;
+    let revision_source: String = connection
+        .query_row(
+            "SELECT source FROM revisions WHERE id = ?1 AND session_id = ?2",
+            params![artifact.revision_id, session_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "Artifact manifest {} references a revision outside session {session_id}: {}",
+                artifact.id, artifact.revision_id
+            )
+        })?;
+    let expected_revision_hash = crate::storage::sha256_hex(revision_source.as_bytes());
+    if artifact.revision_hash != expected_revision_hash {
+        return Err(format!(
+            "Artifact manifest {} revision_hash does not match revision {} source.",
+            artifact.id, artifact.revision_id
+        ));
+    }
+    if metadata.get("profileHash").and_then(Value::as_str) != artifact.profile_hash.as_deref() {
+        return Err(format!(
+            "Artifact manifest {} profileHash metadata does not match its profile_hash field.",
+            artifact.id
+        ));
+    }
     connection
         .execute(
             r#"
             INSERT INTO artifacts (
               id, session_id, revision_id, kind, format, relative_path, uri,
-              sha256, bytes, created_at, deleted_at, missing_at, metadata_json
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+              sha256, bytes, created_at, deleted_at, missing_at, metadata_json,
+              revision_hash, profile_hash
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
             ON CONFLICT(id) DO UPDATE SET
               session_id = excluded.session_id,
               revision_id = excluded.revision_id,
@@ -34,7 +62,9 @@ pub(super) fn save_artifact_manifest(
               created_at = excluded.created_at,
               deleted_at = excluded.deleted_at,
               missing_at = excluded.missing_at,
-              metadata_json = excluded.metadata_json
+              metadata_json = excluded.metadata_json,
+              revision_hash = excluded.revision_hash,
+              profile_hash = excluded.profile_hash
             "#,
             params![
                 artifact.id,
@@ -50,9 +80,36 @@ pub(super) fn save_artifact_manifest(
                 artifact.deleted_at,
                 artifact.missing_at,
                 serde_json::to_string(&metadata).map_err(|error| error.to_string())?,
+                artifact.revision_hash,
+                artifact.profile_hash,
             ],
         )
         .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub(super) fn update_artifact_profile_hash(
+    connection: &Connection,
+    session_id: &str,
+    artifact_id: &str,
+    profile_hash: &str,
+) -> SessionRepositoryResult<()> {
+    let changed = connection
+        .execute(
+            r#"
+            UPDATE artifacts
+            SET profile_hash = ?1,
+                metadata_json = json_set(COALESCE(metadata_json, '{}'), '$.profileHash', ?1)
+            WHERE id = ?2 AND session_id = ?3 AND deleted_at IS NULL
+            "#,
+            params![profile_hash, artifact_id, session_id],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed != 1 {
+        return Err(format!(
+            "Expected one active artifact for profile hash update, changed {changed}: {artifact_id}"
+        ));
+    }
     Ok(())
 }
 
@@ -456,13 +513,14 @@ pub(super) fn save_workflow_outer_iteration(
             r#"
             INSERT INTO workflow_outer_iterations (
               id, run_id, iteration, revision_id, structural_report_json,
-              vlm_report_json, failure_report_json, passed, created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+              dfm_report_json, vlm_report_json, failure_report_json, passed, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ON CONFLICT(id) DO UPDATE SET
               run_id = excluded.run_id,
               iteration = excluded.iteration,
               revision_id = excluded.revision_id,
               structural_report_json = excluded.structural_report_json,
+              dfm_report_json = excluded.dfm_report_json,
               vlm_report_json = excluded.vlm_report_json,
               failure_report_json = excluded.failure_report_json,
               passed = excluded.passed,
@@ -475,6 +533,7 @@ pub(super) fn save_workflow_outer_iteration(
                 iteration.revision_id,
                 serde_json::to_string(&iteration.structural_report)
                     .map_err(|error| error.to_string())?,
+                optional_json_value_text(iteration.dfm_report.as_ref())?,
                 optional_json_value_text(iteration.vlm_report.as_ref())?,
                 optional_json_value_text(iteration.failure_report.as_ref())?,
                 i64::from(iteration.passed),
@@ -493,14 +552,16 @@ pub(super) fn save_workflow_pending_vlm(
         .execute(
             r#"
             INSERT INTO workflow_pending_vlm (
-              run_id, artifact_id, revision_id, contract_json, pass_threshold, structural_report_json, created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+              run_id, artifact_id, revision_id, contract_json, pass_threshold,
+              structural_report_json, dfm_report_json, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
             ON CONFLICT(run_id) DO UPDATE SET
               artifact_id = excluded.artifact_id,
               revision_id = excluded.revision_id,
               contract_json = excluded.contract_json,
               pass_threshold = excluded.pass_threshold,
               structural_report_json = excluded.structural_report_json,
+              dfm_report_json = excluded.dfm_report_json,
               created_at = excluded.created_at
             "#,
             params![
@@ -515,6 +576,7 @@ pub(super) fn save_workflow_pending_vlm(
                     .map(serde_json::to_string)
                     .transpose()
                     .map_err(|error| error.to_string())?,
+                optional_json_value_text(pending_vlm.dfm_report.as_ref())?,
                 pending_vlm.created_at,
             ],
         )

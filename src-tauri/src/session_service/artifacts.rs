@@ -122,10 +122,14 @@ impl SessionService {
     ) -> Result<PersistRuntimeArtifactResult, String> {
         if !matches!(
             input.kind,
-            CadArtifactKind::PreviewMesh | CadArtifactKind::Stl | CadArtifactKind::RenderImage
+            CadArtifactKind::PreviewMesh
+                | CadArtifactKind::Stl
+                | CadArtifactKind::Gcode
+                | CadArtifactKind::Metadata
+                | CadArtifactKind::RenderImage
         ) {
             return Err(
-                "Runtime artifact persistence supports preview-mesh, stl, and render-image only."
+                "Runtime artifact persistence supports preview-mesh, stl, gcode, metadata, and render-image only."
                     .to_string(),
             );
         }

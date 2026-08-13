@@ -5,6 +5,9 @@ use super::*;
 pub struct CadArtifact {
     pub id: String,
     pub revision_id: String,
+    pub revision_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_hash: Option<String>,
     pub kind: CadArtifactKind,
     pub format: String,
     pub uri: String,

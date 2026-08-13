@@ -29,6 +29,19 @@ fn workflow_state_fixture_matches_rust_schema() {
     assert_eq!(workflow.pending_vlm.len(), 1);
     assert_eq!(workflow.plans[0].plan.schema_version, "cad_model_plan.v1");
     assert_eq!(
+        workflow.pending_vlm[0]
+            .dfm_report
+            .as_ref()
+            .and_then(|report| report.get("contractType"))
+            .and_then(Value::as_str),
+        Some("cadastrophe.dfm_report.v1")
+    );
+    let serialized = serde_json::to_value(&workflow).unwrap();
+    assert_eq!(
+        serialized["pendingVlm"][0]["dfmReport"]["profileHash"].as_str(),
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    assert_eq!(
         workflow.outer_iterations[0]
             .failure_report
             .as_ref()
@@ -51,6 +64,10 @@ fn report_contract_fixtures_keep_expected_discriminators() {
         (
             include_str!("../../../fixtures/contracts/structural_report.v1.json"),
             "cadastrophe.structural_report.v1",
+        ),
+        (
+            include_str!("../../../fixtures/contracts/dfm_report.v1.json"),
+            "cadastrophe.dfm_report.v1",
         ),
         (
             include_str!("../../../fixtures/contracts/vlm_judge_contract.v1.json"),
