@@ -229,11 +229,11 @@ npm run build:tauri
 
 ## 6. 팀 소개
 
-| 김성욱 | 김태균 | 권혜원 |
-| :---: | :---: | :---: |
+| 김성욱 | 김태균 | 권혜원 | 이송 |
+| :---: | :---: | :---: | :---: |
 |<a href="https://github.com/wannabidr"><img src="https://github.com/wannabidr.png" width="100" /></a>| <a href="https://github.com/gyuun"><img src="https://github.com/gyuun.png" width="100"/></a>|<a href="https://github.com/hyerom"><img src="https://github.com/hyerom.png" width="100"/></a>|
-| 팀장, PM | 백엔드, 하네스 개발 | UX/UI 설계, 프론트엔드 개발 |
-| sungwooki9@pusan.ac.kr | csegyuun@pusan.ac.kr | hyerom@pusan.ac.kr |
+| sungwooki9@pusan.ac.kr | csegyuun@pusan.ac.kr | hyerom@pusan.ac.kr | thd3040@naver.com |
+| Lead | System Engineer | UI/UX Engineer | QA Engineer |
 
 ## 7. 해커톤 참여 후기
 
