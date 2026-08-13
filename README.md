@@ -61,10 +61,12 @@ flowchart LR
     CAD --> WASM[OpenSCAD WASM Worker]
     WASM --> PREVIEW[3D 미리보기 · STL]
     BE --> STRUCT[구조 검사 Sidecar]
+    BE --> DFM[PrusaSlicer DFM 검사]
     BE --> VLM[다각도 렌더 · VLM 검사]
     BE <--> DB[(SQLite · 로컬 산출물)]
     PREVIEW --> UI
     STRUCT --> BE
+    DFM --> BE
     VLM --> BE
 ```
 
@@ -80,7 +82,8 @@ flowchart LR
 | CAD Runtime | OpenSCAD WASM 0.0.4, Web Worker | OpenSCAD 평가, 미리보기 및 STL 생성 |
 | Backend | Rust stable, Tokio | 세션·에이전트 실행·산출물 관리 |
 | Storage | SQLite (`rusqlite`) | 세션, 리비전, 메시지와 실행 상태 영속화 |
-| Native Sidecar | C++, CMake | 구조 검사와 VLM용 다각도 렌더링 |
+| Native Sidecars | C++, CMake | 구조 검사와 VLM용 다각도 렌더링 |
+| DFM | PrusaSlicer CLI | 저장된 프로필 기반 슬라이싱과 G-code/진단 검사 |
 | Generative AI | OpenAI Codex | 자연어 요구 분석, 모델 계획 및 OpenSCAD 코드 생성·수정 |
 | Testing | Node test runner, TSX, Happy DOM, Cargo test | UI 계약, 워크플로와 백엔드 회귀 검증 |
 
@@ -96,12 +99,13 @@ flowchart TD
     D --> E{런타임 진단 통과?}
     E -- 아니오 --> C
     E -- 예 --> F[STL 내보내기]
-    F --> G{구조 검사 통과?}
-    G -- 아니오 --> C
-    G -- 예 --> H[다각도 이미지 렌더링]
-    H --> I{시각 검사 통과?}
-    I -- 아니오 --> C
-    I -- 예 --> J[최종 리비전과 산출물 저장]
+    F --> G[구조 검사 + PrusaSlicer DFM 검사]
+    G --> H{두 검사 모두 통과?}
+    H -- 아니오 --> C
+    H -- 예 --> I[다각도 이미지 렌더링]
+    I --> J{시각 검사 통과?}
+    J -- 아니오 --> C
+    J -- 예 --> K[최종 리비전과 산출물 저장]
 ```
 
 각 반복에서 계획, 소스, 진단, 검사 결과와 산출물이 세션에 연결됩니다. 실패 시에는 실패 보고서를 다음 모델링 시도에 전달해 같은 오류를 수정할 수 있도록 구성했습니다.
@@ -123,8 +127,9 @@ flowchart TD
 #### 검증 및 결과물 관리
 
 - OpenSCAD 컴파일 오류를 진단 정보로 표시합니다.
-- 구조 검사와 다각도 렌더 이미지 기반 검사를 최종화 과정에 포함합니다.
-- 미리보기 메시, STL, 메타데이터와 렌더 이미지를 세션별로 관리합니다.
+- 구조 검사, PrusaSlicer DFM 검사와 다각도 렌더 이미지 기반 검사를 최종화 과정에 포함합니다.
+- Settings에서 PrusaSlicer 실행 파일과 검색·분류 가능한 INI 프로필을 검증하고 저장합니다.
+- 미리보기 메시, STL, G-code, DFM 보고서, 메타데이터와 렌더 이미지를 세션별로 관리합니다.
 - 산출물 무결성을 확인하고 파일을 열거나 원하는 위치로 내보냅니다.
 
 #### 세션 및 리비전 관리
@@ -181,6 +186,7 @@ AI 코딩 도구를 요구사항 구체화, 인터페이스 설계, 반복 구�
 - Node.js 20 이상 및 npm
 - Rust stable toolchain
 - CMake와 플랫폼별 C/C++ 빌드 도구
+- PrusaSlicer 2.x (앱 Settings에서 절대 실행 경로 지정)
 - 설치 및 인증이 완료된 Codex CLI
 
 ### 4.2. 설치
