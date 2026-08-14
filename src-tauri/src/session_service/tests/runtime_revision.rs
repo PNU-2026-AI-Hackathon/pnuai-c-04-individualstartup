@@ -11,6 +11,8 @@ fn serializes_camel_case_state() {
     assert!(value["session"]["activeRevisionId"].is_null());
     assert!(value["activeRevision"].is_null());
     assert!(value["session"]["revisions"].as_array().unwrap().is_empty());
+    assert_eq!(value["validationBatches"], serde_json::json!([]));
+    assert_eq!(value["validationChecks"], serde_json::json!([]));
 }
 
 #[test]

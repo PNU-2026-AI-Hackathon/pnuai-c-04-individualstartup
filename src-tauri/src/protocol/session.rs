@@ -83,9 +83,9 @@ pub struct CadSessionState {
     pub agent_runs: Vec<CadAgentRun>,
     pub agent_run_events: Vec<CadAgentRunEvent>,
     pub validation_evaluations: Vec<CadValidationEvaluation>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub validation_batches: Vec<CadValidationBatch>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub validation_checks: Vec<CadValidationCheck>,
     pub workflow: CadWorkflowState,
 }
