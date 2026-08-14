@@ -476,6 +476,7 @@ function workspaceProps(options: WorkspaceHarnessOptions, handlers: WorkspaceHan
     mesh: null,
     gcode: null,
     gcodeArtifactId: undefined,
+    gcodeBedShape: undefined,
     runtimeState: options.runtimeState ?? "idle",
     busy: false,
     sessionArchived: false,

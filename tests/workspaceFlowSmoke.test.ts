@@ -259,6 +259,7 @@ function workspaceProps(state: CadSessionState, exports: string[]) {
     mesh: null,
     gcode: null,
     gcodeArtifactId: undefined,
+    gcodeBedShape: undefined,
     runtimeState: "completed" as const,
     busy: false,
     sessionArchived: false,
