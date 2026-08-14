@@ -7,6 +7,7 @@ mod operations_recovery;
 mod recovery;
 mod runtime_revision;
 mod session_repository;
+mod validation_batch_persistence;
 mod validation_persistence;
 mod workflow_repository;
 

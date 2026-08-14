@@ -111,6 +111,22 @@ impl SessionService {
                     .cloned()
                     .unwrap_or_default(),
             );
+            state.validation_batches.insert(
+                session_id.to_string(),
+                snapshot_state
+                    .validation_batches
+                    .get(session_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            state.validation_checks.insert(
+                session_id.to_string(),
+                snapshot_state
+                    .validation_checks
+                    .get(session_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
             for run_id in previous_run_ids.difference(&refreshed_run_ids) {
                 state.workflow_plans.remove(run_id);
                 state.workflow_outer_iterations.remove(run_id);

@@ -62,6 +62,16 @@ pub(super) fn build_state(
             .get(session_id)
             .cloned()
             .unwrap_or_default(),
+        validation_batches: state
+            .validation_batches
+            .get(session_id)
+            .cloned()
+            .unwrap_or_default(),
+        validation_checks: state
+            .validation_checks
+            .get(session_id)
+            .cloned()
+            .unwrap_or_default(),
         workflow: build_workflow_state(state, session_id)?,
     })
 }

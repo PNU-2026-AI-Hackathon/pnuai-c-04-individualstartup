@@ -2,7 +2,7 @@ use super::{sha256_hex, StorageResult};
 use rusqlite::{params, Connection};
 
 #[cfg(test)]
-pub(super) const SCHEMA_VERSION: i64 = 7;
+pub(super) const SCHEMA_VERSION: i64 = 8;
 
 pub fn run_migrations(connection: &mut Connection) -> StorageResult<()> {
     connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -853,6 +853,330 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         WHERE status IN ('queued', 'running');
       CREATE INDEX idx_validation_evaluation_events_thread_turn
         ON validation_evaluation_events(evaluator_thread_id, external_turn_id, sequence);
+    "#,
+    },
+    Migration {
+        version: 8,
+        name: "parallel_validation_batches",
+        sql: r#"
+      DROP INDEX agent_threads_active_session_agent_plane_uq;
+      CREATE UNIQUE INDEX agent_threads_active_scope_agent_plane_uq
+        ON agent_threads(session_id, external_agent, plane, owner_id)
+        WHERE archived_at IS NULL AND replaced_by_id IS NULL;
+
+      CREATE TABLE validation_batches (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        revision_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        attempt INTEGER NOT NULL CHECK(attempt >= 1),
+        status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'succeeded', 'failed')),
+        aggregate_report_json TEXT CHECK(
+          aggregate_report_json IS NULL OR json_valid(aggregate_report_json)
+        ),
+        created_at TEXT NOT NULL CHECK(trim(created_at) <> ''),
+        started_at TEXT,
+        settlement_claimed_at TEXT,
+        settled_at TEXT,
+        effects_claimed_at TEXT,
+        refinement_requested_at TEXT,
+        refinement_bound_at TEXT,
+        effects_applied_at TEXT,
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE,
+        FOREIGN KEY(revision_id) REFERENCES revisions(id) ON DELETE CASCADE,
+        FOREIGN KEY(artifact_id) REFERENCES artifacts(id) ON DELETE CASCADE,
+        UNIQUE(run_id, revision_id, attempt),
+        CHECK(
+          (status = 'queued'
+            AND started_at IS NULL AND aggregate_report_json IS NULL
+            AND settled_at IS NULL AND effects_claimed_at IS NULL
+            AND effects_applied_at IS NULL)
+          OR
+          (status = 'running'
+            AND started_at IS NOT NULL AND aggregate_report_json IS NULL
+            AND settled_at IS NULL AND effects_claimed_at IS NULL
+            AND effects_applied_at IS NULL)
+          OR
+          (status = 'succeeded'
+            AND started_at IS NOT NULL AND aggregate_report_json IS NOT NULL
+            AND settlement_claimed_at IS NULL AND settled_at IS NOT NULL)
+          OR
+          (status = 'failed'
+            AND aggregate_report_json IS NULL
+            AND settlement_claimed_at IS NULL AND settled_at IS NOT NULL)
+        )
+      );
+
+      CREATE TABLE validation_checks (
+        id TEXT PRIMARY KEY,
+        batch_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('structural', 'dfm', 'vlm')),
+        status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'succeeded', 'failed')),
+        input_contract_json TEXT NOT NULL CHECK(json_valid(input_contract_json)),
+        report_json TEXT CHECK(report_json IS NULL OR json_valid(report_json)),
+        passed INTEGER CHECK(passed IS NULL OR passed IN (0, 1)),
+        error TEXT,
+        evaluator_thread_id TEXT,
+        external_turn_id TEXT,
+        created_at TEXT NOT NULL CHECK(trim(created_at) <> ''),
+        started_at TEXT,
+        completed_at TEXT,
+        FOREIGN KEY(batch_id) REFERENCES validation_batches(id) ON DELETE CASCADE,
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY(evaluator_thread_id) REFERENCES agent_threads(id),
+        UNIQUE(batch_id, kind),
+        CHECK(
+          (evaluator_thread_id IS NULL AND external_turn_id IS NULL)
+          OR (evaluator_thread_id IS NOT NULL AND external_turn_id IS NOT NULL
+              AND trim(external_turn_id) <> '')
+        ),
+        CHECK(
+          (status = 'queued'
+            AND evaluator_thread_id IS NULL AND external_turn_id IS NULL
+            AND started_at IS NULL AND completed_at IS NULL
+            AND report_json IS NULL AND passed IS NULL AND error IS NULL)
+          OR
+          (status = 'running'
+            AND started_at IS NOT NULL AND completed_at IS NULL
+            AND report_json IS NULL AND passed IS NULL AND error IS NULL)
+          OR
+          (status = 'succeeded'
+            AND started_at IS NOT NULL AND completed_at IS NOT NULL
+            AND report_json IS NOT NULL AND passed IS NOT NULL AND error IS NULL)
+          OR
+          (status = 'failed'
+            AND completed_at IS NOT NULL AND error IS NOT NULL AND trim(error) <> ''
+            AND report_json IS NULL AND passed IS NULL)
+        )
+      );
+
+      CREATE TRIGGER validation_batches_graph_insert
+      BEFORE INSERT ON validation_batches
+      WHEN NOT EXISTS (
+          SELECT 1 FROM agent_runs
+          WHERE id = NEW.run_id AND session_id = NEW.session_id
+            AND output_revision_id = NEW.revision_id
+        )
+        OR NOT EXISTS (
+          SELECT 1 FROM revisions
+          WHERE id = NEW.revision_id AND session_id = NEW.session_id
+        )
+        OR NOT EXISTS (
+          SELECT 1 FROM artifacts
+          WHERE id = NEW.artifact_id AND session_id = NEW.session_id
+            AND revision_id = NEW.revision_id AND deleted_at IS NULL
+            AND missing_at IS NULL
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'validation batch graph mismatch');
+      END;
+
+      CREATE TRIGGER validation_batches_immutable_update
+      BEFORE UPDATE OF session_id, run_id, revision_id, artifact_id, attempt, created_at
+      ON validation_batches
+      BEGIN
+        SELECT RAISE(ABORT, 'validation batch identity fields are immutable');
+      END;
+
+      CREATE TRIGGER validation_batches_status_transition
+      BEFORE UPDATE OF status ON validation_batches
+      WHEN OLD.status <> NEW.status AND NOT (
+        (OLD.status = 'queued' AND NEW.status IN ('running', 'succeeded', 'failed'))
+        OR (OLD.status = 'running' AND NEW.status IN ('succeeded', 'failed'))
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'invalid validation batch status transition');
+      END;
+
+      CREATE TRIGGER validation_batches_terminal_requirements
+      BEFORE UPDATE OF status ON validation_batches
+      WHEN NEW.status IN ('succeeded', 'failed') AND (
+        OLD.settlement_claimed_at IS NULL
+        OR NEW.settlement_claimed_at IS NOT NULL
+        OR (SELECT COUNT(*) FROM validation_checks WHERE batch_id = OLD.id) <> 3
+        OR EXISTS (
+          SELECT 1 FROM validation_checks
+          WHERE batch_id = OLD.id AND status NOT IN ('succeeded', 'failed')
+        )
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'validation batch cannot settle before three terminal checks');
+      END;
+
+      CREATE TRIGGER validation_batches_terminal_immutable
+      BEFORE UPDATE OF aggregate_report_json, started_at, settlement_claimed_at, settled_at
+      ON validation_batches
+      WHEN OLD.status IN ('succeeded', 'failed')
+      BEGIN
+        SELECT RAISE(ABORT, 'settled validation batch fields are immutable');
+      END;
+
+      CREATE TRIGGER validation_batches_effects_marker
+      BEFORE UPDATE OF effects_claimed_at, effects_applied_at ON validation_batches
+      WHEN OLD.status NOT IN ('succeeded', 'failed')
+        OR OLD.settled_at IS NULL
+        OR (OLD.effects_claimed_at IS NULL AND (
+          NEW.effects_claimed_at IS NULL OR trim(NEW.effects_claimed_at) = ''
+          OR NEW.effects_applied_at IS NOT NULL
+        ))
+        OR (OLD.effects_claimed_at IS NOT NULL AND NOT (
+          (NEW.effects_claimed_at = OLD.effects_claimed_at AND NEW.effects_applied_at IS NULL)
+          OR (NEW.effects_claimed_at IS NULL AND NEW.effects_applied_at IS NULL)
+          OR (NEW.effects_claimed_at IS NULL AND NEW.effects_applied_at IS NOT NULL
+              AND trim(NEW.effects_applied_at) <> '')
+        ))
+        OR OLD.effects_applied_at IS NOT NULL
+      BEGIN
+        SELECT RAISE(ABORT, 'validation batch effects marker transition is invalid');
+      END;
+
+      CREATE TRIGGER agent_runs_output_revision_effect_claim
+      BEFORE UPDATE OF output_revision_id ON agent_runs
+      WHEN OLD.output_revision_id IS NOT NEW.output_revision_id
+        AND EXISTS (
+          SELECT 1 FROM validation_batches
+          WHERE run_id = OLD.id AND session_id = OLD.session_id
+            AND effects_claimed_at IS NOT NULL AND effects_applied_at IS NULL
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'agent run output revision is locked by validation effects owner');
+      END;
+
+      CREATE TRIGGER validation_batches_refinement_request
+      BEFORE UPDATE OF refinement_requested_at ON validation_batches
+      WHEN OLD.refinement_requested_at IS NOT NULL
+        OR NEW.refinement_requested_at IS NULL OR trim(NEW.refinement_requested_at) = ''
+        OR OLD.status <> 'succeeded' OR OLD.settled_at IS NULL
+        OR json_extract(OLD.aggregate_report_json, '$.passed') <> 0
+        OR OLD.effects_applied_at IS NOT NULL
+      BEGIN
+        SELECT RAISE(ABORT, 'validation batch refinement request transition is invalid');
+      END;
+
+      CREATE TRIGGER validation_batches_refinement_binding
+      BEFORE UPDATE OF refinement_bound_at ON validation_batches
+      WHEN OLD.refinement_bound_at IS NOT NULL
+        OR OLD.refinement_requested_at IS NULL
+        OR NEW.refinement_bound_at IS NULL OR trim(NEW.refinement_bound_at) = ''
+        OR NEW.effects_applied_at IS NULL OR trim(NEW.effects_applied_at) = ''
+      BEGIN
+        SELECT RAISE(ABORT, 'validation batch refinement binding transition is invalid');
+      END;
+
+      CREATE TRIGGER validation_checks_graph_insert
+      BEFORE INSERT ON validation_checks
+      WHEN NOT EXISTS (
+          SELECT 1 FROM validation_batches
+          WHERE id = NEW.batch_id AND session_id = NEW.session_id
+        )
+        OR (NEW.evaluator_thread_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM agent_threads
+          WHERE id = NEW.evaluator_thread_id AND session_id = NEW.session_id
+            AND plane = 'validation' AND owner_id = NEW.id
+        ))
+      BEGIN
+        SELECT RAISE(ABORT, 'validation check graph mismatch');
+      END;
+
+      CREATE TRIGGER validation_checks_graph_update
+      BEFORE UPDATE OF evaluator_thread_id, external_turn_id ON validation_checks
+      WHEN NEW.evaluator_thread_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM agent_threads
+        WHERE id = NEW.evaluator_thread_id AND session_id = NEW.session_id
+          AND plane = 'validation' AND owner_id = NEW.id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'validation check thread scope mismatch');
+      END;
+
+      CREATE TRIGGER validation_checks_immutable_update
+      BEFORE UPDATE OF batch_id, session_id, kind, input_contract_json, created_at
+      ON validation_checks
+      BEGIN
+        SELECT RAISE(ABORT, 'validation check identity fields are immutable');
+      END;
+
+      CREATE TRIGGER validation_checks_status_transition
+      BEFORE UPDATE OF status ON validation_checks
+      WHEN OLD.status <> NEW.status AND NOT (
+        (OLD.status = 'queued' AND NEW.status IN ('running', 'failed'))
+        OR (OLD.status = 'running' AND NEW.status IN ('succeeded', 'failed'))
+        OR (OLD.status = 'running' AND NEW.status = 'queued'
+            AND OLD.kind IN ('structural', 'dfm'))
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'invalid validation check status transition');
+      END;
+
+      CREATE TRIGGER validation_checks_terminal_immutable
+      BEFORE UPDATE OF report_json, passed, error, evaluator_thread_id,
+                       external_turn_id, started_at, completed_at
+      ON validation_checks
+      WHEN OLD.status IN ('succeeded', 'failed')
+      BEGIN
+        SELECT RAISE(ABORT, 'terminal validation check fields are immutable');
+      END;
+
+      DROP TRIGGER validation_thread_owner_insert;
+      DROP TRIGGER validation_thread_owner_update;
+
+      CREATE TRIGGER validation_thread_owner_insert
+      BEFORE INSERT ON agent_threads
+      WHEN NEW.plane = 'validation' AND NOT (
+        EXISTS (
+          SELECT 1 FROM validation_evaluations
+          WHERE id = NEW.owner_id AND session_id = NEW.session_id
+        ) OR EXISTS (
+          SELECT 1 FROM validation_checks
+          WHERE id = NEW.owner_id AND session_id = NEW.session_id AND kind = 'vlm'
+        )
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'validation thread owner mismatch');
+      END;
+
+      CREATE TRIGGER validation_thread_owner_update
+      BEFORE UPDATE OF session_id, plane, owner_id ON agent_threads
+      WHEN NEW.plane = 'validation' AND NOT (
+        EXISTS (
+          SELECT 1 FROM validation_evaluations
+          WHERE id = NEW.owner_id AND session_id = NEW.session_id
+        ) OR EXISTS (
+          SELECT 1 FROM validation_checks
+          WHERE id = NEW.owner_id AND session_id = NEW.session_id AND kind = 'vlm'
+        )
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'validation thread owner mismatch');
+      END;
+
+      CREATE INDEX idx_validation_batches_session_created
+        ON validation_batches(session_id, created_at, id);
+      CREATE INDEX idx_validation_batches_run_attempt
+        ON validation_batches(run_id, attempt);
+      CREATE INDEX idx_validation_batches_unsettled
+        ON validation_batches(status, settlement_claimed_at)
+        WHERE settled_at IS NULL;
+      CREATE INDEX idx_validation_checks_batch_kind
+        ON validation_checks(batch_id, kind);
+      CREATE INDEX idx_validation_checks_status
+        ON validation_checks(status);
+      CREATE TABLE validation_check_events (
+        id TEXT PRIMARY KEY, session_id TEXT NOT NULL, check_id TEXT NOT NULL,
+        evaluator_thread_id TEXT NOT NULL, external_turn_id TEXT, external_item_id TEXT,
+        method TEXT NOT NULL CHECK(trim(method) <> ''), sequence INTEGER NOT NULL CHECK(sequence >= 0),
+        payload_json TEXT NOT NULL CHECK(json_valid(payload_json)), created_at TEXT NOT NULL,
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY(check_id) REFERENCES validation_checks(id) ON DELETE CASCADE,
+        FOREIGN KEY(evaluator_thread_id) REFERENCES agent_threads(id), UNIQUE(check_id, sequence)
+      );
+      CREATE TRIGGER validation_check_events_graph_insert BEFORE INSERT ON validation_check_events
+      WHEN NOT EXISTS (SELECT 1 FROM validation_checks c WHERE c.id=NEW.check_id AND c.session_id=NEW.session_id
+        AND c.evaluator_thread_id=NEW.evaluator_thread_id AND (NEW.external_turn_id IS NULL OR c.external_turn_id=NEW.external_turn_id))
+      BEGIN SELECT RAISE(ABORT, 'validation check event graph mismatch'); END;
     "#,
     },
 ];

@@ -55,6 +55,9 @@ fn migration_runner_creates_schema_once() {
         "agent_transport_events",
         "validation_evaluations",
         "validation_evaluation_events",
+        "validation_batches",
+        "validation_check_events",
+        "validation_checks",
         "workflow_plans",
         "workflow_outer_iterations",
         "workflow_pending_vlm",
@@ -100,7 +103,7 @@ fn migration_runner_creates_schema_once() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(migration_count, 7);
+    assert_eq!(migration_count, 8);
     let migrations = connection
         .prepare("SELECT version, name FROM schema_migrations ORDER BY version")
         .unwrap()
@@ -119,12 +122,13 @@ fn migration_runner_creates_schema_once() {
             (4, "agent_owned_vlm_handoff_context".to_string()),
             (5, "persistent_agent_thread_graph".to_string()),
             (6, "dfm_artifact_lineage_and_workflow_reports".to_string()),
-            (7, "separate_validation_plane_persistence".to_string())
+            (7, "separate_validation_plane_persistence".to_string()),
+            (8, "parallel_validation_batches".to_string())
         ]
     );
 
     let applied_versions = applied_schema_versions(&connection);
-    assert_eq!(applied_versions, vec![1, 2, 3, 4, 5, 6, SCHEMA_VERSION]);
+    assert_eq!(applied_versions, vec![1, 2, 3, 4, 5, 6, 7, SCHEMA_VERSION]);
     let mut connection = Connection::open(layout.database_path()).unwrap();
     run_migrations(&mut connection).unwrap();
     assert_eq!(applied_schema_versions(&connection), applied_versions);
@@ -160,7 +164,7 @@ fn later_migrations_upgrade_version_1_database_idempotently() {
 
     assert_eq!(
         applied_schema_versions(&connection),
-        vec![1, 2, 3, 4, 5, 6, 7]
+        vec![1, 2, 3, 4, 5, 6, 7, 8]
     );
     for (table, expected_columns) in [
         (
@@ -401,7 +405,7 @@ fn legacy_agent_graph_backfill_is_deterministic_and_preserves_unmapped_rows() {
 
     assert_eq!(
         applied_schema_versions(&connection),
-        vec![1, 2, 3, 4, 5, 6, 7]
+        vec![1, 2, 3, 4, 5, 6, 7, 8]
     );
     let active_thread: String = connection
         .query_row(

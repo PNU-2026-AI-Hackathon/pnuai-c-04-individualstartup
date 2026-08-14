@@ -28,6 +28,8 @@ pub(crate) struct SessionRepositorySnapshot {
     pub agent_transport_events: HashMap<String, Vec<CadAgentTransportEvent>>,
     pub validation_evaluations: HashMap<String, Vec<CadValidationEvaluation>>,
     pub validation_evaluation_events: HashMap<String, Vec<CadValidationEvaluationEvent>>,
+    pub validation_batches: HashMap<String, Vec<CadValidationBatch>>,
+    pub validation_checks: HashMap<String, Vec<CadValidationCheck>>,
     pub workflow_plans: HashMap<String, CadWorkflowPlan>,
     pub workflow_outer_iterations: HashMap<String, Vec<CadWorkflowOuterIteration>>,
     pub workflow_pending_vlm: HashMap<String, CadWorkflowPendingVlm>,
@@ -96,6 +98,79 @@ pub(crate) trait SessionRepository: Send + Sync {
         &self,
         event: &CadValidationEvaluationEvent,
     ) -> SessionRepositoryResult<CadValidationEvaluationEvent>;
+    fn create_validation_batch(
+        &self,
+        batch: &CadValidationBatch,
+        checks: &[CadValidationCheck],
+    ) -> SessionRepositoryResult<(CadValidationBatch, Vec<CadValidationCheck>)>;
+    fn update_validation_check(
+        &self,
+        check: &CadValidationCheck,
+        expected_status: &CadValidationCheckStatus,
+    ) -> SessionRepositoryResult<CadValidationCheck>;
+    fn try_claim_validation_batch_settlement(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claimed_at: &str,
+    ) -> SessionRepositoryResult<Option<CadValidationBatch>>;
+    fn settle_validation_batch(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claim_token: &str,
+        status: &CadValidationBatchStatus,
+        aggregate_report: Option<&Value>,
+        settled_at: &str,
+    ) -> SessionRepositoryResult<CadValidationBatch>;
+    fn release_validation_batch_settlement(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claim_token: &str,
+    ) -> SessionRepositoryResult<CadValidationBatch>;
+    fn try_claim_validation_batch_effects(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claimed_at: &str,
+    ) -> SessionRepositoryResult<Option<CadValidationBatch>>;
+    fn release_validation_batch_effects(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claim_token: &str,
+    ) -> SessionRepositoryResult<CadValidationBatch>;
+    fn mark_validation_batch_effects_applied(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claim_token: &str,
+        applied_at: &str,
+    ) -> SessionRepositoryResult<CadValidationBatch>;
+    fn request_validation_batch_refinement(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claim_token: &str,
+        requested_at: &str,
+    ) -> SessionRepositoryResult<CadValidationBatch>;
+    fn bind_validation_batch_refinement(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claim_token: &str,
+        bound_at: &str,
+    ) -> SessionRepositoryResult<CadValidationBatch>;
+    fn save_validation_check_event(
+        &self,
+        event: &CadValidationCheckEvent,
+    ) -> SessionRepositoryResult<CadValidationCheckEvent>;
+    fn is_latest_validation_batch(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+    ) -> SessionRepositoryResult<bool>;
     fn delete_agent_transport_events(&self, event_ids: &[String])
         -> SessionRepositoryResult<usize>;
     fn save_workflow_plan(&self, plan: &CadWorkflowPlan) -> SessionRepositoryResult<()>;
@@ -127,7 +202,11 @@ pub(crate) trait SessionRepository: Send + Sync {
 }
 
 #[cfg(test)]
-pub(crate) struct InMemorySessionRepository;
+#[derive(Default)]
+pub(crate) struct InMemorySessionRepository {
+    validation_batches: std::sync::Mutex<HashMap<String, CadValidationBatch>>,
+    validation_checks: std::sync::Mutex<HashMap<String, CadValidationCheck>>,
+}
 
 #[cfg(test)]
 impl SessionRepository for InMemorySessionRepository {
@@ -260,6 +339,392 @@ impl SessionRepository for InMemorySessionRepository {
         Ok(event.clone())
     }
 
+    fn create_validation_batch(
+        &self,
+        batch: &CadValidationBatch,
+        checks: &[CadValidationCheck],
+    ) -> SessionRepositoryResult<(CadValidationBatch, Vec<CadValidationCheck>)> {
+        if checks.len() != 3 {
+            return Err("A validation batch requires exactly three checks.".to_string());
+        }
+        if checks
+            .iter()
+            .map(|check| check.id.as_str())
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            != 3
+        {
+            return Err("Validation check ids must be unique within a batch.".to_string());
+        }
+        let mut batches = self
+            .validation_batches
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if batches.values().any(|candidate| {
+            candidate.run_id == batch.run_id
+                && candidate.revision_id == batch.revision_id
+                && candidate.effects_claimed_at.is_some()
+                && candidate.effects_applied_at.is_none()
+        }) {
+            return Err(format!(
+                "Validation effects are currently owned for run {} revision {}; a new batch cannot be created.",
+                batch.run_id, batch.revision_id
+            ));
+        }
+        let mut persisted_batch = batch.clone();
+        persisted_batch.attempt = batches
+            .values()
+            .filter(|candidate| {
+                candidate.run_id == batch.run_id && candidate.revision_id == batch.revision_id
+            })
+            .map(|candidate| candidate.attempt)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| "Validation batch attempt overflowed u32.".to_string())?;
+        if batches.contains_key(&batch.id) {
+            return Err(format!("Validation batch id already exists: {}", batch.id));
+        }
+        let mut persisted_checks = checks.to_vec();
+        for check in &mut persisted_checks {
+            set_validation_check_contract_identity(
+                &mut check.input_contract,
+                &persisted_batch.id,
+                &check.id,
+                persisted_batch.attempt,
+            )?;
+        }
+        let mut check_store = self
+            .validation_checks
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if let Some(check) = persisted_checks
+            .iter()
+            .find(|check| check_store.contains_key(&check.id))
+        {
+            return Err(format!("Validation check id already exists: {}", check.id));
+        }
+        batches.insert(batch.id.clone(), persisted_batch.clone());
+        for check in &persisted_checks {
+            if check_store
+                .insert(check.id.clone(), check.clone())
+                .is_some()
+            {
+                return Err(format!("Validation check id already exists: {}", check.id));
+            }
+        }
+        Ok((persisted_batch, persisted_checks))
+    }
+
+    fn update_validation_check(
+        &self,
+        check: &CadValidationCheck,
+        _expected_status: &CadValidationCheckStatus,
+    ) -> SessionRepositoryResult<CadValidationCheck> {
+        let mut batches = self
+            .validation_batches
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let mut checks = self
+            .validation_checks
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let current = checks
+            .get(&check.id)
+            .ok_or_else(|| format!("Validation check not found: {}", check.id))?;
+        if &current.status != _expected_status {
+            return Err(format!(
+                "Validation check compare-and-set failed: {}",
+                check.id
+            ));
+        }
+        if check.status == CadValidationCheckStatus::Running
+            && !batches.contains_key(&check.batch_id)
+        {
+            return Err(format!("Validation batch not found: {}", check.batch_id));
+        }
+        checks.insert(check.id.clone(), check.clone());
+        if check.status == CadValidationCheckStatus::Running {
+            let batch = batches
+                .get_mut(&check.batch_id)
+                .ok_or_else(|| format!("Validation batch not found: {}", check.batch_id))?;
+            if batch.status == CadValidationBatchStatus::Queued {
+                batch.status = CadValidationBatchStatus::Running;
+                batch.started_at = check.started_at.clone();
+            }
+        }
+        Ok(check.clone())
+    }
+
+    fn try_claim_validation_batch_settlement(
+        &self,
+        _session_id: &str,
+        _batch_id: &str,
+        _claimed_at: &str,
+    ) -> SessionRepositoryResult<Option<CadValidationBatch>> {
+        let checks = self
+            .validation_checks
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let terminal_count = checks
+            .values()
+            .filter(|check| {
+                check.batch_id == _batch_id
+                    && matches!(
+                        check.status,
+                        CadValidationCheckStatus::Succeeded | CadValidationCheckStatus::Failed
+                    )
+            })
+            .count();
+        if terminal_count != 3 {
+            return Ok(None);
+        }
+        drop(checks);
+        let mut batches = self
+            .validation_batches
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let Some(batch) = batches.get_mut(_batch_id) else {
+            return Ok(None);
+        };
+        if batch.session_id != _session_id
+            || !matches!(
+                batch.status,
+                CadValidationBatchStatus::Queued | CadValidationBatchStatus::Running
+            )
+            || batch.settlement_claimed_at.is_some()
+        {
+            return Ok(None);
+        }
+        batch.settlement_claimed_at = Some(_claimed_at.to_string());
+        Ok(Some(batch.clone()))
+    }
+
+    fn settle_validation_batch(
+        &self,
+        _session_id: &str,
+        _batch_id: &str,
+        _claim_token: &str,
+        _status: &CadValidationBatchStatus,
+        _aggregate_report: Option<&Value>,
+        _settled_at: &str,
+    ) -> SessionRepositoryResult<CadValidationBatch> {
+        let mut batches = self
+            .validation_batches
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let batch = batches
+            .get_mut(_batch_id)
+            .ok_or_else(|| format!("Validation batch not found: {_batch_id}"))?;
+        if batch.session_id != _session_id
+            || batch.settlement_claimed_at.as_deref() != Some(_claim_token)
+            || batch.settled_at.is_some()
+        {
+            return Err(format!(
+                "Validation batch settlement compare-and-set failed: {_batch_id}"
+            ));
+        }
+        batch.status = _status.clone();
+        batch.aggregate_report = _aggregate_report.cloned();
+        batch.settlement_claimed_at = None;
+        batch.settled_at = Some(_settled_at.to_string());
+        Ok(batch.clone())
+    }
+
+    fn request_validation_batch_refinement(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claim_token: &str,
+        requested_at: &str,
+    ) -> SessionRepositoryResult<CadValidationBatch> {
+        let mut batches = self
+            .validation_batches
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let batch = batches
+            .get_mut(batch_id)
+            .ok_or_else(|| format!("Validation batch not found: {batch_id}"))?;
+        if requested_at.trim().is_empty()
+            || batch.session_id != session_id
+            || batch.status != CadValidationBatchStatus::Succeeded
+            || batch.settled_at.is_none()
+            || batch
+                .aggregate_report
+                .as_ref()
+                .and_then(|v| v.get("passed"))
+                .and_then(Value::as_bool)
+                != Some(false)
+            || batch.refinement_requested_at.is_some()
+            || batch.refinement_bound_at.is_some()
+            || batch.effects_claimed_at.as_deref() != Some(claim_token)
+            || batch.effects_applied_at.is_some()
+        {
+            return Err(format!(
+                "Validation batch refinement request compare-and-set failed: {batch_id}"
+            ));
+        }
+        batch.refinement_requested_at = Some(requested_at.to_string());
+        Ok(batch.clone())
+    }
+
+    fn bind_validation_batch_refinement(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claim_token: &str,
+        bound_at: &str,
+    ) -> SessionRepositoryResult<CadValidationBatch> {
+        let mut batches = self
+            .validation_batches
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let batch = batches
+            .get_mut(batch_id)
+            .ok_or_else(|| format!("Validation batch not found: {batch_id}"))?;
+        if bound_at.trim().is_empty()
+            || batch.session_id != session_id
+            || batch.refinement_requested_at.is_none()
+            || batch.refinement_bound_at.is_some()
+            || batch.effects_claimed_at.as_deref() != Some(claim_token)
+            || batch.effects_applied_at.is_some()
+        {
+            return Err(format!(
+                "Validation batch refinement binding compare-and-set failed: {batch_id}"
+            ));
+        }
+        batch.refinement_bound_at = Some(bound_at.to_string());
+        batch.effects_claimed_at = None;
+        batch.effects_applied_at = Some(bound_at.to_string());
+        Ok(batch.clone())
+    }
+
+    fn release_validation_batch_settlement(
+        &self,
+        _session_id: &str,
+        _batch_id: &str,
+        _claim_token: &str,
+    ) -> SessionRepositoryResult<CadValidationBatch> {
+        let mut batches = self
+            .validation_batches
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let batch = batches
+            .get_mut(_batch_id)
+            .ok_or_else(|| format!("Validation batch not found: {_batch_id}"))?;
+        if batch.session_id != _session_id
+            || batch.settlement_claimed_at.as_deref() != Some(_claim_token)
+        {
+            return Err(format!(
+                "Validation batch settlement release compare-and-set failed: {_batch_id}"
+            ));
+        }
+        batch.settlement_claimed_at = None;
+        Ok(batch.clone())
+    }
+
+    fn mark_validation_batch_effects_applied(
+        &self,
+        _session_id: &str,
+        _batch_id: &str,
+        _claim_token: &str,
+        _applied_at: &str,
+    ) -> SessionRepositoryResult<CadValidationBatch> {
+        let mut batches = self
+            .validation_batches
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let batch = batches
+            .get_mut(_batch_id)
+            .ok_or_else(|| format!("Validation batch not found: {_batch_id}"))?;
+        if batch.session_id != _session_id
+            || batch.settled_at.is_none()
+            || batch.effects_claimed_at.as_deref() != Some(_claim_token)
+            || batch.effects_applied_at.is_some()
+        {
+            return Err(format!(
+                "Validation batch effects compare-and-set failed: {_batch_id}"
+            ));
+        }
+        batch.effects_claimed_at = None;
+        batch.effects_applied_at = Some(_applied_at.to_string());
+        Ok(batch.clone())
+    }
+
+    fn try_claim_validation_batch_effects(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claimed_at: &str,
+    ) -> SessionRepositoryResult<Option<CadValidationBatch>> {
+        let mut batches = self.validation_batches.lock().map_err(|e| e.to_string())?;
+        let Some(batch) = batches.get_mut(batch_id) else {
+            return Ok(None);
+        };
+        if claimed_at.trim().is_empty()
+            || batch.session_id != session_id
+            || !matches!(
+                batch.status,
+                CadValidationBatchStatus::Succeeded | CadValidationBatchStatus::Failed
+            )
+            || batch.settled_at.is_none()
+            || batch.effects_claimed_at.is_some()
+            || batch.effects_applied_at.is_some()
+        {
+            return Ok(None);
+        }
+        batch.effects_claimed_at = Some(claimed_at.to_string());
+        Ok(Some(batch.clone()))
+    }
+
+    fn release_validation_batch_effects(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claim_token: &str,
+    ) -> SessionRepositoryResult<CadValidationBatch> {
+        let mut batches = self.validation_batches.lock().map_err(|e| e.to_string())?;
+        let batch = batches
+            .get_mut(batch_id)
+            .ok_or_else(|| format!("Validation batch not found: {batch_id}"))?;
+        if batch.session_id != session_id
+            || batch.effects_claimed_at.as_deref() != Some(claim_token)
+            || batch.effects_applied_at.is_some()
+        {
+            return Err(format!(
+                "Validation batch effects release compare-and-set failed: {batch_id}"
+            ));
+        }
+        batch.effects_claimed_at = None;
+        Ok(batch.clone())
+    }
+
+    fn save_validation_check_event(
+        &self,
+        event: &CadValidationCheckEvent,
+    ) -> SessionRepositoryResult<CadValidationCheckEvent> {
+        Ok(event.clone())
+    }
+
+    fn is_latest_validation_batch(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+    ) -> SessionRepositoryResult<bool> {
+        let batches = self.validation_batches.lock().map_err(|e| e.to_string())?;
+        let batch = batches
+            .get(batch_id)
+            .ok_or_else(|| format!("Validation batch not found: {batch_id}"))?;
+        if batch.session_id != session_id {
+            return Ok(false);
+        }
+        Ok(!batches.values().any(|candidate| {
+            candidate.run_id == batch.run_id
+                && candidate.revision_id == batch.revision_id
+                && candidate.attempt > batch.attempt
+        }))
+    }
+
     fn delete_agent_transport_events(
         &self,
         event_ids: &[String],
@@ -354,6 +819,8 @@ impl SessionRepository for SqliteSessionRepository {
         let agent_transport_events = load_agent_transport_events(&connection)?;
         let validation_evaluations = load_validation_evaluations(&connection)?;
         let validation_evaluation_events = load_validation_evaluation_events(&connection)?;
+        let validation_batches = load_validation_batches(&connection)?;
+        let validation_checks = load_validation_checks(&connection)?;
         let workflow_plans = load_workflow_plans(&connection)?;
         let workflow_outer_iterations = load_workflow_outer_iterations(&connection)?;
         let workflow_pending_vlm = load_workflow_pending_vlm(&connection)?;
@@ -374,6 +841,8 @@ impl SessionRepository for SqliteSessionRepository {
             agent_transport_events,
             validation_evaluations,
             validation_evaluation_events,
+            validation_batches,
+            validation_checks,
             workflow_plans,
             workflow_outer_iterations,
             workflow_pending_vlm,
@@ -645,6 +1114,159 @@ impl SessionRepository for SqliteSessionRepository {
     ) -> SessionRepositoryResult<CadValidationEvaluationEvent> {
         let connection = self.connection()?;
         save_validation_evaluation_event(&connection, event)
+    }
+
+    fn create_validation_batch(
+        &self,
+        batch: &CadValidationBatch,
+        checks: &[CadValidationCheck],
+    ) -> SessionRepositoryResult<(CadValidationBatch, Vec<CadValidationCheck>)> {
+        let mut connection = self.connection()?;
+        create_validation_batch(&mut connection, batch, checks)
+    }
+
+    fn update_validation_check(
+        &self,
+        check: &CadValidationCheck,
+        expected_status: &CadValidationCheckStatus,
+    ) -> SessionRepositoryResult<CadValidationCheck> {
+        let mut connection = self.connection()?;
+        update_validation_check(&mut connection, check, expected_status)
+    }
+
+    fn try_claim_validation_batch_settlement(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claimed_at: &str,
+    ) -> SessionRepositoryResult<Option<CadValidationBatch>> {
+        let mut connection = self.connection()?;
+        try_claim_validation_batch_settlement(&mut connection, session_id, batch_id, claimed_at)
+    }
+
+    fn settle_validation_batch(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claim_token: &str,
+        status: &CadValidationBatchStatus,
+        aggregate_report: Option<&Value>,
+        settled_at: &str,
+    ) -> SessionRepositoryResult<CadValidationBatch> {
+        let mut connection = self.connection()?;
+        settle_validation_batch(
+            &mut connection,
+            session_id,
+            batch_id,
+            claim_token,
+            status,
+            aggregate_report,
+            settled_at,
+        )
+    }
+
+    fn release_validation_batch_settlement(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claim_token: &str,
+    ) -> SessionRepositoryResult<CadValidationBatch> {
+        let connection = self.connection()?;
+        release_validation_batch_settlement(&connection, session_id, batch_id, claim_token)
+    }
+
+    fn mark_validation_batch_effects_applied(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claim_token: &str,
+        applied_at: &str,
+    ) -> SessionRepositoryResult<CadValidationBatch> {
+        let connection = self.connection()?;
+        mark_validation_batch_effects_applied(
+            &connection,
+            session_id,
+            batch_id,
+            claim_token,
+            applied_at,
+        )
+    }
+
+    fn try_claim_validation_batch_effects(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claimed_at: &str,
+    ) -> SessionRepositoryResult<Option<CadValidationBatch>> {
+        let mut connection = self.connection()?;
+        try_claim_validation_batch_effects(&mut connection, session_id, batch_id, claimed_at)
+    }
+
+    fn release_validation_batch_effects(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claim_token: &str,
+    ) -> SessionRepositoryResult<CadValidationBatch> {
+        let connection = self.connection()?;
+        release_validation_batch_effects(&connection, session_id, batch_id, claim_token)
+    }
+
+    fn request_validation_batch_refinement(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claim_token: &str,
+        requested_at: &str,
+    ) -> SessionRepositoryResult<CadValidationBatch> {
+        let connection = self.connection()?;
+        request_validation_batch_refinement(
+            &connection,
+            session_id,
+            batch_id,
+            claim_token,
+            requested_at,
+        )
+    }
+
+    fn bind_validation_batch_refinement(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        claim_token: &str,
+        bound_at: &str,
+    ) -> SessionRepositoryResult<CadValidationBatch> {
+        let mut connection = self.connection()?;
+        bind_validation_batch_refinement(
+            &mut connection,
+            session_id,
+            batch_id,
+            claim_token,
+            bound_at,
+        )
+    }
+
+    fn save_validation_check_event(
+        &self,
+        event: &CadValidationCheckEvent,
+    ) -> SessionRepositoryResult<CadValidationCheckEvent> {
+        let connection = self.connection()?;
+        save_validation_check_event(&connection, event)
+    }
+
+    fn is_latest_validation_batch(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+    ) -> SessionRepositoryResult<bool> {
+        let connection = self.connection()?;
+        let value:i64=connection.query_row(r#"
+          SELECT CASE WHEN b.session_id=?1
+            AND EXISTS(SELECT 1 FROM agent_runs r WHERE r.id=b.run_id AND r.session_id=b.session_id AND r.output_revision_id=b.revision_id)
+            AND NOT EXISTS(SELECT 1 FROM validation_batches newer WHERE newer.run_id=b.run_id AND newer.revision_id=b.revision_id AND newer.attempt>b.attempt)
+          THEN 1 ELSE 0 END FROM validation_batches b WHERE b.id=?2
+        "#,params![session_id,batch_id],|row|row.get(0)).map_err(|e|e.to_string())?;
+        Ok(value != 0)
     }
 
     fn delete_agent_transport_events(

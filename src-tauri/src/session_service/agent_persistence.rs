@@ -51,21 +51,46 @@ impl SessionService {
                 .get(&thread.session_id)
                 .into_iter()
                 .flatten()
-                .find(|evaluation| evaluation.id == thread.owner_id)
-                .ok_or_else(|| {
-                    format!(
-                        "Validation agent thread owner evaluation not found: {}",
+                .find(|evaluation| evaluation.id == thread.owner_id);
+            let vlm_check = state
+                .validation_checks
+                .get(&thread.session_id)
+                .into_iter()
+                .flatten()
+                .find(|check| {
+                    check.id == thread.owner_id && check.kind == CadValidationCheckKind::Vlm
+                });
+            match (evaluation, vlm_check) {
+                (Some(evaluation), None)
+                    if matches!(
+                        evaluation.status,
+                        CadValidationEvaluationStatus::Succeeded
+                            | CadValidationEvaluationStatus::Failed
+                    ) =>
+                {
+                    return Err(format!(
+                        "Validation agent thread cannot attach to terminal evaluation: {}",
                         thread.owner_id
-                    )
-                })?;
-            if matches!(
-                evaluation.status,
-                CadValidationEvaluationStatus::Succeeded | CadValidationEvaluationStatus::Failed
-            ) {
-                return Err(format!(
-                    "Validation agent thread cannot be attached to terminal evaluation: {}",
-                    thread.owner_id
-                ));
+                    ));
+                }
+                (None, Some(check))
+                    if matches!(
+                        check.status,
+                        CadValidationCheckStatus::Succeeded | CadValidationCheckStatus::Failed
+                    ) =>
+                {
+                    return Err(format!(
+                        "Validation agent thread cannot attach to terminal check: {}",
+                        thread.owner_id
+                    ));
+                }
+                (Some(_), None) | (None, Some(_)) => {}
+                _ => {
+                    return Err(format!(
+                        "Validation agent thread owner not found or ambiguous: {}",
+                        thread.owner_id
+                    ));
+                }
             }
         }
         let threads = state
@@ -78,13 +103,14 @@ impl SessionService {
                 candidate.id != thread.id
                     && candidate.external_agent == thread.external_agent
                     && candidate.plane == thread.plane
+                    && candidate.owner_id == thread.owner_id
                     && candidate.archived_at.is_none()
                     && candidate.replaced_by_id.is_none()
             })
         {
             return Err(format!(
-                "Session {} already has an active {} agent thread.",
-                thread.session_id, thread.external_agent
+                "Validation/modeling scope {} already has an active {} agent thread.",
+                thread.owner_id, thread.external_agent
             ));
         }
         if let Some(replaced_by_id) = &thread.replaced_by_id {
