@@ -180,6 +180,8 @@ impl AgentGateway {
     }
 
     pub fn recover_startup_runs(&self) -> Result<(), String> {
+        self.service
+            .normalize_agent_threads_after_process_restart()?;
         for candidate in self.service.list_startup_agent_run_recovery_candidates()? {
             match candidate.action {
                 CadAgentRunRecoveryAction::Reenqueue => {
@@ -341,14 +343,13 @@ async fn execute_run(
                 )?;
             }
             let pending_validation = service
-                .list_validation_evaluations(&run.session_id)?
+                .list_validation_batches(&run.session_id)?
                 .iter()
-                .any(|evaluation| {
-                    evaluation.run_id == run.id
+                .any(|batch| {
+                    batch.run_id == run.id
                         && matches!(
-                            evaluation.status,
-                            CadValidationEvaluationStatus::Queued
-                                | CadValidationEvaluationStatus::Running
+                            batch.status,
+                            CadValidationBatchStatus::Queued | CadValidationBatchStatus::Running
                         )
                 });
             if pending_validation {
@@ -460,6 +461,9 @@ fn apply_adapter_event_with_validation(
                 external_thread_id,
                 external_turn_id,
             )?;
+            if let Some(coordinator) = validation_coordinator {
+                coordinator.confirm_refinement_bound(&run.session_id, &run.id)?;
+            }
         }
         AgentAdapterEvent::MessageCreated {
             role,
@@ -590,11 +594,10 @@ fn apply_adapter_event_with_validation(
             }
             if name.contains("cadastrophe-finalize") {
                 let queued = service
-                    .list_validation_evaluations(&run.session_id)?
+                    .list_validation_batches(&run.session_id)?
                     .into_iter()
-                    .filter(|evaluation| {
-                        evaluation.run_id == run.id
-                            && evaluation.status == CadValidationEvaluationStatus::Queued
+                    .filter(|batch| {
+                        batch.run_id == run.id && batch.status == CadValidationBatchStatus::Queued
                     })
                     .count();
                 if queued > 0 && validation_coordinator.is_none() {

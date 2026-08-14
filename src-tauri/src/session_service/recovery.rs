@@ -19,14 +19,15 @@ impl SessionService {
             })
             .filter(|run| {
                 !state
-                    .validation_evaluations
+                    .validation_batches
                     .get(&run.session_id)
                     .into_iter()
                     .flatten()
-                    .any(|evaluation| {
-                        evaluation.run_id == run.id
-                            && run.output_revision_id.as_deref()
-                                == Some(evaluation.revision_id.as_str())
+                    .any(|batch| {
+                        batch.run_id == run.id
+                            && run.output_revision_id.as_deref() == Some(batch.revision_id.as_str())
+                            && batch.effects_applied_at.is_none()
+                            && run.external_turn_id.is_none()
                     })
             })
             .map(|run| {

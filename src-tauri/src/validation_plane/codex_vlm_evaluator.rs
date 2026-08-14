@@ -9,7 +9,8 @@ use crate::agent_thread_manager::{
 use crate::codex_process_client::CodexProcessClient;
 use crate::notification_router::RoutedNotification;
 use crate::protocol::{
-    CadAgentPlane, CadValidationEvaluation, CadValidationEvaluationEvent,
+    CadAgentPlane, CadValidationCheck, CadValidationCheckEvent, CadValidationCheckKind,
+    CadValidationCheckStatus, CadValidationEvaluation, CadValidationEvaluationEvent,
     CadValidationEvaluationStatus, ThreadScope,
 };
 use crate::session_service::{timestamp, SessionService};
@@ -41,6 +42,14 @@ pub struct CodexVlmEvaluationInput {
     pub app_data_dir: PathBuf,
 }
 
+#[derive(Clone, Debug)]
+pub struct CodexVlmCheckInput {
+    pub check: CadValidationCheck,
+    pub rendered_image_path: PathBuf,
+    pub cwd: PathBuf,
+    pub app_data_dir: PathBuf,
+}
+
 #[derive(Clone)]
 pub struct CodexVlmEvaluator {
     service: Arc<SessionService>,
@@ -49,6 +58,202 @@ pub struct CodexVlmEvaluator {
 }
 
 impl CodexVlmEvaluator {
+    pub async fn evaluate_check(&self, input: CodexVlmCheckInput) -> Result<Value, String> {
+        if input.check.kind != CadValidationCheckKind::Vlm
+            || input.check.status != CadValidationCheckStatus::Queued
+        {
+            return Err(format!(
+                "Only a queued VLM check can be evaluated: {}",
+                input.check.id
+            ));
+        }
+        let contract = input
+            .check
+            .input_contract
+            .as_object()
+            .ok_or_else(|| "VLM check input contract must be a JSON object.".to_string())?;
+        let batch = self
+            .service
+            .get_validation_batch(&input.check.session_id, &input.check.batch_id)?
+            .ok_or_else(|| format!("Validation batch not found: {}", input.check.batch_id))?;
+        let prompt = render_vlm_evaluator_prompt(&ValidationPromptContext {
+            evaluation_id: &input.check.id,
+            session_id: &input.check.session_id,
+            run_id: &batch.run_id,
+            revision_id: &batch.revision_id,
+            artifact_id: &batch.artifact_id,
+            evaluation_contract: &input.check.input_contract,
+        })?;
+        if contract.get("evaluationId").and_then(Value::as_str) != Some(input.check.id.as_str()) {
+            return Err("VLM check input evaluationId does not match check id.".to_string());
+        }
+        let thread_start_params = build_validation_thread_start_params(&input.cwd)?;
+        let turn_start_params = build_validation_turn_start_params(
+            &prompt,
+            &input.rendered_image_path,
+            &input.cwd,
+            &input.app_data_dir,
+        )?;
+        let scope = ThreadScope {
+            session_id: input.check.session_id.clone(),
+            plane: CadAgentPlane::Validation,
+            owner_id: input.check.id.clone(),
+        };
+        let service = Arc::clone(&self.service);
+        let bind_session_id = input.check.session_id.clone();
+        let bind_check_id = input.check.id.clone();
+        let mut turn = self
+            .threads
+            .start_scoped_turn(StartScopedTurn {
+                scope,
+                thread_start_params,
+                turn_start_params,
+                bind: Arc::new(move |binding| {
+                    service
+                        .bind_validation_check(
+                            &bind_session_id,
+                            &bind_check_id,
+                            &binding.agent_thread_id,
+                            &binding.external_turn_id,
+                        )
+                        .map(|_| ())
+                }),
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let result = self
+            .collect_check_until_terminal(&input.check, &mut turn)
+            .await;
+        let cleanup = self
+            .threads
+            .finish_turn(&mut turn)
+            .map_err(|error| error.to_string());
+        match (result, cleanup) {
+            (Ok(report), Ok(())) => Ok(report),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(cleanup)) => Err(format!(
+                "{error} Additionally, validation Codex turn cleanup failed: {cleanup}"
+            )),
+        }
+    }
+
+    pub async fn recover_check(&self, check: &CadValidationCheck) -> Result<Value, String> {
+        if check.kind != CadValidationCheckKind::Vlm
+            || check.status != CadValidationCheckStatus::Running
+        {
+            return Err(format!(
+                "Only a running VLM check can be recovered: {}",
+                check.id
+            ));
+        }
+        let thread_id = check
+            .evaluator_thread_id
+            .as_deref()
+            .ok_or_else(|| format!("Running VLM check {} has no evaluator thread.", check.id))?;
+        let turn_id = check
+            .external_turn_id
+            .as_deref()
+            .ok_or_else(|| format!("Running VLM check {} has no external turn.", check.id))?;
+        let mut thread = self
+            .service
+            .list_agent_threads(&check.session_id)?
+            .into_iter()
+            .find(|thread| thread.id == thread_id)
+            .ok_or_else(|| format!("Validation evaluator thread not found: {thread_id}"))?;
+        if thread.owner_id != check.id || thread.plane != CadAgentPlane::Validation {
+            return Err(format!(
+                "Validation evaluator thread scope mismatch for check {}.",
+                check.id
+            ));
+        }
+        let result = self
+            .threads
+            .read_thread_history(&thread.external_thread_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| {
+                format!(
+                    "Validation Codex thread {} was not found during recovery.",
+                    thread.external_thread_id
+                )
+            })
+            .and_then(|value| parse_strict_validation_history(&value, turn_id));
+        if thread.archived_at.is_none() && thread.replaced_by_id.is_none() {
+            let now = timestamp();
+            thread.status = crate::protocol::CadAgentThreadStatus::Archived;
+            thread.updated_at = now.clone();
+            thread.archived_at = Some(now);
+            self.service.upsert_agent_thread(thread)?;
+        }
+        result
+    }
+
+    async fn collect_check_until_terminal(
+        &self,
+        check: &CadValidationCheck,
+        turn: &mut ManagedAgentTurn,
+    ) -> Result<Value, String> {
+        let mut collector = StrictValidationCollector::default();
+        let capture = timeout(self.config.turn_timeout, async {
+            loop {
+                let notification = turn.notifications.recv().await.ok_or_else(|| {
+                    "Codex validation notification route closed before a terminal event."
+                        .to_string()
+                })?;
+                assert_notification_identity(turn, &notification)?;
+                self.persist_check_notification(check, turn, &notification)?;
+                if let Some(report) = collector.ingest(
+                    &turn.external_thread_id,
+                    &turn.external_turn_id,
+                    &notification,
+                )? {
+                    return Ok(report);
+                }
+            }
+        })
+        .await;
+        match capture {
+            Ok(result) => result,
+            Err(_) => {
+                let reconciliation = self.threads.interrupt_and_reconcile(turn).await.map_err(|error| format!(
+                    "Validation Codex turn timed out after {} seconds; interrupt/reconciliation failed: {error}", self.config.turn_timeout.as_secs_f64()
+                ))?;
+                for notification in &reconciliation.observed_notifications {
+                    self.persist_check_notification(check, turn, notification)?;
+                    collector.ingest(
+                        &turn.external_thread_id,
+                        &turn.external_turn_id,
+                        notification,
+                    )?;
+                }
+                Err(format!("Validation Codex turn timed out after {} seconds and was interrupted; reconciled status: {}.", self.config.turn_timeout.as_secs_f64(), reconciliation_status_label(&reconciliation.reconciliation.status)))
+            }
+        }
+    }
+
+    fn persist_check_notification(
+        &self,
+        check: &CadValidationCheck,
+        turn: &ManagedAgentTurn,
+        notification: &RoutedNotification,
+    ) -> Result<(), String> {
+        assert_notification_identity(turn, notification)?;
+        self.service
+            .save_validation_check_event(CadValidationCheckEvent {
+                id: Uuid::new_v4().to_string(),
+                session_id: check.session_id.clone(),
+                check_id: check.id.clone(),
+                evaluator_thread_id: turn.agent_thread_id.clone(),
+                external_turn_id: Some(turn.external_turn_id.clone()),
+                external_item_id: notification.identifiers.item_id.clone(),
+                method: notification.method.clone(),
+                sequence: notification.transport_sequence,
+                payload: crate::agent_gateway::normalize_transport_payload(&notification.raw),
+                created_at: timestamp(),
+            })
+            .map(|_| ())
+    }
     pub fn new(
         service: Arc<SessionService>,
         client: CodexProcessClient,

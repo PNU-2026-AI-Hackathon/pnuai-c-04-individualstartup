@@ -20,8 +20,6 @@ pub struct EvaluationContractInput<'a> {
     pub rendered_image: &'a CadArtifact,
     pub pass_threshold: f64,
     pub judge_contract: &'a Value,
-    pub structural_report: &'a Value,
-    pub dfm_report: &'a Value,
     pub app_data_dir: &'a Path,
 }
 
@@ -71,9 +69,6 @@ pub fn build_input_contract(input: EvaluationContractInput<'_>) -> Result<Value,
     if judge.get("contractType").and_then(Value::as_str) != Some("cadastrophe.vlm_judge.v1") {
         return Err("VLM judge contractType must be cadastrophe.vlm_judge.v1.".to_string());
     }
-    require_object_contract(input.structural_report, "structural report")?;
-    require_object_contract(input.dfm_report, "DFM report")?;
-
     Ok(json!({
         "contractType": INPUT_CONTRACT_TYPE,
         "sessionId": input.session_id,
@@ -96,8 +91,6 @@ pub fn build_input_contract(input: EvaluationContractInput<'_>) -> Result<Value,
             "mediaType": "image/png",
         },
         "judgeContract": input.judge_contract,
-        "structuralReport": input.structural_report,
-        "dfmReport": input.dfm_report,
         "rubric": {
             "subscoreRange": { "minimum": 0, "maximum": 3 },
             "composite": "scores.structure + scores.components + scores.proportions",
@@ -326,13 +319,6 @@ fn metadata_string<'a>(artifact: &'a CadArtifact, key: &str) -> Result<&'a str, 
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("Artifact {} metadata is missing {key}.", artifact.id))
-}
-
-fn require_object_contract(value: &Value, label: &str) -> Result<(), String> {
-    value
-        .as_object()
-        .ok_or_else(|| format!("{label} must be a JSON object."))
-        .map(|_| ())
 }
 
 fn require_id(label: &str, value: &str) -> Result<(), String> {

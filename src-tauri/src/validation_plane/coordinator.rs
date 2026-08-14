@@ -1,69 +1,59 @@
-use super::codex_vlm_evaluator::{CodexVlmEvaluationInput, CodexVlmEvaluator};
-use super::contract::{
-    rendered_image_path, validate_evaluation_kind, validate_report, ValidatedReport,
-};
-use crate::protocol::{
-    CadAgentRunStatus, CadValidationEvaluation, CadValidationEvaluationStatus,
-    CadWorkflowOuterIteration, ListCadSessionsInput,
-};
+use super::codex_vlm_evaluator::{CodexVlmCheckInput, CodexVlmEvaluator};
+use crate::cli::{structural, vlm};
+use crate::protocol::*;
 use crate::session_service::{timestamp, SessionService};
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 #[async_trait]
-pub trait VlmEvaluationExecutor: Send + Sync {
-    async fn evaluate(&self, input: CodexVlmEvaluationInput) -> Result<Value, String>;
-    async fn recover(&self, evaluation: &CadValidationEvaluation) -> Result<Value, String>;
+pub trait VlmCheckExecutor: Send + Sync {
+    async fn evaluate(&self, input: CodexVlmCheckInput) -> Result<Value, String>;
+    async fn recover(&self, check: &CadValidationCheck) -> Result<Value, String>;
 }
 
 #[async_trait]
-impl VlmEvaluationExecutor for CodexVlmEvaluator {
-    async fn evaluate(&self, input: CodexVlmEvaluationInput) -> Result<Value, String> {
-        CodexVlmEvaluator::evaluate(self, input).await
+impl VlmCheckExecutor for CodexVlmEvaluator {
+    async fn evaluate(&self, input: CodexVlmCheckInput) -> Result<Value, String> {
+        self.evaluate_check(input).await
     }
-
-    async fn recover(&self, evaluation: &CadValidationEvaluation) -> Result<Value, String> {
-        CodexVlmEvaluator::recover(self, evaluation).await
+    async fn recover(&self, check: &CadValidationCheck) -> Result<Value, String> {
+        self.recover_check(check).await
     }
 }
 
 pub type RefinementEnqueue = Arc<dyn Fn(&str, &str) -> Result<(), String> + Send + Sync + 'static>;
 
-fn latest_artifact_id<'a>(
-    evaluations: impl Iterator<Item = &'a CadValidationEvaluation>,
-) -> Option<&'a str> {
-    evaluations
-        .max_by(|left, right| {
-            left.created_at
-                .cmp(&right.created_at)
-                .then_with(|| left.attempt.cmp(&right.attempt))
-                .then_with(|| left.id.cmp(&right.id))
-        })
-        .map(|evaluation| evaluation.artifact_id.as_str())
+#[cfg(test)]
+#[async_trait]
+trait CheckExecutionProbe: Send + Sync {
+    async fn entered(&self, kind: CadValidationCheckKind);
 }
 
 #[derive(Clone)]
 pub struct ValidationCoordinator {
     service: Arc<SessionService>,
-    evaluator: Arc<dyn VlmEvaluationExecutor>,
+    evaluator: Arc<dyn VlmCheckExecutor>,
     refinement_enqueue: RefinementEnqueue,
-    active_sessions: Arc<Mutex<HashSet<String>>>,
+    active_batches: Arc<Mutex<HashSet<String>>>,
+    active_refinements: Arc<Mutex<HashSet<String>>>,
     cwd: PathBuf,
+    #[cfg(test)]
+    execution_probe: Option<Arc<dyn CheckExecutionProbe>>,
 }
 
 impl ValidationCoordinator {
     pub fn new(
         service: Arc<SessionService>,
-        evaluator: Arc<dyn VlmEvaluationExecutor>,
+        evaluator: Arc<dyn VlmCheckExecutor>,
         refinement_enqueue: RefinementEnqueue,
         cwd: PathBuf,
     ) -> Result<Self, String> {
         if !cwd.is_absolute() || !cwd.is_dir() {
             return Err(format!(
-                "Validation coordinator working directory must be an existing absolute directory: {}",
+                "Validation coordinator cwd is invalid: {}",
                 cwd.display()
             ));
         }
@@ -71,90 +61,59 @@ impl ValidationCoordinator {
             service,
             evaluator,
             refinement_enqueue,
-            active_sessions: Arc::new(Mutex::new(HashSet::new())),
+            active_batches: Arc::new(Mutex::new(HashSet::new())),
+            active_refinements: Arc::new(Mutex::new(HashSet::new())),
             cwd,
+            #[cfg(test)]
+            execution_probe: None,
         })
     }
 
+    #[cfg(test)]
+    fn with_execution_probe(mut self, probe: Arc<dyn CheckExecutionProbe>) -> Self {
+        self.execution_probe = Some(probe);
+        self
+    }
+
     pub fn recover_startup(&self) -> Result<(), String> {
-        let sessions = self
+        self.service
+            .normalize_validation_batches_after_process_restart()?;
+        for session in self
             .service
             .list_sessions_for_input(ListCadSessionsInput {
                 include_archived: true,
                 query: None,
             })?
-            .sessions;
-        for session in sessions {
-            let evaluations = self.service.list_validation_evaluations(&session.id)?;
-            for evaluation in evaluations.iter().filter(|evaluation| {
-                matches!(
-                    evaluation.status,
-                    CadValidationEvaluationStatus::Queued | CadValidationEvaluationStatus::Running
-                )
-            }) {
-                self.enqueue(evaluation.clone())?;
-            }
-            let state = self.service.get_session_state(&session.id)?;
-            for run in state.agent_runs.iter().filter(|run| {
-                !matches!(
-                    run.status,
-                    CadAgentRunStatus::Completed
-                        | CadAgentRunStatus::Failed
-                        | CadAgentRunStatus::Cancelled
-                )
-            }) {
-                let Some(output_revision_id) = run.output_revision_id.as_deref() else {
-                    continue;
-                };
-                let current = evaluations
-                    .iter()
-                    .filter(|evaluation| {
-                        evaluation.run_id == run.id && evaluation.revision_id == output_revision_id
-                    })
-                    .collect::<Vec<_>>();
-                if current.is_empty() {
+            .sessions
+        {
+            for batch in self.service.list_validation_batches(&session.id)? {
+                if batch.settled_at.is_some() {
+                    if batch.effects_applied_at.is_none() {
+                        self.apply_settled_effects(&batch)?;
+                    }
                     continue;
                 }
-                let latest_artifact = current
-                    .iter()
-                    .max_by(|left, right| {
-                        left.created_at
-                            .cmp(&right.created_at)
-                            .then_with(|| left.attempt.cmp(&right.attempt))
-                            .then_with(|| left.id.cmp(&right.id))
-                    })
-                    .map(|evaluation| evaluation.artifact_id.as_str())
-                    .expect("current validation rows are non-empty");
-                let current_batch = current
-                    .into_iter()
-                    .filter(|evaluation| evaluation.artifact_id == latest_artifact)
-                    .collect::<Vec<_>>();
-                if current_batch.iter().any(|evaluation| {
-                    matches!(
-                        evaluation.status,
-                        CadValidationEvaluationStatus::Queued
-                            | CadValidationEvaluationStatus::Running
-                    )
-                }) {
-                    continue;
-                }
-                if let Some(failed) = current_batch.iter().find(|evaluation| {
-                    evaluation.run_id == run.id
-                        && evaluation.status == CadValidationEvaluationStatus::Failed
-                }) {
-                    self.fail_run_for_evaluation(
-                        failed,
-                        failed.error.clone().ok_or_else(|| {
-                            format!("Failed validation evaluation {} has no error.", failed.id)
-                        })?,
+                if let Some(token) = batch.settlement_claimed_at.as_deref() {
+                    self.service.release_validation_batch_settlement(
+                        &session.id,
+                        &batch.id,
+                        token,
                     )?;
-                    continue;
                 }
-                if let Some(succeeded) = current_batch.iter().find(|evaluation| {
-                    evaluation.run_id == run.id
-                        && evaluation.status == CadValidationEvaluationStatus::Succeeded
+                let checks = self
+                    .service
+                    .list_validation_checks(&session.id, &batch.id)?;
+                for check in checks.iter().filter(|check| {
+                    check.status == CadValidationCheckStatus::Running
+                        && check.kind != CadValidationCheckKind::Vlm
                 }) {
-                    self.settle_terminal_batch(succeeded)?;
+                    self.service
+                        .reset_validation_check_for_recovery(&session.id, &check.id)?;
+                }
+                if checks.iter().all(check_terminal) {
+                    self.try_settle_batch(&session.id, &batch.id)?;
+                } else {
+                    self.enqueue(batch)?;
                 }
             }
         }
@@ -166,1025 +125,1665 @@ impl ValidationCoordinator {
             .service
             .get_agent_run(session_id, run_id)?
             .ok_or_else(|| format!("Agent run not found: {run_id}"))?;
-        let revision_id = run
-            .output_revision_id
-            .ok_or_else(|| format!("Agent run {run_id} has no output revision for validation."))?;
-        let current = self
+        run.output_revision_id
+            .ok_or_else(|| format!("Agent run {run_id} has no output revision."))?;
+        let batches = self
             .service
-            .list_validation_evaluations(session_id)?
+            .list_validation_batches(session_id)?
             .into_iter()
-            .filter(|evaluation| {
-                evaluation.run_id == run_id && evaluation.revision_id == revision_id
-            })
+            .filter(|batch| batch.run_id == run_id)
             .collect::<Vec<_>>();
-        let Some(latest_artifact) = current
-            .iter()
-            .max_by(|left, right| {
-                left.created_at
-                    .cmp(&right.created_at)
-                    .then_with(|| left.attempt.cmp(&right.attempt))
-                    .then_with(|| left.id.cmp(&right.id))
-            })
-            .map(|evaluation| evaluation.artifact_id.clone())
-        else {
-            return Ok(0);
-        };
-        let evaluations = current
-            .into_iter()
-            .filter(|evaluation| {
-                evaluation.artifact_id == latest_artifact
-                    && matches!(
-                        evaluation.status,
-                        CadValidationEvaluationStatus::Queued
-                            | CadValidationEvaluationStatus::Running
-                    )
-            })
-            .collect::<Vec<_>>();
-        for evaluation in &evaluations {
-            self.enqueue(evaluation.clone())?;
+        let mut enqueued = 0;
+        for batch in batches {
+            if batch.settled_at.is_some() {
+                if batch.effects_applied_at.is_none() {
+                    self.apply_settled_effects(&batch)?;
+                }
+            } else {
+                self.enqueue(batch)?;
+                enqueued += 1;
+            }
         }
-        Ok(evaluations.len())
+        Ok(enqueued)
     }
 
-    pub fn enqueue(&self, evaluation: CadValidationEvaluation) -> Result<(), String> {
-        validate_evaluation_kind(&evaluation)?;
+    pub fn enqueue(&self, batch: CadValidationBatch) -> Result<(), String> {
         if !matches!(
-            evaluation.status,
-            CadValidationEvaluationStatus::Queued | CadValidationEvaluationStatus::Running
-        ) {
+            batch.status,
+            CadValidationBatchStatus::Queued | CadValidationBatchStatus::Running
+        ) || batch.settled_at.is_some()
+        {
             return Err(format!(
-                "Only queued/running validation evaluations can be enqueued: {}",
-                evaluation.id
+                "Only an unsettled queued/running batch can be enqueued: {}",
+                batch.id
             ));
         }
         let mut active = self
-            .active_sessions
+            .active_batches
             .lock()
-            .map_err(|_| "Validation coordinator active-session lock is poisoned.".to_string())?;
-        if !active.insert(evaluation.session_id.clone()) {
+            .map_err(|_| "Validation active-batch lock is poisoned.".to_string())?;
+        if !active.insert(batch.id.clone()) {
             return Ok(());
         }
         drop(active);
-
         let coordinator = self.clone();
         tauri::async_runtime::spawn(async move {
-            let session_id = evaluation.session_id.clone();
-            if let Err(error) = coordinator.drain_session(&session_id).await {
-                eprintln!("[cadastrophe:validation] session_id={session_id} error={error}");
+            let id = batch.id.clone();
+            let result = coordinator.execute_batch(batch).await;
+            if let Ok(mut active) = coordinator.active_batches.lock() {
+                active.remove(&id);
+            }
+            if let Err(error) = result {
+                eprintln!("[cadastrophe:validation] batch_id={id} error={error}");
             }
         });
         Ok(())
     }
 
-    async fn drain_session(&self, session_id: &str) -> Result<(), String> {
-        loop {
-            let mut candidates = self.pending_candidates(session_id)?;
-            candidates.sort_by(|left, right| {
-                let rank = |status: &CadValidationEvaluationStatus| match status {
-                    CadValidationEvaluationStatus::Running => 0,
-                    CadValidationEvaluationStatus::Queued => 1,
-                    _ => 2,
-                };
-                rank(&left.status)
-                    .cmp(&rank(&right.status))
-                    .then_with(|| left.created_at.cmp(&right.created_at))
-                    .then_with(|| left.attempt.cmp(&right.attempt))
-                    .then_with(|| left.id.cmp(&right.id))
-            });
-            let Some(next) = candidates.into_iter().next() else {
-                let mut active = self.active_sessions.lock().map_err(|_| {
-                    "Validation coordinator active-session lock is poisoned.".to_string()
-                })?;
-                let has_pending = !self.pending_candidates(session_id)?.is_empty();
-                if has_pending {
-                    drop(active);
-                    continue;
-                }
-                active.remove(session_id);
-                return Ok(());
-            };
-            if let Err(error) = self.execute(next).await {
-                let mut active = self.active_sessions.lock().map_err(|_| {
-                    "Validation coordinator active-session lock is poisoned.".to_string()
-                })?;
-                active.remove(session_id);
-                return Err(error);
-            }
-        }
-    }
-
-    fn pending_candidates(&self, session_id: &str) -> Result<Vec<CadValidationEvaluation>, String> {
-        Ok(self
+    async fn execute_batch(&self, batch: CadValidationBatch) -> Result<(), String> {
+        let checks = self
             .service
-            .list_validation_evaluations(session_id)?
-            .into_iter()
-            .filter(|evaluation| {
-                matches!(
-                    evaluation.status,
-                    CadValidationEvaluationStatus::Queued | CadValidationEvaluationStatus::Running
-                )
-            })
-            .collect())
-    }
-
-    async fn execute(&self, evaluation: CadValidationEvaluation) -> Result<(), String> {
-        let result = match evaluation.status {
-            CadValidationEvaluationStatus::Queued => match rendered_image_path(&evaluation) {
-                Ok(image_path) => {
-                    self.evaluator
-                        .evaluate(CodexVlmEvaluationInput {
-                            evaluation: evaluation.clone(),
-                            rendered_image_path: image_path,
-                            cwd: self.cwd.clone(),
-                            app_data_dir: self.service.app_data_dir().to_path_buf(),
-                        })
-                        .await
-                }
-                Err(error) => Err(format!("VLM rendered image validation failed: {error}")),
-            },
-            CadValidationEvaluationStatus::Running => self.evaluator.recover(&evaluation).await,
-            _ => unreachable!("enqueue validates non-terminal status"),
-        };
-
-        match result {
-            Ok(report) => match validate_report(&evaluation, report) {
-                Ok(validated) => self.apply_valid_report(&evaluation, validated),
-                Err(error) => self.apply_operational_failure(
-                    &evaluation,
-                    format!("VLM evaluation report contract validation failed: {error}"),
-                ),
-            },
-            Err(error) => self.apply_operational_failure(
-                &evaluation,
-                format!("VLM evaluation execution failed: {error}"),
-            ),
-        }
-    }
-
-    fn apply_valid_report(
-        &self,
-        snapshot: &CadValidationEvaluation,
-        validated: ValidatedReport,
-    ) -> Result<(), String> {
-        let current = self
-            .service
-            .get_validation_evaluation(&snapshot.session_id, &snapshot.id)?
-            .ok_or_else(|| format!("Validation evaluation not found: {}", snapshot.id))?;
-        if current.status != CadValidationEvaluationStatus::Running {
+            .list_validation_checks(&batch.session_id, &batch.id)?;
+        if checks.len() != 3 {
             return Err(format!(
-                "VLM evaluator returned a report before evaluation {} reached running status.",
-                snapshot.id
+                "Validation batch {} does not have exactly three checks.",
+                batch.id
             ));
         }
-        self.service.complete_validation_evaluation(
-            &current.session_id,
-            &current.id,
-            validated.report.clone(),
-            validated.score,
-            validated.passed,
-        )?;
-        self.settle_terminal_batch(&current)
+        let structural = required_check(&checks, CadValidationCheckKind::Structural)?.clone();
+        let dfm = required_check(&checks, CadValidationCheckKind::Dfm)?.clone();
+        let vlm = required_check(&checks, CadValidationCheckKind::Vlm)?.clone();
+        let (a, b, c) = tokio::join!(
+            self.execute_blocking_check(batch.clone(), structural),
+            self.execute_blocking_check(batch.clone(), dfm),
+            self.execute_vlm_check(batch.clone(), vlm),
+        );
+        for result in [a, b, c] {
+            result?;
+        }
+        self.try_settle_batch(&batch.session_id, &batch.id)
     }
 
-    fn settle_terminal_batch(&self, current: &CadValidationEvaluation) -> Result<(), String> {
-        let run = self
+    async fn execute_blocking_check(
+        &self,
+        batch: CadValidationBatch,
+        check: CadValidationCheck,
+    ) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(probe) = &self.execution_probe {
+            probe.entered(check.kind.clone()).await;
+        }
+        if check_terminal(&check) {
+            return Ok(());
+        }
+        let check = if check.status == CadValidationCheckStatus::Running {
+            self.service
+                .reset_validation_check_for_recovery(&check.session_id, &check.id)?
+        } else {
+            check
+        };
+        let running = self
             .service
-            .get_agent_run(&current.session_id, &current.run_id)?
-            .ok_or_else(|| format!("Agent run not found: {}", current.run_id))?;
-        if run.output_revision_id.as_deref() != Some(current.revision_id.as_str()) {
-            return Ok(());
-        }
-        let all = self
-            .service
-            .list_validation_evaluations(&current.session_id)?;
-        if latest_artifact_id(all.iter().filter(|candidate| {
-            candidate.run_id == current.run_id && candidate.revision_id == current.revision_id
-        })) != Some(current.artifact_id.as_str())
+            .start_validation_check(&check.session_id, &check.id)?;
+        let service = Arc::clone(&self.service);
+        let app_data_dir = self.service.app_data_dir().to_path_buf();
+        let result = match tokio::task::spawn_blocking(move || {
+            run_blocking_check(service, &app_data_dir, &batch, &running)
+        })
+        .await
         {
-            return Ok(());
-        }
-        let batch = self.validation_batch(current)?;
-        if batch.iter().any(|evaluation| {
-            matches!(
-                evaluation.status,
-                CadValidationEvaluationStatus::Queued | CadValidationEvaluationStatus::Running
-            )
-        }) {
-            return Ok(());
-        }
-        if let Some(failed) = batch
-            .iter()
-            .find(|evaluation| evaluation.status == CadValidationEvaluationStatus::Failed)
-        {
-            let error = failed.error.clone().ok_or_else(|| {
-                format!("Failed validation evaluation {} has no error.", failed.id)
-            })?;
-            self.fail_run_for_evaluation(failed, error)?;
-            return Ok(());
-        }
-        let representative_evaluation = batch
-            .iter()
-            .find(|evaluation| evaluation.passed == Some(false))
-            .or_else(|| batch.iter().find(|evaluation| evaluation.id == current.id))
-            .ok_or_else(|| "Completed validation batch is empty.".to_string())?;
-        let representative_report = representative_evaluation.report.clone().ok_or_else(|| {
-            format!(
-                "Succeeded validation evaluation {} has no report.",
-                representative_evaluation.id
-            )
-        })?;
-        let representative = validate_report(representative_evaluation, representative_report)?;
-        let state = self.service.get_session_state(&current.session_id)?;
-        let already_persisted = state.workflow.outer_iterations.iter().any(|iteration| {
-            iteration.run_id == current.run_id
-                && iteration.revision_id.as_deref() == Some(current.revision_id.as_str())
-                && iteration.vlm_report.as_ref() == Some(&representative.report)
-        });
-        if !already_persisted {
-            self.persist_outer_iteration(current, &representative)?;
-        }
-        self.service
-            .clear_workflow_pending_vlm(&current.session_id, &current.run_id)?;
+            Ok(result) => result,
+            Err(error) => Err(format!("Validation blocking task join failed: {error}")),
+        };
+        self.persist_check_result(&check, result)
+    }
 
-        if representative.passed {
+    async fn execute_vlm_check(
+        &self,
+        batch: CadValidationBatch,
+        check: CadValidationCheck,
+    ) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(probe) = &self.execution_probe {
+            probe.entered(check.kind.clone()).await;
+        }
+        if check_terminal(&check) {
+            return Ok(());
+        }
+        let result: Result<Value, String> = if check.status == CadValidationCheckStatus::Running {
+            self.evaluator.recover(&check).await
+        } else {
+            let prepare = async {
+                // Rendering is blocking but the check intentionally remains queued. A restart simply
+                // renders again; running is reserved for a bound recoverable Codex turn.
+                let service = Arc::clone(&self.service);
+                let app_data_dir = self.service.app_data_dir().to_path_buf();
+                let render_batch = batch.clone();
+                let render_check = check.clone();
+                let render_app_data_dir = app_data_dir.clone();
+                let image = match tokio::task::spawn_blocking(move || {
+                    render_for_check(service, &render_app_data_dir, &render_batch, &render_check)
+                })
+                .await
+                {
+                    Ok(Ok(image)) => image,
+                    Ok(Err(error)) => {
+                        return Err(format!("VLM render failed: {error}"));
+                    }
+                    Err(error) => {
+                        return Err(format!("VLM render task join failed: {error}"));
+                    }
+                };
+                let path = artifact_path(&app_data_dir, &image)?;
+                let evaluation_check =
+                    vlm_evaluation_snapshot(&batch, &check, &image, &app_data_dir)?;
+                self.evaluator
+                    .evaluate(CodexVlmCheckInput {
+                        check: evaluation_check,
+                        rendered_image_path: path,
+                        cwd: self.cwd.clone(),
+                        app_data_dir,
+                    })
+                    .await
+            };
+            prepare.await
+        };
+        match result {
+            Ok(report) => {
+                let current = self
+                    .service
+                    .get_validation_check(&check.session_id, &check.id)?
+                    .ok_or_else(|| format!("Validation check not found: {}", check.id))?;
+                if current.status != CadValidationCheckStatus::Running {
+                    return self
+                        .service
+                        .fail_validation_check(
+                            &check.session_id,
+                            &check.id,
+                            "VLM returned before its turn was bound.".into(),
+                        )
+                        .map(|_| ());
+                }
+                match validate_vlm_check_report(&batch, &current, report) {
+                    Ok(validated) => {
+                        if !validated.passed {
+                            if let Err(error) = ensure_rejection_has_actionable_issue(
+                                &current.kind,
+                                &validated.report,
+                            ) {
+                                return self
+                                    .service
+                                    .fail_validation_check(
+                                        &check.session_id,
+                                        &check.id,
+                                        format!("VLM rejection report is not actionable: {error}"),
+                                    )
+                                    .map(|_| ());
+                            }
+                        }
+                        self.service
+                            .complete_validation_check(
+                                &check.session_id,
+                                &check.id,
+                                validated.report,
+                                validated.passed,
+                            )
+                            .map(|_| ())
+                    }
+                    Err(error) => self
+                        .service
+                        .fail_validation_check(
+                            &check.session_id,
+                            &check.id,
+                            format!("VLM report contract validation failed: {error}"),
+                        )
+                        .map(|_| ()),
+                }
+            }
+            Err(error) => self
+                .service
+                .fail_validation_check(
+                    &check.session_id,
+                    &check.id,
+                    format!("VLM evaluation execution failed: {error}"),
+                )
+                .map(|_| ()),
+        }
+    }
+
+    fn persist_check_result(
+        &self,
+        check: &CadValidationCheck,
+        result: Result<(Value, bool), String>,
+    ) -> Result<(), String> {
+        match result {
+            Ok((report, passed)) => {
+                if !passed {
+                    if let Err(error) = ensure_rejection_has_actionable_issue(&check.kind, &report)
+                    {
+                        return self
+                            .service
+                            .fail_validation_check(
+                                &check.session_id,
+                                &check.id,
+                                format!("Validation rejection report is not actionable: {error}"),
+                            )
+                            .map(|_| ());
+                    }
+                }
+                self.service
+                    .complete_validation_check(&check.session_id, &check.id, report, passed)
+                    .map(|_| ())
+            }
+            Err(error) => self
+                .service
+                .fail_validation_check(&check.session_id, &check.id, error)
+                .map(|_| ()),
+        }
+    }
+
+    fn try_settle_batch(&self, session_id: &str, batch_id: &str) -> Result<(), String> {
+        let Some(claimed) = self
+            .service
+            .try_claim_validation_batch_settlement(session_id, batch_id)?
+        else {
+            return Ok(());
+        };
+        let token = claimed
+            .settlement_claimed_at
+            .clone()
+            .ok_or_else(|| "Claimed validation batch has no claim token.".to_string())?;
+        let checks = self.service.list_validation_checks(session_id, batch_id)?;
+        let failed = checks
+            .iter()
+            .any(|check| check.status == CadValidationCheckStatus::Failed);
+        let aggregate = if failed {
+            None
+        } else {
+            Some(build_aggregate(&claimed, &checks)?)
+        };
+        let status = if failed {
+            CadValidationBatchStatus::Failed
+        } else {
+            CadValidationBatchStatus::Succeeded
+        };
+        let settled = self
+            .service
+            .settle_validation_batch(session_id, batch_id, &token, status, aggregate)?;
+        self.apply_settled_effects(&settled)
+    }
+
+    fn apply_settled_effects(&self, batch: &CadValidationBatch) -> Result<(), String> {
+        if batch.effects_applied_at.is_some() {
+            return Ok(());
+        }
+        let Some(claimed) = self
+            .service
+            .try_claim_validation_batch_effects(&batch.session_id, &batch.id)?
+        else {
+            return Ok(());
+        };
+        let batch = &claimed;
+        let effect_claim = required_effect_claim(batch)?;
+        let checks = self
+            .service
+            .list_validation_checks(&batch.session_id, &batch.id)?;
+        if !self.is_latest(batch)? {
+            self.service.mark_validation_batch_effects_applied(
+                &batch.session_id,
+                &batch.id,
+                effect_claim,
+            )?;
+            return Ok(());
+        }
+        let effect_run = self
+            .service
+            .get_agent_run(&batch.session_id, &batch.run_id)?
+            .ok_or_else(|| format!("Agent run not found: {}", batch.run_id))?;
+        if matches!(
+            effect_run.status,
+            CadAgentRunStatus::Completed | CadAgentRunStatus::Failed | CadAgentRunStatus::Cancelled
+        ) {
+            self.service.mark_validation_batch_effects_applied(
+                &batch.session_id,
+                &batch.id,
+                effect_claim,
+            )?;
+            return Ok(());
+        }
+        if batch.status == CadValidationBatchStatus::Failed {
+            let error = checks
+                .iter()
+                .filter_map(|check| {
+                    check
+                        .error
+                        .as_ref()
+                        .map(|error| format!("{:?}: {error}", check.kind))
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            if error.is_empty() {
+                return Err("Failed validation batch has no operational check error.".into());
+            }
+            self.service.update_agent_run(&batch.session_id, &batch.run_id, Some(CadAgentRunStatus::Failed), Some(None), Some(error.clone()), None, Some(json!({"validationBatchId": batch.id, "operationalFailure": true, "error": error})))?;
+            self.service.mark_validation_batch_effects_applied(
+                &batch.session_id,
+                &batch.id,
+                effect_claim,
+            )?;
+            return Ok(());
+        }
+        let aggregate = batch
+            .aggregate_report
+            .clone()
+            .ok_or_else(|| "Succeeded validation batch has no aggregate report.".to_string())?;
+        let passed = aggregate
+            .get("passed")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| "Aggregate report passed is missing.".to_string())?;
+        let structural = required_check(&checks, CadValidationCheckKind::Structural)?
+            .report
+            .clone()
+            .ok_or_else(|| "Structural report missing.".to_string())?;
+        let dfm = required_check(&checks, CadValidationCheckKind::Dfm)?
+            .report
+            .clone()
+            .ok_or_else(|| "DFM report missing.".to_string())?;
+        let vlm = required_check(&checks, CadValidationCheckKind::Vlm)?
+            .report
+            .clone()
+            .ok_or_else(|| "VLM report missing.".to_string())?;
+        if let Some(profile_hash) = dfm.get("profileHash").and_then(Value::as_str) {
+            self.service.update_artifact_profile_hash(
+                &batch.session_id,
+                &batch.artifact_id,
+                profile_hash,
+            )?;
+        }
+        let existing = self
+            .service
+            .get_session_state(&batch.session_id)?
+            .workflow
+            .outer_iterations
+            .into_iter()
+            .any(|iteration| iteration.id == format!("validation-batch-{}", batch.id));
+        if !existing {
+            let iteration = self
+                .service
+                .get_session_state(&batch.session_id)?
+                .workflow
+                .outer_iterations
+                .iter()
+                .filter(|item| item.run_id == batch.run_id)
+                .map(|item| item.iteration)
+                .max()
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or_else(|| "Outer iteration overflow.".to_string())?;
+            self.service.save_workflow_outer_iteration(
+                &batch.session_id,
+                CadWorkflowOuterIteration {
+                    id: format!("validation-batch-{}", batch.id),
+                    run_id: batch.run_id.clone(),
+                    iteration,
+                    revision_id: Some(batch.revision_id.clone()),
+                    structural_report: structural,
+                    dfm_report: Some(dfm),
+                    vlm_report: Some(vlm),
+                    failure_report: aggregate
+                        .get("failureReport")
+                        .filter(|v| !v.is_null())
+                        .cloned(),
+                    passed,
+                    created_at: timestamp(),
+                },
+            )?;
+        }
+        if passed {
             self.service.update_agent_run(
-                &current.session_id,
-                &current.run_id,
+                &batch.session_id,
+                &batch.run_id,
                 Some(CadAgentRunStatus::Completed),
                 Some(None),
                 None,
                 None,
-                Some(json!({
-                    "evaluationId": representative_evaluation.id,
-                    "score": representative.score,
-                    "passed": true,
-                    "nextAction": "complete"
-                })),
+                Some(json!({"validationBatchId":batch.id,"passed":true})),
             )?;
         } else {
-            self.service.prepare_agent_run_refinement_turn(
-                &current.session_id,
-                &current.run_id,
-                &representative_evaluation.id,
-            )?;
-            (self.refinement_enqueue)(&current.session_id, &current.run_id)?;
+            let current = self
+                .service
+                .get_agent_run(&batch.session_id, &batch.run_id)?
+                .ok_or_else(|| format!("Agent run not found: {}", batch.run_id))?;
+            if batch.refinement_requested_at.is_some() && current.external_turn_id.is_some() {
+                self.service.bind_validation_batch_refinement(
+                    &batch.session_id,
+                    &batch.id,
+                    effect_claim,
+                )?;
+                return Ok(());
+            }
+            if batch.refinement_requested_at.is_none() {
+                self.service.prepare_agent_run_validation_batch_refinement(
+                    &batch.session_id,
+                    &batch.run_id,
+                    &batch.id,
+                )?;
+                self.service.request_validation_batch_refinement(
+                    &batch.session_id,
+                    &batch.id,
+                    effect_claim,
+                )?;
+            }
+            self.enqueue_pending_refinement(batch)?;
+            return Ok(());
+        }
+        self.service.mark_validation_batch_effects_applied(
+            &batch.session_id,
+            &batch.id,
+            effect_claim,
+        )?;
+        Ok(())
+    }
+
+    fn enqueue_pending_refinement(&self, batch: &CadValidationBatch) -> Result<(), String> {
+        let mut active = self
+            .active_refinements
+            .lock()
+            .map_err(|_| "Validation active-refinement lock is poisoned.".to_string())?;
+        if !active.insert(batch.id.clone()) {
+            return Ok(());
+        }
+        drop(active);
+        if let Err(error) = (self.refinement_enqueue)(&batch.session_id, &batch.run_id) {
+            self.active_refinements
+                .lock()
+                .map_err(|_| "Validation active-refinement lock is poisoned.".to_string())?
+                .remove(&batch.id);
+            return Err(error);
         }
         Ok(())
     }
 
-    fn validation_batch(
+    pub fn confirm_refinement_bound(
         &self,
-        evaluation: &CadValidationEvaluation,
-    ) -> Result<Vec<CadValidationEvaluation>, String> {
-        Ok(self
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<usize, String> {
+        let run = self
             .service
-            .list_validation_evaluations(&evaluation.session_id)?
+            .get_agent_run(session_id, run_id)?
+            .ok_or_else(|| format!("Agent run not found: {run_id}"))?;
+        if run.external_turn_id.is_none() {
+            return Err(format!(
+                "Agent run has no durable refinement turn binding: {run_id}"
+            ));
+        }
+        let candidates = self
+            .service
+            .list_validation_batches(session_id)?
             .into_iter()
-            .filter(|candidate| {
-                candidate.run_id == evaluation.run_id
-                    && candidate.revision_id == evaluation.revision_id
-                    && candidate.artifact_id == evaluation.artifact_id
-                    && candidate.kind == evaluation.kind
+            .filter(|batch| {
+                batch.run_id == run_id
+                    && batch.refinement_requested_at.is_some()
+                    && batch.refinement_bound_at.is_none()
+                    && batch.effects_applied_at.is_none()
             })
-            .collect())
+            .collect::<Vec<_>>();
+        let mut bound = 0;
+        for batch in candidates {
+            if batch.effects_claimed_at.is_some() {
+                let effect_claim = required_effect_claim(&batch)?;
+                if self.is_latest(&batch)? {
+                    self.service.bind_validation_batch_refinement(
+                        session_id,
+                        &batch.id,
+                        effect_claim,
+                    )?;
+                } else {
+                    self.service.mark_validation_batch_effects_applied(
+                        session_id,
+                        &batch.id,
+                        effect_claim,
+                    )?;
+                }
+            } else {
+                self.apply_settled_effects(&batch)?;
+            }
+            let current = self
+                .service
+                .get_validation_batch(session_id, &batch.id)?
+                .ok_or_else(|| format!("Validation batch not found: {}", batch.id))?;
+            if current.refinement_bound_at.is_some() && current.effects_applied_at.is_some() {
+                self.active_refinements
+                    .lock()
+                    .map_err(|_| "Validation active-refinement lock is poisoned.".to_string())?
+                    .remove(&batch.id);
+                bound += 1;
+            }
+        }
+        Ok(bound)
     }
 
-    fn persist_outer_iteration(
-        &self,
-        evaluation: &CadValidationEvaluation,
-        validated: &ValidatedReport,
-    ) -> Result<(), String> {
-        let contract = evaluation
-            .input_contract
-            .as_object()
-            .ok_or_else(|| "Persisted VLM input contract is not an object.".to_string())?;
-        let structural_report = contract.get("structuralReport").cloned().ok_or_else(|| {
-            "Persisted VLM input contract is missing structuralReport.".to_string()
-        })?;
-        let dfm_report = contract
-            .get("dfmReport")
-            .cloned()
-            .ok_or_else(|| "Persisted VLM input contract is missing dfmReport.".to_string())?;
-        let state = self.service.get_session_state(&evaluation.session_id)?;
-        let iteration = state
-            .workflow
-            .outer_iterations
-            .iter()
-            .filter(|iteration| iteration.run_id == evaluation.run_id)
-            .map(|iteration| iteration.iteration)
-            .max()
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or_else(|| "Workflow outer iteration overflowed u64.".to_string())?;
-        self.service.save_workflow_outer_iteration(
-            &evaluation.session_id,
-            CadWorkflowOuterIteration {
-                id: format!("workflow-outer-{}-{iteration}", evaluation.run_id),
-                run_id: evaluation.run_id.clone(),
-                iteration,
-                revision_id: Some(evaluation.revision_id.clone()),
-                structural_report,
-                dfm_report: Some(dfm_report),
-                vlm_report: Some(validated.report.clone()),
-                failure_report: validated.failure_report.clone(),
-                passed: validated.passed,
-                created_at: timestamp(),
-            },
-        )?;
-        Ok(())
-    }
-
-    fn apply_operational_failure(
-        &self,
-        evaluation: &CadValidationEvaluation,
-        error: String,
-    ) -> Result<(), String> {
-        self.service.fail_validation_evaluation(
-            &evaluation.session_id,
-            &evaluation.id,
-            error.clone(),
-        )?;
-        let persisted = self
+    fn is_latest(&self, batch: &CadValidationBatch) -> Result<bool, String> {
+        let run = self
             .service
-            .get_validation_evaluation(&evaluation.session_id, &evaluation.id)?
-            .ok_or_else(|| format!("Validation evaluation not found: {}", evaluation.id))?;
-        self.settle_terminal_batch(&persisted)
+            .get_agent_run(&batch.session_id, &batch.run_id)?
+            .ok_or_else(|| format!("Agent run not found: {}", batch.run_id))?;
+        if run.output_revision_id.as_deref() != Some(batch.revision_id.as_str()) {
+            return Ok(false);
+        }
+        self.service
+            .is_latest_validation_batch(&batch.session_id, &batch.id)
     }
+}
 
-    fn fail_run_for_evaluation(
-        &self,
-        evaluation: &CadValidationEvaluation,
-        error: String,
-    ) -> Result<(), String> {
-        self.service.update_agent_run(
-            &evaluation.session_id,
-            &evaluation.run_id,
-            Some(CadAgentRunStatus::Failed),
-            Some(None),
-            Some(error.clone()),
-            None,
-            Some(json!({
-                "evaluationId": evaluation.id,
-                "validationFailed": true,
-                "error": error
-            })),
-        )?;
-        Ok(())
+fn check_terminal(check: &CadValidationCheck) -> bool {
+    matches!(
+        check.status,
+        CadValidationCheckStatus::Succeeded | CadValidationCheckStatus::Failed
+    )
+}
+fn required_effect_claim(batch: &CadValidationBatch) -> Result<&str, String> {
+    batch
+        .effects_claimed_at
+        .as_deref()
+        .ok_or_else(|| format!("Validation batch effects are not owned: {}", batch.id))
+}
+fn required_check(
+    checks: &[CadValidationCheck],
+    kind: CadValidationCheckKind,
+) -> Result<&CadValidationCheck, String> {
+    checks
+        .iter()
+        .find(|check| check.kind == kind)
+        .ok_or_else(|| format!("Validation batch is missing {kind:?} check."))
+}
+
+fn run_blocking_check(
+    service: Arc<SessionService>,
+    app: &Path,
+    batch: &CadValidationBatch,
+    check: &CadValidationCheck,
+) -> Result<(Value, bool), String> {
+    verify_stl_contract(&check.input_contract)?;
+    let artifact = batch_artifact(&service, batch)?;
+    match check.kind {
+        CadValidationCheckKind::Structural => {
+            verify_executable_contract(&check.input_contract, "sidecarPath", "sidecarSha256")?;
+            let plan: CadModelPlan =
+                serde_json::from_value(required(&check.input_contract, "plan")?.clone())
+                    .map_err(|e| format!("Structural plan contract is invalid: {e}"))?;
+            let path = required_string(&check.input_contract, "sidecarPath")?;
+            let result = structural::evaluate_structural_for_revision(
+                &service,
+                &app.to_path_buf(),
+                &batch.session_id,
+                Some(&batch.run_id),
+                &batch.revision_id,
+                &plan,
+                Some(&artifact.id),
+                Some(path),
+            )
+            .map_err(|e| e.message)?;
+            structural::validate_structural_report(
+                &result.report,
+                &batch.run_id,
+                &batch.revision_id,
+            )
+            .map_err(|e| e.message)?;
+            Ok((result.report, result.passed))
+        }
+        CadValidationCheckKind::Dfm => {
+            let prepared: crate::dfm::PreparedDfmInputs =
+                serde_json::from_value(required(&check.input_contract, "prepared")?.clone())
+                    .map_err(|e| format!("DFM prepared contract is invalid: {e}"))?;
+            let result = crate::dfm::evaluate_prepared(
+                &service,
+                app,
+                &batch.session_id,
+                &batch.run_id,
+                &batch.revision_id,
+                &artifact,
+                &prepared,
+            )?;
+            crate::dfm::validate_report(&result.report, &batch.run_id, &batch.revision_id)?;
+            Ok((result.report, result.passed))
+        }
+        CadValidationCheckKind::Vlm => Err("VLM check cannot run in blocking validator.".into()),
     }
+}
+
+fn render_for_check(
+    service: Arc<SessionService>,
+    app: &Path,
+    batch: &CadValidationBatch,
+    check: &CadValidationCheck,
+) -> Result<CadArtifact, String> {
+    verify_stl_contract(&check.input_contract)?;
+    verify_executable_contract(
+        &check.input_contract,
+        "rendererSidecarPath",
+        "rendererSidecarSha256",
+    )?;
+    let plan: CadModelPlan =
+        serde_json::from_value(required(&check.input_contract, "plan")?.clone())
+            .map_err(|e| format!("VLM plan contract is invalid: {e}"))?;
+    let artifact = batch_artifact(&service, batch)?;
+    let renderer = required_string(&check.input_contract, "rendererSidecarPath")?;
+    vlm::render_vlm_images_for_artifact(
+        &service,
+        &app.to_path_buf(),
+        &batch.session_id,
+        &format!("{}-{}", batch.id, check.id),
+        &batch.revision_id,
+        &plan,
+        &artifact,
+        Some(renderer),
+    )
+    .map_err(|e| e.message)
+}
+
+fn vlm_evaluation_snapshot(
+    batch: &CadValidationBatch,
+    check: &CadValidationCheck,
+    image: &CadArtifact,
+    app: &Path,
+) -> Result<CadValidationCheck, String> {
+    let artifact = check
+        .input_contract
+        .pointer("/stl/artifact")
+        .ok_or_else(|| "VLM input missing STL artifact.".to_string())?;
+    let final_artifact: CadArtifact =
+        serde_json::from_value(artifact.clone()).map_err(|e| e.to_string())?;
+    let judge = vlm::build_vlm_contract(image).map_err(|e| e.message)?;
+    let contract =
+        super::contract::build_input_contract(super::contract::EvaluationContractInput {
+            session_id: &batch.session_id,
+            run_id: &batch.run_id,
+            revision_id: &batch.revision_id,
+            user_request: required_string(&check.input_contract, "userRequest")?,
+            final_artifact: &final_artifact,
+            rendered_image: image,
+            pass_threshold: required(&check.input_contract, "passThreshold")?
+                .as_f64()
+                .ok_or_else(|| "VLM passThreshold invalid.".to_string())?,
+            judge_contract: &judge,
+            app_data_dir: app,
+        })?;
+    let mut object = contract
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "VLM contract is not object.".to_string())?;
+    object.insert("evaluationId".into(), Value::String(check.id.clone()));
+    object.insert("batchId".into(), Value::String(batch.id.clone()));
+    object.insert("attempt".into(), json!(batch.attempt));
+    let mut snapshot = check.clone();
+    snapshot.input_contract = Value::Object(object);
+    Ok(snapshot)
+}
+
+fn validate_vlm_check_report(
+    batch: &CadValidationBatch,
+    check: &CadValidationCheck,
+    report: Value,
+) -> Result<super::contract::ValidatedReport, String> {
+    let evaluation = CadValidationEvaluation {
+        id: check.id.clone(),
+        session_id: batch.session_id.clone(),
+        run_id: batch.run_id.clone(),
+        revision_id: batch.revision_id.clone(),
+        artifact_id: batch.artifact_id.clone(),
+        kind: CadValidationEvaluationKind::Vlm,
+        attempt: batch.attempt,
+        status: CadValidationEvaluationStatus::Running,
+        evaluator_thread_id: check.evaluator_thread_id.clone(),
+        external_turn_id: check.external_turn_id.clone(),
+        input_contract: check.input_contract.clone(),
+        report: None,
+        passed: None,
+        score: None,
+        pass_threshold: check
+            .input_contract
+            .get("passThreshold")
+            .and_then(Value::as_f64)
+            .ok_or_else(|| "VLM check input is missing passThreshold.".to_string())?,
+        error: None,
+        created_at: check.created_at.clone(),
+        started_at: check.started_at.clone(),
+        completed_at: None,
+    };
+    super::contract::validate_report(&evaluation, report)
+}
+
+fn build_aggregate(
+    batch: &CadValidationBatch,
+    checks: &[CadValidationCheck],
+) -> Result<Value, String> {
+    let mut map = Map::new();
+    let mut passed = true;
+    let mut issues = Vec::new();
+    for kind in [
+        CadValidationCheckKind::Structural,
+        CadValidationCheckKind::Dfm,
+        CadValidationCheckKind::Vlm,
+    ] {
+        let check = required_check(checks, kind.clone())?;
+        let report = check
+            .report
+            .clone()
+            .ok_or_else(|| format!("Succeeded {kind:?} check has no report."))?;
+        let ok = check
+            .passed
+            .ok_or_else(|| format!("Succeeded {kind:?} check has no passed."))?;
+        passed &= ok;
+        if !ok {
+            collect_issues(&format!("{:?}", kind).to_lowercase(), &report, &mut issues)?;
+        }
+        map.insert(
+            format!("{:?}", kind).to_lowercase(),
+            json!({"passed":ok,"report":report}),
+        );
+    }
+    let failure = if passed {
+        Value::Null
+    } else {
+        json!({"contractType":"cadastrophe.failure_report.v1","reason":"validation_batch_rejected","summary":"One or more validation checks rejected the final artifact.","nextAction":"outer_loop_refine_source","issues":issues})
+    };
+    Ok(
+        json!({"contractType":"cadastrophe.finalization_report.v2","batchId":batch.id,"revisionId":batch.revision_id,"artifactId":batch.artifact_id,"attempt":batch.attempt,"passed":passed,"checks":map,"failureReport":failure}),
+    )
+}
+fn ensure_rejection_has_actionable_issue(
+    kind: &CadValidationCheckKind,
+    report: &Value,
+) -> Result<(), String> {
+    let mut issues = Vec::new();
+    collect_issues(&format!("{kind:?}").to_lowercase(), report, &mut issues).map(|_| ())
+}
+
+fn collect_issues(source: &str, report: &Value, out: &mut Vec<Value>) -> Result<usize, String> {
+    let initial_len = out.len();
+    for key in [
+        "issues",
+        "findings",
+        "diagnostics",
+        "checks",
+        "inconsistencies",
+    ] {
+        if let Some(items) = report.get(key).and_then(Value::as_array) {
+            for item in items {
+                let rejected = item.get("passed").and_then(Value::as_bool) == Some(false)
+                    || item
+                        .get("severity")
+                        .and_then(Value::as_str)
+                        .is_some_and(|s| matches!(s, "error" | "major"))
+                    || key == "findings"
+                    || key == "inconsistencies";
+                if rejected {
+                    if let Some(obj) = item.as_object() {
+                        if let Some(issue) = actionable_issue_from_object(source, obj) {
+                            out.push(issue);
+                        }
+                    } else if let Some(message) =
+                        item.as_str().filter(|value| !value.trim().is_empty())
+                    {
+                        out.push(json!({"source":source,"message":message}));
+                    }
+                }
+            }
+        }
+    }
+    if out.len() == initial_len {
+        let failure = report.get("failureReport").and_then(Value::as_object);
+        let code = failure
+            .and_then(|value| value.get("reason"))
+            .and_then(Value::as_str)
+            .or_else(|| report.get("code").and_then(Value::as_str));
+        let message = failure
+            .and_then(|value| value.get("summary"))
+            .and_then(Value::as_str)
+            .or_else(|| report.get("diagnostic").and_then(Value::as_str));
+        match (
+            code.filter(|value| !value.trim().is_empty()),
+            message.filter(|value| !value.trim().is_empty()),
+        ) {
+            (Some(code), Some(message)) => {
+                out.push(json!({"source":source,"code":code,"message":message}));
+            }
+            _ => {
+                return Err(format!(
+                    "Rejected {source} report contains no actionable issue with an actual message and no complete failure reason/summary."
+                ));
+            }
+        }
+    }
+    Ok(out.len() - initial_len)
+}
+
+fn actionable_issue_from_object(source: &str, object: &Map<String, Value>) -> Option<Value> {
+    let message = ["message", "summary", "diagnostic", "observed"]
+        .into_iter()
+        .find_map(|key| object.get(key).and_then(Value::as_str))
+        .filter(|value| !value.trim().is_empty())?;
+    let code = ["code", "name", "reason", "severity"]
+        .into_iter()
+        .find_map(|key| object.get(key).and_then(Value::as_str))
+        .filter(|value| !value.trim().is_empty());
+    let mut issue = object.clone();
+    issue.insert("source".into(), json!(source));
+    issue.insert("message".into(), json!(message));
+    if let Some(code) = code {
+        issue.insert("code".into(), json!(code));
+    }
+    Some(Value::Object(issue))
+}
+fn batch_artifact(
+    service: &SessionService,
+    batch: &CadValidationBatch,
+) -> Result<CadArtifact, String> {
+    service
+        .get_revision(&batch.session_id, &batch.revision_id)?
+        .artifacts
+        .into_iter()
+        .find(|a| a.id == batch.artifact_id)
+        .ok_or_else(|| format!("Validation STL artifact not found: {}", batch.artifact_id))
+}
+fn required<'a>(v: &'a Value, key: &str) -> Result<&'a Value, String> {
+    v.get(key)
+        .ok_or_else(|| format!("Validation input missing {key}."))
+}
+fn required_string<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
+    required(v, key)?
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| format!("Validation input {key} must be non-empty string."))
+}
+fn artifact_path(app: &Path, artifact: &CadArtifact) -> Result<PathBuf, String> {
+    crate::cli::artifacts::artifact_filesystem_path(app, artifact)
+        .map(PathBuf::from)
+        .ok_or_else(|| "Rendered artifact path missing.".into())
+}
+fn verify_stl_contract(c: &Value) -> Result<(), String> {
+    let path = PathBuf::from(
+        c.pointer("/stl/path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "STL contract path missing.".to_string())?,
+    );
+    let expected = c
+        .pointer("/stl/sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "STL contract sha256 missing.".to_string())?;
+    let bytes = std::fs::read(&path)
+        .map_err(|e| format!("Immutable STL unavailable {}: {e}", path.display()))?;
+    let actual = crate::storage::sha256_hex(&bytes);
+    if actual != expected {
+        return Err(format!(
+            "Immutable STL hash changed: expected {expected}, received {actual}."
+        ));
+    }
+    Ok(())
+}
+fn verify_executable_contract(c: &Value, path_key: &str, hash_key: &str) -> Result<(), String> {
+    let path = required_string(c, path_key)?;
+    let expected = required_string(c, hash_key)?;
+    let actual = crate::storage::sha256_hex(
+        &std::fs::read(path)
+            .map_err(|e| format!("Validator executable unavailable {path}: {e}"))?,
+    );
+    if actual != expected {
+        return Err(format!(
+            "Validator executable changed after queueing: {path}."
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::*;
+    use crate::session_repository::SqliteSessionRepository;
+    use crate::storage::{self, StorageLayout};
     use base64::Engine;
-    use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    struct FakeEvaluator {
-        service: Arc<SessionService>,
-        outcomes: Mutex<VecDeque<Outcome>>,
-    }
-
-    #[derive(Clone, Copy)]
-    enum Outcome {
-        Pass,
-        Reject,
-        Malformed,
-    }
-
+    struct NeverVlm;
     #[async_trait]
-    impl VlmEvaluationExecutor for FakeEvaluator {
-        async fn evaluate(&self, input: CodexVlmEvaluationInput) -> Result<Value, String> {
-            let evaluation = input.evaluation;
-            let now = timestamp();
-            let thread_id = format!("validation-thread-{}", evaluation.id);
-            self.service.upsert_agent_thread(CadAgentThread {
-                id: thread_id.clone(),
-                session_id: evaluation.session_id.clone(),
-                plane: CadAgentPlane::Validation,
-                owner_id: evaluation.id.clone(),
-                external_agent: "fake-vlm".to_string(),
-                external_thread_id: format!("external-{}", evaluation.id),
-                status: CadAgentThreadStatus::Active,
-                connection_generation: Some(1),
-                created_at: now.clone(),
-                updated_at: now.clone(),
-                last_resumed_at: None,
-                archived_at: None,
-                replaced_by_id: None,
-                metadata: None,
-            })?;
-            self.service.bind_validation_evaluation(
-                &evaluation.session_id,
-                &evaluation.id,
-                &thread_id,
-                &format!("turn-{}", evaluation.id),
-            )?;
-            let mut thread = self
-                .service
-                .list_agent_threads(&evaluation.session_id)?
-                .into_iter()
-                .find(|thread| thread.id == thread_id)
-                .ok_or_else(|| "Fake validation thread disappeared.".to_string())?;
-            thread.status = CadAgentThreadStatus::Archived;
-            thread.updated_at = timestamp();
-            thread.archived_at = Some(timestamp());
-            self.service.upsert_agent_thread(thread)?;
-            let outcome = self
-                .outcomes
-                .lock()
-                .map_err(|_| "Fake evaluator outcome lock is poisoned.".to_string())?
-                .pop_front()
-                .ok_or_else(|| "Fake evaluator has no outcome.".to_string())?;
-            match outcome {
-                Outcome::Pass => Ok(report(&evaluation, true)),
-                Outcome::Reject => Ok(report(&evaluation, false)),
-                Outcome::Malformed => Ok(json!({"contractType": "wrong"})),
-            }
+    impl VlmCheckExecutor for NeverVlm {
+        async fn evaluate(&self, _: CodexVlmCheckInput) -> Result<Value, String> {
+            Err("unexpected VLM execution".into())
         }
-
-        async fn recover(&self, evaluation: &CadValidationEvaluation) -> Result<Value, String> {
-            let outcome = self
-                .outcomes
-                .lock()
-                .map_err(|_| "Fake evaluator outcome lock is poisoned.".to_string())?
-                .pop_front()
-                .ok_or_else(|| "Fake evaluator has no recovery outcome.".to_string())?;
-            match outcome {
-                Outcome::Pass => Ok(report(evaluation, true)),
-                Outcome::Reject => Ok(report(evaluation, false)),
-                Outcome::Malformed => Ok(json!({"contractType": "wrong"})),
-            }
+        async fn recover(&self, _: &CadValidationCheck) -> Result<Value, String> {
+            Err("unexpected VLM recovery".into())
         }
     }
 
-    fn report(evaluation: &CadValidationEvaluation, passed: bool) -> Value {
-        let (scores, composite, score) = if passed {
-            (
-                json!({"structure": 3, "components": 3, "proportions": 3}),
-                9,
-                1.0,
-            )
-        } else {
-            (
-                json!({"structure": 2, "components": 1, "proportions": 2}),
-                5,
-                5.0 / 9.0,
-            )
-        };
-        json!({
-            "contractType": "cadastrophe.vlm_judge_report.v1",
-            "evaluationId": evaluation.id,
-            "sessionId": evaluation.session_id,
-            "runId": evaluation.run_id,
-            "revisionId": evaluation.revision_id,
-            "artifactId": evaluation.artifact_id,
-            "kind": "vlm",
-            "attempt": evaluation.attempt,
-            "score": score,
-            "passed": passed,
-            "scores": scores,
-            "composite": composite,
-            "findings": if passed { json!([]) } else { json!([{"severity": "major", "message": "support tab is missing"}]) },
-            "enumeration": [{"planName": "support tab", "observed": if passed { "present" } else { "missing" }}],
-            "inconsistencies": if passed { json!([]) } else { json!(["support tab absent"]) },
-            "diagnostic": if passed { "accepted" } else { "requested component is absent" },
-            "failureReport": if passed { Value::Null } else { json!({
-                "contractType": "cadastrophe.failure_report.v1",
-                "reason": "major_component_missing",
-                "summary": "support tab is missing",
-                "nextAction": "outer_loop_refine_source"
-            }) }
-        })
+    struct RecoveringVlm {
+        recover_count: Arc<AtomicUsize>,
+    }
+    #[async_trait]
+    impl VlmCheckExecutor for RecoveringVlm {
+        async fn evaluate(&self, _: CodexVlmCheckInput) -> Result<Value, String> {
+            Err("queued VLM evaluation was not expected".into())
+        }
+        async fn recover(&self, _: &CadValidationCheck) -> Result<Value, String> {
+            self.recover_count.fetch_add(1, Ordering::SeqCst);
+            Err("simulated recovered VLM operational failure".into())
+        }
+    }
+
+    struct OverlapProbe {
+        barrier: tokio::sync::Barrier,
+        active: AtomicUsize,
+        peak: AtomicUsize,
+    }
+    #[async_trait]
+    impl CheckExecutionProbe for OverlapProbe {
+        async fn entered(&self, _: CadValidationCheckKind) {
+            let now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(now, Ordering::SeqCst);
+            self.barrier.wait().await;
+            self.active.fetch_sub(1, Ordering::SeqCst);
+        }
     }
 
     struct Fixture {
         service: Arc<SessionService>,
-        session_id: String,
-        run_id: String,
-        revision_id: String,
-        artifact_id: String,
-        input_contract: Value,
+        session: String,
+        run: String,
+        revision: String,
+        artifact: String,
         cwd: PathBuf,
     }
-
     fn fixture() -> Fixture {
-        let cwd =
-            std::env::temp_dir().join(format!("validation-coordinator-{}", uuid::Uuid::new_v4()));
+        let cwd = std::env::temp_dir().join(format!("batch-coordinator-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&cwd).unwrap();
         let service = Arc::new(SessionService::new(cwd.clone()));
+        populate_fixture(service, cwd)
+    }
+    fn persistent_fixture() -> (Fixture, StorageLayout) {
+        let app_data_dir =
+            std::env::temp_dir().join(format!("batch-coordinator-db-{}", uuid::Uuid::new_v4()));
+        let layout = StorageLayout::from_app_data_dir(app_data_dir.clone());
+        storage::initialize_storage(&layout).unwrap();
+        let service = Arc::new(
+            SessionService::with_repository(
+                layout.clone(),
+                Arc::new(SqliteSessionRepository::new(layout.clone())),
+            )
+            .unwrap(),
+        );
+        (populate_fixture(service, app_data_dir), layout)
+    }
+    fn populate_fixture(service: Arc<SessionService>, cwd: PathBuf) -> Fixture {
         let session = service
             .create_session(CreateCadSessionInput::default())
             .unwrap();
         let (run, _) = service
             .create_agent_run(
                 &session.session_id,
-                "Create a bracket with a support tab.".to_string(),
+                "make bracket".into(),
                 None,
-                Some("fake-modeler".to_string()),
+                Some("test".into()),
                 None,
             )
             .unwrap();
-        let revision_id = service
+        let revision = service
             .update_model_source(UpdateModelSourceInput {
                 session_id: session.session_id.clone(),
                 source_language: CadSourceLanguage::Openscad,
-                source: "cube([2,2,2]);".to_string(),
+                source: "cube([1,1,1]);".into(),
                 parent_revision_id: None,
                 parameters: None,
             })
             .unwrap()
             .revision_id;
         service
-            .link_agent_run_output_revision(&session.session_id, &run.id, revision_id.clone())
+            .link_agent_run_output_revision(&session.session_id, &run.id, revision.clone())
             .unwrap();
         let artifact = service
             .persist_runtime_artifact(PersistRuntimeArtifactInput {
                 session_id: session.session_id.clone(),
-                revision_id: revision_id.clone(),
+                revision_id: revision.clone(),
                 kind: CadArtifactKind::Stl,
-                format: "stl".to_string(),
+                format: "stl".into(),
                 contents_base64: base64::engine::general_purpose::STANDARD
-                    .encode(b"solid test\nendsolid test\n"),
+                    .encode(b"solid x\nendsolid x\n"),
                 diagnostics: CadDiagnostics {
                     ok: true,
                     elapsed_ms: 0,
                     items: vec![],
                 },
-                metadata: Metadata::new(),
+                metadata: Map::new(),
             })
             .unwrap()
-            .artifact;
-        let image = service
-            .persist_runtime_artifact(PersistRuntimeArtifactInput {
-                session_id: session.session_id.clone(),
-                revision_id: revision_id.clone(),
-                kind: CadArtifactKind::RenderImage,
-                format: "png".to_string(),
-                contents_base64: base64::engine::general_purpose::STANDARD.encode(b"png fixture"),
-                diagnostics: CadDiagnostics {
-                    ok: true,
-                    elapsed_ms: 0,
-                    items: vec![],
-                },
-                metadata: Metadata::new(),
-            })
-            .unwrap()
-            .artifact;
-        let metadata = image.metadata.as_ref().unwrap();
-        let image_path = metadata
-            .get("path")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| {
-                cwd.join(metadata["relativePath"].as_str().unwrap())
-                    .to_str()
-                    .unwrap()
-                    .to_string()
-            });
-        let input_contract = json!({
-            "contractType": "cadastrophe.vlm_evaluation_input.v1",
-            "sessionId": session.session_id,
-            "runId": run.id,
-            "revisionId": revision_id,
-            "artifactId": artifact.id,
-            "kind": "vlm",
-            "userRequest": run.prompt,
-            "passThreshold": 0.8,
-            "renderedImage": {
-                "artifactId": image.id,
-                "path": image_path,
-                "sha256": metadata["sha256"]
-            },
-            "structuralReport": {"contractType": "cadastrophe.structural_report.v1", "passed": true},
-            "dfmReport": {"contractType": "cadastrophe.dfm_report.v1", "passed": true}
-        });
+            .artifact
+            .id;
         Fixture {
             service,
-            session_id: session.session_id,
-            run_id: run.id,
-            revision_id,
-            artifact_id: artifact.id,
-            input_contract,
+            session: session.session_id,
+            run: run.id,
+            revision,
+            artifact,
             cwd,
         }
     }
-
-    fn create_attempt(fixture: &Fixture) -> CadValidationEvaluation {
-        fixture
-            .service
-            .create_next_validation_evaluation(CadValidationEvaluationCreate {
-                session_id: fixture.session_id.clone(),
-                run_id: fixture.run_id.clone(),
-                revision_id: fixture.revision_id.clone(),
-                artifact_id: fixture.artifact_id.clone(),
-                kind: CadValidationEvaluationKind::Vlm,
-                input_contract: fixture.input_contract.clone(),
-                pass_threshold: 0.8,
+    fn create_batch(f: &Fixture) -> (CadValidationBatch, Vec<CadValidationCheck>) {
+        f.service
+            .create_validation_batch(CadValidationBatchCreate {
+                session_id: f.session.clone(),
+                run_id: f.run.clone(),
+                revision_id: f.revision.clone(),
+                artifact_id: f.artifact.clone(),
+                checks: vec![
+                    CadValidationCheckCreate {
+                        kind: CadValidationCheckKind::Structural,
+                        input_contract: json!({}),
+                    },
+                    CadValidationCheckCreate {
+                        kind: CadValidationCheckKind::Dfm,
+                        input_contract: json!({}),
+                    },
+                    CadValidationCheckCreate {
+                        kind: CadValidationCheckKind::Vlm,
+                        input_contract: json!({"passThreshold":0.8}),
+                    },
+                ],
             })
             .unwrap()
     }
+    fn start_all(f: &Fixture, checks: &[CadValidationCheck]) {
+        for check in checks {
+            match check.kind {
+                CadValidationCheckKind::Structural | CadValidationCheckKind::Dfm => {
+                    f.service
+                        .start_validation_check(&f.session, &check.id)
+                        .unwrap();
+                }
+                CadValidationCheckKind::Vlm => {
+                    let now = timestamp();
+                    let thread = CadAgentThread {
+                        id: format!("thread-{}", check.id),
+                        session_id: f.session.clone(),
+                        plane: CadAgentPlane::Validation,
+                        owner_id: check.id.clone(),
+                        external_agent: "fake".into(),
+                        external_thread_id: format!("external-{}", check.id),
+                        status: CadAgentThreadStatus::Active,
+                        connection_generation: Some(1),
+                        created_at: now.clone(),
+                        updated_at: now,
+                        last_resumed_at: None,
+                        archived_at: None,
+                        replaced_by_id: None,
+                        metadata: None,
+                    };
+                    f.service.upsert_agent_thread(thread.clone()).unwrap();
+                    f.service
+                        .bind_validation_check(&f.session, &check.id, &thread.id, "turn-1")
+                        .unwrap();
+                }
+            }
+        }
+    }
+    fn complete_rejecting_checks(f: &Fixture, checks: &[CadValidationCheck]) {
+        start_all(f, checks);
+        for check in checks {
+            let passed = check.kind == CadValidationCheckKind::Vlm;
+            let report = match check.kind {
+                CadValidationCheckKind::Structural => {
+                    json!({"passed":false,"checks":[{"passed":false,"message":"thin"}]})
+                }
+                CadValidationCheckKind::Dfm => {
+                    json!({"passed":false,"profileHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","diagnostics":[{"severity":"error","message":"bridge"}]})
+                }
+                CadValidationCheckKind::Vlm => json!({"passed":true,"findings":[]}),
+            };
+            f.service
+                .complete_validation_check(&f.session, &check.id, report, passed)
+                .unwrap();
+        }
+    }
+    fn coordinator(f: &Fixture, count: Arc<AtomicUsize>) -> ValidationCoordinator {
+        ValidationCoordinator::new(
+            f.service.clone(),
+            Arc::new(NeverVlm),
+            Arc::new(move |_, _| {
+                count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+            f.cwd.clone(),
+        )
+        .unwrap()
+    }
 
-    fn create_new_revision_attempt(fixture: &Fixture) -> CadValidationEvaluation {
-        let revision_id = fixture
+    fn batch() -> CadValidationBatch {
+        CadValidationBatch {
+            id: "batch-1".into(),
+            session_id: "session-1".into(),
+            run_id: "run-1".into(),
+            revision_id: "revision-1".into(),
+            artifact_id: "artifact-1".into(),
+            attempt: 1,
+            status: CadValidationBatchStatus::Running,
+            aggregate_report: None,
+            created_at: "1".into(),
+            started_at: Some("1".into()),
+            settlement_claimed_at: None,
+            settled_at: None,
+            effects_claimed_at: None,
+            refinement_requested_at: None,
+            refinement_bound_at: None,
+            effects_applied_at: None,
+        }
+    }
+    fn check(kind: CadValidationCheckKind, passed: bool, report: Value) -> CadValidationCheck {
+        CadValidationCheck {
+            id: format!("{kind:?}"),
+            batch_id: "batch-1".into(),
+            session_id: "session-1".into(),
+            kind,
+            status: CadValidationCheckStatus::Succeeded,
+            input_contract: json!({}),
+            report: Some(report),
+            passed: Some(passed),
+            error: None,
+            evaluator_thread_id: None,
+            external_turn_id: None,
+            created_at: "1".into(),
+            started_at: Some("1".into()),
+            completed_at: Some("2".into()),
+        }
+    }
+
+    #[test]
+    fn multiple_rejections_are_aggregated_with_source_tags() {
+        let checks = vec![
+            check(
+                CadValidationCheckKind::Structural,
+                false,
+                json!({"checks":[{"passed":false,"code":"wall","message":"thin"}]}),
+            ),
+            check(
+                CadValidationCheckKind::Dfm,
+                false,
+                json!({"diagnostics":[{"severity":"error","code":"bridge","message":"unsupported"}]}),
+            ),
+            check(CadValidationCheckKind::Vlm, true, json!({"findings":[]})),
+        ];
+        let aggregate = build_aggregate(&batch(), &checks).unwrap();
+        assert_eq!(aggregate["passed"], false);
+        let issues = aggregate["failureReport"]["issues"].as_array().unwrap();
+        assert_eq!(issues.len(), 2);
+        assert_eq!(issues[0]["source"], "structural");
+        assert_eq!(issues[1]["source"], "dfm");
+        assert_eq!(
+            aggregate["failureReport"]["reason"],
+            "validation_batch_rejected"
+        );
+    }
+
+    #[test]
+    fn operational_failure_cannot_be_aggregated_as_rejection() {
+        let checks = vec![
+            check(CadValidationCheckKind::Structural, true, json!({})),
+            CadValidationCheck {
+                id: "dfm".into(),
+                batch_id: "batch-1".into(),
+                session_id: "session-1".into(),
+                kind: CadValidationCheckKind::Dfm,
+                status: CadValidationCheckStatus::Failed,
+                input_contract: json!({}),
+                report: None,
+                passed: None,
+                error: Some("slicer unavailable".into()),
+                evaluator_thread_id: None,
+                external_turn_id: None,
+                created_at: "1".into(),
+                started_at: Some("1".into()),
+                completed_at: Some("2".into()),
+            },
+            check(CadValidationCheckKind::Vlm, true, json!({})),
+        ];
+        assert!(build_aggregate(&batch(), &checks).is_err());
+        assert!(checks[1].report.is_none());
+        assert!(checks[1].passed.is_none());
+    }
+
+    #[test]
+    fn rejection_without_actual_actionable_issue_is_an_operational_contract_failure() {
+        let checks = vec![
+            check(
+                CadValidationCheckKind::Structural,
+                false,
+                json!({"passed":false,"checks":[]}),
+            ),
+            check(CadValidationCheckKind::Dfm, true, json!({})),
+            check(CadValidationCheckKind::Vlm, true, json!({})),
+        ];
+        let error = build_aggregate(&batch(), &checks).unwrap_err();
+        assert!(error.contains("no actionable issue"));
+
+        let f = fixture();
+        let (_, persisted) = create_batch(&f);
+        let structural = required_check(&persisted, CadValidationCheckKind::Structural).unwrap();
+        f.service
+            .start_validation_check(&f.session, &structural.id)
+            .unwrap();
+        coordinator(&f, Arc::new(AtomicUsize::new(0)))
+            .persist_check_result(structural, Ok((json!({"passed":false,"checks":[]}), false)))
+            .unwrap();
+        let failed = f
+            .service
+            .get_validation_check(&f.session, &structural.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.status, CadValidationCheckStatus::Failed);
+        assert!(failed.report.is_none());
+        assert!(failed.error.unwrap().contains("not actionable"));
+    }
+
+    #[tokio::test]
+    async fn execute_batch_enters_all_three_check_paths_concurrently() {
+        let f = fixture();
+        let (batch, _) = create_batch(&f);
+        let probe = Arc::new(OverlapProbe {
+            barrier: tokio::sync::Barrier::new(3),
+            active: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+        });
+        let coordinator =
+            coordinator(&f, Arc::new(AtomicUsize::new(0))).with_execution_probe(probe.clone());
+        coordinator.execute_batch(batch.clone()).await.unwrap();
+        assert_eq!(probe.peak.load(Ordering::SeqCst), 3);
+        let settled = f
+            .service
+            .get_validation_batch(&f.session, &batch.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(settled.status, CadValidationBatchStatus::Failed);
+        assert!(settled.settled_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn startup_reexecutes_running_blocking_checks_and_recovers_running_vlm() {
+        let f = fixture();
+        let (batch, checks) = create_batch(&f);
+        start_all(&f, &checks);
+        let recover_count = Arc::new(AtomicUsize::new(0));
+        let coordinator = ValidationCoordinator::new(
+            f.service.clone(),
+            Arc::new(RecoveringVlm {
+                recover_count: recover_count.clone(),
+            }),
+            Arc::new(|_, _| Ok(())),
+            f.cwd.clone(),
+        )
+        .unwrap();
+        coordinator.recover_startup().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if f.service
+                    .get_validation_batch(&f.session, &batch.id)
+                    .unwrap()
+                    .unwrap()
+                    .settled_at
+                    .is_some()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(recover_count.load(Ordering::SeqCst), 1);
+        let recovered = f
+            .service
+            .list_validation_checks(&f.session, &batch.id)
+            .unwrap();
+        for kind in [
+            CadValidationCheckKind::Structural,
+            CadValidationCheckKind::Dfm,
+        ] {
+            let check = required_check(&recovered, kind).unwrap();
+            assert_eq!(check.status, CadValidationCheckStatus::Failed);
+            assert!(check.error.as_deref().unwrap().contains("contract"));
+        }
+        assert_eq!(
+            required_check(&recovered, CadValidationCheckKind::Vlm)
+                .unwrap()
+                .status,
+            CadValidationCheckStatus::Failed
+        );
+    }
+
+    #[test]
+    fn rejecting_batch_persists_one_outer_iteration_and_enqueues_once() {
+        let f = fixture();
+        let (batch, checks) = create_batch(&f);
+        complete_rejecting_checks(&f, &checks);
+        let count = Arc::new(AtomicUsize::new(0));
+        let coordinator = coordinator(&f, count.clone());
+        coordinator.try_settle_batch(&f.session, &batch.id).unwrap();
+        coordinator.try_settle_batch(&f.session, &batch.id).unwrap();
+        let state = f.service.get_session_state(&f.session).unwrap();
+        assert_eq!(state.workflow.outer_iterations.len(), 1);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            state.workflow.outer_iterations[0]
+                .failure_report
+                .as_ref()
+                .unwrap()["reason"],
+            "validation_batch_rejected"
+        );
+    }
+
+    #[test]
+    fn requested_refinement_is_reenqueued_after_restart_before_turn_binding() {
+        let (f, layout) = persistent_fixture();
+        let (batch, checks) = create_batch(&f);
+        complete_rejecting_checks(&f, &checks);
+        let initial_count = Arc::new(AtomicUsize::new(0));
+        coordinator(&f, initial_count.clone())
+            .try_settle_batch(&f.session, &batch.id)
+            .unwrap();
+        assert_eq!(initial_count.load(Ordering::SeqCst), 1);
+        let requested = f
+            .service
+            .get_validation_batch(&f.session, &batch.id)
+            .unwrap()
+            .unwrap();
+        assert!(requested.refinement_requested_at.is_some());
+        assert!(requested.refinement_bound_at.is_none());
+        assert!(requested.effects_applied_at.is_none());
+
+        let session_id = f.session.clone();
+        let run_id = f.run.clone();
+        let batch_id = batch.id.clone();
+        let cwd = f.cwd.clone();
+        drop(f);
+        let restarted_service = Arc::new(
+            SessionService::with_repository(
+                layout.clone(),
+                Arc::new(SqliteSessionRepository::new(layout)),
+            )
+            .unwrap(),
+        );
+        let restart_count = Arc::new(AtomicUsize::new(0));
+        let restarted = ValidationCoordinator::new(
+            restarted_service.clone(),
+            Arc::new(NeverVlm),
+            {
+                let restart_count = restart_count.clone();
+                Arc::new(move |_, _| {
+                    restart_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            },
+            cwd,
+        )
+        .unwrap();
+        restarted.recover_startup().unwrap();
+        assert_eq!(restart_count.load(Ordering::SeqCst), 1);
+        let recovered = restarted_service
+            .get_validation_batch(&session_id, &batch_id)
+            .unwrap()
+            .unwrap();
+        assert!(recovered.refinement_requested_at.is_some());
+        assert!(recovered.refinement_bound_at.is_none());
+        assert!(recovered.effects_applied_at.is_none());
+        assert_eq!(
+            restarted_service
+                .get_agent_run(&session_id, &run_id)
+                .unwrap()
+                .unwrap()
+                .active_step
+                .as_deref(),
+            Some("Refining after validation batch")
+        );
+    }
+
+    #[test]
+    fn persisted_turn_binding_is_confirmed_after_restart_without_duplicate_enqueue() {
+        let (f, layout) = persistent_fixture();
+        let (batch, checks) = create_batch(&f);
+        complete_rejecting_checks(&f, &checks);
+        let initial_count = Arc::new(AtomicUsize::new(0));
+        coordinator(&f, initial_count.clone())
+            .try_settle_batch(&f.session, &batch.id)
+            .unwrap();
+        f.service
+            .update_agent_run_external_metadata(
+                &f.session,
+                &f.run,
+                Some("codex".into()),
+                Some("thread-refine".into()),
+                Some("turn-refine".into()),
+            )
+            .unwrap();
+
+        let session_id = f.session.clone();
+        let run_id = f.run.clone();
+        let batch_id = batch.id.clone();
+        let cwd = f.cwd.clone();
+        drop(f);
+        let restarted_service = Arc::new(
+            SessionService::with_repository(
+                layout.clone(),
+                Arc::new(SqliteSessionRepository::new(layout)),
+            )
+            .unwrap(),
+        );
+        let candidates = restarted_service
+            .list_startup_agent_run_recovery_candidates()
+            .unwrap();
+        assert!(candidates.iter().any(|candidate| {
+            candidate.run_id == run_id
+                && candidate.action == CadAgentRunRecoveryAction::QueryHistory
+        }));
+        let restart_count = Arc::new(AtomicUsize::new(0));
+        let restarted = ValidationCoordinator::new(
+            restarted_service.clone(),
+            Arc::new(NeverVlm),
+            {
+                let restart_count = restart_count.clone();
+                Arc::new(move |_, _| {
+                    restart_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            },
+            cwd,
+        )
+        .unwrap();
+        restarted.recover_startup().unwrap();
+        assert_eq!(restart_count.load(Ordering::SeqCst), 0);
+        let recovered = restarted_service
+            .get_validation_batch(&session_id, &batch_id)
+            .unwrap()
+            .unwrap();
+        assert!(recovered.refinement_requested_at.is_some());
+        assert!(recovered.refinement_bound_at.is_some());
+        assert!(recovered.effects_applied_at.is_some());
+    }
+
+    #[test]
+    fn operational_failure_fails_run_without_iteration_or_refinement() {
+        let f = fixture();
+        let (batch, checks) = create_batch(&f);
+        start_all(&f, &checks);
+        for check in &checks {
+            if check.kind == CadValidationCheckKind::Dfm {
+                f.service
+                    .fail_validation_check(&f.session, &check.id, "slicer crashed".into())
+                    .unwrap();
+            } else {
+                f.service
+                    .complete_validation_check(&f.session, &check.id, json!({"passed":true}), true)
+                    .unwrap();
+            }
+        }
+        let count = Arc::new(AtomicUsize::new(0));
+        coordinator(&f, count.clone())
+            .try_settle_batch(&f.session, &batch.id)
+            .unwrap();
+        let state = f.service.get_session_state(&f.session).unwrap();
+        assert!(state.workflow.outer_iterations.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            state
+                .agent_runs
+                .iter()
+                .find(|run| run.id == f.run)
+                .unwrap()
+                .status,
+            CadAgentRunStatus::Failed
+        );
+        assert!(f
+            .service
+            .get_validation_batch(&f.session, &batch.id)
+            .unwrap()
+            .unwrap()
+            .aggregate_report
+            .is_none());
+    }
+
+    #[test]
+    fn older_same_revision_batch_settles_without_run_side_effects() {
+        let f = fixture();
+        let (old, checks) = create_batch(&f);
+        let (_new, _) = create_batch(&f);
+        start_all(&f, &checks);
+        for check in &checks {
+            f.service
+                .complete_validation_check(
+                    &f.session,
+                    &check.id,
+                    json!({"passed":true,"profileHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}),
+                    true,
+                )
+                .unwrap();
+        }
+        let count = Arc::new(AtomicUsize::new(0));
+        coordinator(&f, count.clone())
+            .try_settle_batch(&f.session, &old.id)
+            .unwrap();
+        let state = f.service.get_session_state(&f.session).unwrap();
+        assert!(state.workflow.outer_iterations.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert!(f
+            .service
+            .get_validation_batch(&f.session, &old.id)
+            .unwrap()
+            .unwrap()
+            .settled_at
+            .is_some());
+    }
+
+    #[test]
+    fn terminal_unsettled_batch_is_settled_during_startup_recovery() {
+        let f = fixture();
+        let (batch, checks) = create_batch(&f);
+        start_all(&f, &checks);
+        for check in &checks {
+            if check.kind == CadValidationCheckKind::Dfm {
+                f.service
+                    .fail_validation_check(&f.session, &check.id, "slicer exited".into())
+                    .unwrap();
+            } else {
+                f.service
+                    .complete_validation_check(&f.session, &check.id, json!({"passed":true}), true)
+                    .unwrap();
+            }
+        }
+        let count = Arc::new(AtomicUsize::new(0));
+        coordinator(&f, count.clone()).recover_startup().unwrap();
+        let settled = f
+            .service
+            .get_validation_batch(&f.session, &batch.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(settled.status, CadValidationBatchStatus::Failed);
+        assert!(settled.settled_at.is_some());
+        assert!(settled.effects_applied_at.is_some());
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn stale_revision_batch_settles_without_mutating_run_or_workflow() {
+        let f = fixture();
+        let (batch, checks) = create_batch(&f);
+        start_all(&f, &checks);
+        for check in &checks {
+            f.service
+                .complete_validation_check(&f.session, &check.id, json!({"passed":true}), true)
+                .unwrap();
+        }
+        let next = f
             .service
             .update_model_source(UpdateModelSourceInput {
-                session_id: fixture.session_id.clone(),
+                session_id: f.session.clone(),
                 source_language: CadSourceLanguage::Openscad,
-                source: "cube([6,6,6]);".to_string(),
-                parent_revision_id: Some(fixture.revision_id.clone()),
+                source: "sphere(2);".into(),
+                parent_revision_id: Some(f.revision.clone()),
                 parameters: None,
             })
             .unwrap()
             .revision_id;
-        fixture
-            .service
-            .link_agent_run_output_revision(
-                &fixture.session_id,
-                &fixture.run_id,
-                revision_id.clone(),
-            )
+        f.service
+            .link_agent_run_output_revision(&f.session, &f.run, next)
             .unwrap();
-        let artifact = fixture
-            .service
-            .persist_runtime_artifact(PersistRuntimeArtifactInput {
-                session_id: fixture.session_id.clone(),
-                revision_id: revision_id.clone(),
-                kind: CadArtifactKind::Stl,
-                format: "stl".to_string(),
-                contents_base64: base64::engine::general_purpose::STANDARD
-                    .encode(b"solid latest\nendsolid latest\n"),
-                diagnostics: CadDiagnostics {
-                    ok: true,
-                    elapsed_ms: 0,
-                    items: vec![],
-                },
-                metadata: Metadata::new(),
-            })
-            .unwrap()
-            .artifact;
-        fixture
-            .service
-            .create_next_validation_evaluation(CadValidationEvaluationCreate {
-                session_id: fixture.session_id.clone(),
-                run_id: fixture.run_id.clone(),
-                revision_id: revision_id.clone(),
-                artifact_id: artifact.id.clone(),
-                kind: CadValidationEvaluationKind::Vlm,
-                input_contract: json!({
-                    "contractType": "cadastrophe.vlm_evaluation_input.v1",
-                    "sessionId": fixture.session_id,
-                    "runId": fixture.run_id,
-                    "revisionId": revision_id,
-                    "artifactId": artifact.id,
-                    "kind": "vlm",
-                    "userRequest": "Create a bracket with a support tab.",
-                    "passThreshold": 0.8,
-                    "renderedImage": fixture.input_contract["renderedImage"],
-                    "structuralReport": {"contractType": "cadastrophe.structural_report.v1", "passed": true},
-                    "dfmReport": {"contractType": "cadastrophe.dfm_report.v1", "passed": true}
-                }),
-                pass_threshold: 0.8,
-            })
-            .unwrap()
-    }
-
-    fn bind_running(
-        fixture: &Fixture,
-        evaluation: &CadValidationEvaluation,
-    ) -> CadValidationEvaluation {
-        let now = timestamp();
-        let thread_id = format!("recovery-thread-{}", evaluation.id);
-        fixture
-            .service
-            .upsert_agent_thread(CadAgentThread {
-                id: thread_id.clone(),
-                session_id: fixture.session_id.clone(),
-                plane: CadAgentPlane::Validation,
-                owner_id: evaluation.id.clone(),
-                external_agent: "fake-vlm".to_string(),
-                external_thread_id: format!("recovery-external-{}", evaluation.id),
-                status: CadAgentThreadStatus::NotLoaded,
-                connection_generation: None,
-                created_at: now.clone(),
-                updated_at: now,
-                last_resumed_at: None,
-                archived_at: None,
-                replaced_by_id: None,
-                metadata: None,
-            })
+        let count = Arc::new(AtomicUsize::new(0));
+        coordinator(&f, count.clone())
+            .try_settle_batch(&f.session, &batch.id)
             .unwrap();
-        fixture
-            .service
-            .bind_validation_evaluation(
-                &fixture.session_id,
-                &evaluation.id,
-                &thread_id,
-                &format!("recovery-turn-{}", evaluation.id),
-            )
-            .unwrap()
-    }
-
-    fn finish_terminal(
-        fixture: &Fixture,
-        evaluation: &CadValidationEvaluation,
-        passed: bool,
-    ) -> CadValidationEvaluation {
-        let running = bind_running(fixture, evaluation);
-        let thread_id = running.evaluator_thread_id.clone().unwrap();
-        let mut thread = fixture
-            .service
-            .list_agent_threads(&fixture.session_id)
-            .unwrap()
-            .into_iter()
-            .find(|thread| thread.id == thread_id)
-            .unwrap();
-        thread.status = CadAgentThreadStatus::Archived;
-        thread.archived_at = Some(timestamp());
-        thread.updated_at = timestamp();
-        fixture.service.upsert_agent_thread(thread).unwrap();
-        let report = report(&running, passed);
-        let score = report["score"].as_f64().unwrap();
-        fixture
-            .service
-            .complete_validation_evaluation(&fixture.session_id, &running.id, report, score, passed)
-            .unwrap()
-    }
-
-    async fn wait_terminal(
-        service: &SessionService,
-        session_id: &str,
-        count: usize,
-    ) -> CadSessionState {
-        for _ in 0..100 {
-            let state = service.get_session_state(session_id).unwrap();
-            if state.validation_evaluations.len() == count
-                && state.validation_evaluations.iter().all(|evaluation| {
-                    matches!(
-                        evaluation.status,
-                        CadValidationEvaluationStatus::Succeeded
-                            | CadValidationEvaluationStatus::Failed
-                    )
-                })
-            {
-                return state;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        panic!("validation evaluations did not become terminal")
-    }
-
-    #[tokio::test]
-    async fn sequential_batch_passes_complete_run_without_mixing_conversation_or_transport() {
-        let fixture = fixture();
-        let first = create_attempt(&fixture);
-        let second = create_attempt(&fixture);
-        let refinements = Arc::new(AtomicUsize::new(0));
-        let refinement_count = Arc::clone(&refinements);
-        let coordinator = ValidationCoordinator::new(
-            Arc::clone(&fixture.service),
-            Arc::new(FakeEvaluator {
-                service: Arc::clone(&fixture.service),
-                outcomes: Mutex::new(VecDeque::from([Outcome::Pass, Outcome::Pass])),
-            }),
-            Arc::new(move |_, _| {
-                refinement_count.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            }),
-            fixture.cwd.clone(),
-        )
-        .unwrap();
-        coordinator.enqueue(first).unwrap();
-        coordinator.enqueue(second).unwrap();
-        let state = wait_terminal(&fixture.service, &fixture.session_id, 2).await;
-        assert_eq!(state.agent_runs[0].status, CadAgentRunStatus::Completed);
-        assert_eq!(state.workflow.outer_iterations.len(), 1);
-        assert_eq!(refinements.load(Ordering::SeqCst), 0);
-        assert!(state.conversation.is_empty());
-        assert_ne!(
-            state.validation_evaluations[0].evaluator_thread_id,
-            state.validation_evaluations[1].evaluator_thread_id
-        );
-        assert_ne!(
-            state.validation_evaluations[0].external_turn_id,
-            state.validation_evaluations[1].external_turn_id
-        );
-        let validation_threads = state
-            .agent_threads
-            .iter()
-            .filter(|thread| thread.plane == CadAgentPlane::Validation)
-            .collect::<Vec<_>>();
-        assert_eq!(validation_threads.len(), 2);
-        assert!(validation_threads.iter().all(|thread| {
-            thread.status == CadAgentThreadStatus::Archived && thread.archived_at.is_some()
-        }));
-        assert_eq!(
-            fixture
-                .service
-                .agent_session_diagnostics(&fixture.session_id)
-                .unwrap()
-                .transport_event_count,
-            0
-        );
-        assert!(fixture
-            .service
-            .list_validation_evaluation_events(
-                &fixture.session_id,
-                &state.validation_evaluations[0].id
-            )
-            .unwrap()
-            .is_empty());
-    }
-
-    #[tokio::test]
-    async fn rejecting_batch_refines_once_after_all_attempts_are_terminal() {
-        let fixture = fixture();
-        let first = create_attempt(&fixture);
-        let second = create_attempt(&fixture);
-        let refinements = Arc::new(AtomicUsize::new(0));
-        let refinement_count = Arc::clone(&refinements);
-        let coordinator = ValidationCoordinator::new(
-            Arc::clone(&fixture.service),
-            Arc::new(FakeEvaluator {
-                service: Arc::clone(&fixture.service),
-                outcomes: Mutex::new(VecDeque::from([Outcome::Reject, Outcome::Pass])),
-            }),
-            Arc::new(move |_, _| {
-                refinement_count.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            }),
-            fixture.cwd.clone(),
-        )
-        .unwrap();
-        coordinator.enqueue(first).unwrap();
-        coordinator.enqueue(second).unwrap();
-        let state = wait_terminal(&fixture.service, &fixture.session_id, 2).await;
-        for _ in 0..200 {
-            if refinements.load(Ordering::SeqCst) == 1 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-        assert_eq!(refinements.load(Ordering::SeqCst), 1);
-        assert_eq!(state.workflow.outer_iterations.len(), 1);
-        assert!(!state.workflow.outer_iterations[0].passed);
-        assert_eq!(state.agent_runs[0].status, CadAgentRunStatus::Running);
-        assert!(state.agent_runs[0].external_turn_id.is_none());
-    }
-
-    #[tokio::test]
-    async fn malformed_report_fails_evaluation_and_run_without_synthetic_result() {
-        let fixture = fixture();
-        let evaluation = create_attempt(&fixture);
-        let coordinator = ValidationCoordinator::new(
-            Arc::clone(&fixture.service),
-            Arc::new(FakeEvaluator {
-                service: Arc::clone(&fixture.service),
-                outcomes: Mutex::new(VecDeque::from([Outcome::Malformed])),
-            }),
-            Arc::new(|_, _| Err("refinement must not run after malformed JSON".to_string())),
-            fixture.cwd.clone(),
-        )
-        .unwrap();
-        coordinator.enqueue(evaluation).unwrap();
-        let state = wait_terminal(&fixture.service, &fixture.session_id, 1).await;
-        assert_eq!(
-            state.validation_evaluations[0].status,
-            CadValidationEvaluationStatus::Failed
-        );
-        assert!(state.validation_evaluations[0].report.is_none());
-        assert!(state.validation_evaluations[0].passed.is_none());
-        assert!(state.validation_evaluations[0]
-            .error
-            .as_deref()
-            .unwrap()
-            .contains("contract validation failed"));
-        assert_eq!(state.agent_runs[0].status, CadAgentRunStatus::Failed);
+        let state = f.service.get_session_state(&f.session).unwrap();
         assert!(state.workflow.outer_iterations.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert!(f
+            .service
+            .get_validation_batch(&f.session, &batch.id)
+            .unwrap()
+            .unwrap()
+            .settled_at
+            .is_some());
     }
 
-    #[tokio::test]
-    async fn startup_recovery_executes_queued_and_recovers_running_evaluations() {
-        for running in [false, true] {
-            let fixture = fixture();
-            let evaluation = create_attempt(&fixture);
-            if running {
-                bind_running(&fixture, &evaluation);
-            }
-            let coordinator = ValidationCoordinator::new(
-                Arc::clone(&fixture.service),
-                Arc::new(FakeEvaluator {
-                    service: Arc::clone(&fixture.service),
-                    outcomes: Mutex::new(VecDeque::from([Outcome::Pass])),
-                }),
-                Arc::new(|_, _| Err("passing recovery must not refine".to_string())),
-                fixture.cwd.clone(),
+    #[test]
+    fn cancelled_run_is_not_resurrected_by_terminal_batch() {
+        let f = fixture();
+        let (batch, checks) = create_batch(&f);
+        start_all(&f, &checks);
+        for check in &checks {
+            f.service
+                .complete_validation_check(&f.session, &check.id, json!({"passed":true}), true)
+                .unwrap();
+        }
+        f.service
+            .update_agent_run(
+                &f.session,
+                &f.run,
+                Some(CadAgentRunStatus::Cancelled),
+                Some(None),
+                None,
+                None,
+                None,
             )
             .unwrap();
-            coordinator.recover_startup().unwrap();
-            let state = wait_terminal(&fixture.service, &fixture.session_id, 1).await;
-            assert_eq!(
-                state.validation_evaluations[0].status,
-                CadValidationEvaluationStatus::Succeeded
-            );
-            assert_eq!(state.agent_runs[0].status, CadAgentRunStatus::Completed);
-        }
-    }
-
-    #[tokio::test]
-    async fn terminal_recovery_ignores_stale_rejected_revision_and_settles_latest_pass() {
-        let fixture = fixture();
-        let old = create_attempt(&fixture);
-        finish_terminal(&fixture, &old, false);
-
-        let latest = create_new_revision_attempt(&fixture);
-        finish_terminal(&fixture, &latest, true);
-        assert!(fixture
-            .service
-            .list_startup_agent_run_recovery_candidates()
-            .unwrap()
-            .is_empty());
-
-        let coordinator = ValidationCoordinator::new(
-            Arc::clone(&fixture.service),
-            Arc::new(FakeEvaluator {
-                service: Arc::clone(&fixture.service),
-                outcomes: Mutex::new(VecDeque::new()),
-            }),
-            Arc::new(|_, _| Err("stale rejection must not refine".to_string())),
-            fixture.cwd.clone(),
-        )
-        .unwrap();
-        coordinator.recover_startup().unwrap();
-        let state = fixture
-            .service
-            .get_session_state(&fixture.session_id)
+        let count = Arc::new(AtomicUsize::new(0));
+        coordinator(&f, count.clone())
+            .try_settle_batch(&f.session, &batch.id)
             .unwrap();
-        assert_eq!(state.agent_runs[0].status, CadAgentRunStatus::Completed);
-        assert_eq!(state.workflow.outer_iterations.len(), 1);
-        assert!(state.workflow.outer_iterations[0].passed);
-        assert_eq!(
-            state.workflow.outer_iterations[0].revision_id.as_deref(),
-            Some(latest.revision_id.as_str())
-        );
-    }
-
-    #[tokio::test]
-    async fn startup_drains_stale_queued_revision_without_mutating_latest_batch_outcome() {
-        let fixture = fixture();
-        let stale = create_attempt(&fixture);
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        let latest = create_new_revision_attempt(&fixture);
-        let refinements = Arc::new(AtomicUsize::new(0));
-        let refinement_count = Arc::clone(&refinements);
-        let coordinator = ValidationCoordinator::new(
-            Arc::clone(&fixture.service),
-            Arc::new(FakeEvaluator {
-                service: Arc::clone(&fixture.service),
-                outcomes: Mutex::new(VecDeque::from([Outcome::Reject, Outcome::Pass])),
-            }),
-            Arc::new(move |_, _| {
-                refinement_count.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            }),
-            fixture.cwd.clone(),
-        )
-        .unwrap();
-        coordinator.recover_startup().unwrap();
-        wait_terminal(&fixture.service, &fixture.session_id, 2).await;
-        for _ in 0..200 {
-            if fixture
-                .service
-                .get_agent_run(&fixture.session_id, &fixture.run_id)
-                .unwrap()
-                .unwrap()
-                .status
-                == CadAgentRunStatus::Completed
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-        let state = fixture
-            .service
-            .get_session_state(&fixture.session_id)
-            .unwrap();
-        assert_eq!(state.agent_runs[0].status, CadAgentRunStatus::Completed);
-        assert_eq!(refinements.load(Ordering::SeqCst), 0);
-        assert_eq!(state.workflow.outer_iterations.len(), 1);
-        assert_eq!(
-            state.workflow.outer_iterations[0].revision_id.as_deref(),
-            Some(latest.revision_id.as_str())
-        );
+        let state = f.service.get_session_state(&f.session).unwrap();
         assert_eq!(
             state
-                .validation_evaluations
+                .agent_runs
                 .iter()
-                .find(|evaluation| evaluation.id == stale.id)
+                .find(|run| run.id == f.run)
                 .unwrap()
-                .passed,
-            Some(false)
+                .status,
+            CadAgentRunStatus::Cancelled
         );
+        assert!(state.workflow.outer_iterations.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), 0);
     }
 }
