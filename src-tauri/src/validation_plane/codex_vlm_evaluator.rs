@@ -538,6 +538,7 @@ impl StrictValidationCollector {
         let params = notification.raw.get("params").unwrap_or(&Value::Null);
         match notification.method.as_str() {
             "turn/started"
+            | "thread/tokenUsage/updated"
             | "item/agentMessage/delta"
             | "item/reasoning/delta"
             | "item/reasoning/textDelta"
@@ -553,7 +554,7 @@ impl StrictValidationCollector {
                     .ok_or_else(|| "Validation item/completed omitted item.".to_string())?;
                 let item_type = required_item_type(item, "item/completed")?;
                 match item_type {
-                    "reasoning" => Ok(None),
+                    "reasoning" | "userMessage" => Ok(None),
                     "agentMessage" => {
                         if item.get("phase").and_then(Value::as_str) != Some("final_answer") {
                             return Err(
@@ -622,7 +623,7 @@ impl StrictValidationCollector {
 fn validate_non_modeling_item(item: Option<&Value>, method: &str) -> Result<(), String> {
     let item = item.ok_or_else(|| format!("Validation {method} omitted item."))?;
     match required_item_type(item, method)? {
-        "reasoning" => Ok(()),
+        "reasoning" | "userMessage" => Ok(()),
         "agentMessage" => {
             if item.get("phase").and_then(Value::as_str) == Some("final_answer") {
                 Ok(())
@@ -705,7 +706,7 @@ fn parse_strict_validation_history(
     let mut final_message = None;
     for item in items {
         match required_item_type(item, "thread/read history")? {
-            "reasoning" => {}
+            "reasoning" | "userMessage" => {}
             "agentMessage" => {
                 if item.get("phase").and_then(Value::as_str) != Some("final_answer") {
                     return Err(
@@ -833,9 +834,22 @@ mod tests {
     }
 
     #[test]
-    fn recovered_history_rejects_tool_calls_and_non_terminal_turns() {
+    fn recovered_history_accepts_user_input_but_rejects_tool_calls_and_non_terminal_turns() {
+        let valid_history = json!({"thread":{"turns":[{
+            "id":"turn-1","status":"completed","items":[
+                {"type":"userMessage","id":"user-1","content":[]},
+                {"type":"reasoning","id":"reasoning-1"},
+                {"type":"agentMessage","id":"message-1","phase":"final_answer","text":"{\"passed\":true}"}
+            ]
+        }]}});
+        assert_eq!(
+            parse_strict_validation_history(&valid_history, "turn-1").unwrap(),
+            json!({"passed": true})
+        );
+
         let tool_history = json!({"thread":{"turns":[{
             "id":"turn-1","status":"completed","items":[
+                {"type":"userMessage","id":"user-1","content":[]},
                 {"type":"commandExecution","id":"tool-1"},
                 {"type":"agentMessage","id":"message-1","phase":"final_answer","text":"{}"}
             ]
@@ -878,11 +892,41 @@ mod tests {
                 "thread-1",
                 "turn-1",
                 &notification(
+                    "item/started",
+                    json!({"item": {"id":"user-1", "type":"userMessage"}}),
+                ),
+            )
+            .unwrap();
+        collector
+            .ingest(
+                "thread-1",
+                "turn-1",
+                &notification(
+                    "item/completed",
+                    json!({"item": {"id":"user-1", "type":"userMessage", "content":[]}}),
+                ),
+            )
+            .unwrap();
+        collector
+            .ingest(
+                "thread-1",
+                "turn-1",
+                &notification(
                     "item/completed",
                     json!({"item": {
                         "id":"item-1", "type":"agentMessage",
                         "phase":"final_answer", "text":"{\"passed\":true}"
                     }}),
+                ),
+            )
+            .unwrap();
+        collector
+            .ingest(
+                "thread-1",
+                "turn-1",
+                &notification(
+                    "thread/tokenUsage/updated",
+                    json!({"tokenUsage":{"total":{"totalTokens":42}}}),
                 ),
             )
             .unwrap();
@@ -1118,9 +1162,21 @@ mod tests {
                 Ok(json!({"turn":{"id":"turn-1"}})),
             ],
             vec![
+                json!({"method":"item/started","params":{
+                    "threadId":"thread-1","turnId":"turn-1",
+                    "item":{"id":"user-1","type":"userMessage"}
+                }}),
+                json!({"method":"item/completed","params":{
+                    "threadId":"thread-1","turnId":"turn-1",
+                    "item":{"id":"user-1","type":"userMessage","content":[]}
+                }}),
                 json!({"method":"item/completed","params":{
                     "threadId":"thread-1","turnId":"turn-1",
                     "item":{"id":"item-1","type":"agentMessage","phase":"final_answer","text":"{\"score\":0.9}"}
+                }}),
+                json!({"method":"thread/tokenUsage/updated","params":{
+                    "threadId":"thread-1","turnId":"turn-1",
+                    "tokenUsage":{"total":{"totalTokens":42}}
                 }}),
                 json!({"method":"turn/completed","params":{
                     "threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}
@@ -1140,7 +1196,7 @@ mod tests {
                 )
                 .unwrap()
                 .len(),
-            2
+            5
         );
     }
 

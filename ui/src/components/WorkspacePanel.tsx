@@ -21,6 +21,7 @@ import type {
 import type { OpenscadRuntimeState } from "../runtime/openscadRuntime";
 import type { CadAgentStreamingItem } from "../runtime/agentStream";
 import { MeshPreview } from "../MeshPreview";
+import { UiErrorBoundary } from "../UiErrorBoundary";
 import { AgentWorkspace } from "./AgentWorkspace";
 import {
   latestValidationBatch,
@@ -140,7 +141,15 @@ export function WorkspacePanel({
               </div>
             </div>
           </div>
-          <MeshPreview mesh={mesh} />
+          <UiErrorBoundary
+            className="preview-error-boundary"
+            resetKey={`${activeRevision?.id ?? "no-revision"}:${
+              state.activeRevision?.artifacts.find((artifact) => artifact.kind === "preview-mesh")?.id ?? "no-preview"
+            }`}
+            scope="Preview"
+          >
+            <MeshPreview mesh={mesh} />
+          </UiErrorBoundary>
         </div>
 
         <div className="editor-pane">

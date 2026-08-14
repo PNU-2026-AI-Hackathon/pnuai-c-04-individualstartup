@@ -13,6 +13,26 @@ body {
   margin: 0;
 }
 
+.application-error-boundary {
+  display: flex;
+  min-height: 100vh;
+  flex-direction: column;
+  gap: 10px;
+  justify-content: center;
+  padding: 32px;
+  background: #fff8f8;
+  color: #8f1f1f;
+}
+
+.application-error-boundary strong {
+  color: #6f1515;
+  font-size: 20px;
+}
+
+.application-error-boundary span {
+  overflow-wrap: anywhere;
+}
+
 button,
 input,
 textarea {

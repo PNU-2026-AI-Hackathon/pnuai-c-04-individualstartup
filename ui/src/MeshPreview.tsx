@@ -16,7 +16,7 @@ export function MeshPreview({ mesh }: { mesh: CadMesh | null }) {
 
     const camera = new THREE.PerspectiveCamera(35, width / height, 0.1, 5000);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(width, height, false);
     container.appendChild(renderer.domElement);

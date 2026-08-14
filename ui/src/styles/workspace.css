@@ -384,6 +384,27 @@ h2 {
   overflow-wrap: anywhere;
 }
 
+.preview-error-boundary {
+  display: flex;
+  min-height: clamp(320px, 44vh, 620px);
+  flex-direction: column;
+  gap: 8px;
+  justify-content: center;
+  border: 1px solid #d89a9a;
+  border-radius: 8px;
+  padding: 16px;
+  background: #fff8f8;
+  color: #8f1f1f;
+}
+
+.preview-error-boundary strong {
+  color: #6f1515;
+}
+
+.preview-error-boundary span {
+  overflow-wrap: anywhere;
+}
+
 .panel,
 .diagnostics {
   border: 1px solid #c8d1da;
