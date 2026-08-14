@@ -421,6 +421,10 @@ class ContractBackendClient implements CadBackendClient {
     return { vertices: [], normals: [], indices: [] };
   }
 
+  async readGcode() {
+    return "G90\nG1 X1 Y1 Z0 E1";
+  }
+
   subscribeSession(
     sessionId: string,
     handlers: {

@@ -474,6 +474,8 @@ function workspaceProps(options: WorkspaceHarnessOptions, handlers: WorkspaceHan
   return {
     state,
     mesh: null,
+    gcode: null,
+    gcodeArtifactId: undefined,
     runtimeState: options.runtimeState ?? "idle",
     busy: false,
     sessionArchived: false,
@@ -484,7 +486,6 @@ function workspaceProps(options: WorkspaceHarnessOptions, handlers: WorkspaceHan
     activeRevision: state.activeRevision,
     activeRun: undefined,
     agentPrompt: "",
-    onRenderPreview: () => undefined,
     onSaveSource: () => undefined,
     onEditSource: () => undefined,
     onDismissStarterOverlay: options.onDismissStarterOverlay ?? handlers.onDismissStarterOverlay,

@@ -92,6 +92,7 @@ export interface CadBackendClient {
   deleteArtifact(input: { sessionId: string; artifactId: string }): Promise<DeleteArtifactResult>;
   verifyArtifactFiles(input: { sessionId?: string }): Promise<VerifyArtifactFilesResult>;
   readPreviewMesh(artifact: CadArtifact): Promise<CadMesh>;
+  readGcode(artifact: CadArtifact): Promise<string>;
   subscribeSession(
     sessionId: string,
     handlers: {
@@ -238,6 +239,17 @@ export class TauriCadBackendClient implements CadBackendClient, DfmSettingsBacke
   async readPreviewMesh(artifact: CadArtifact): Promise<CadMesh> {
     const contents = await invokeCommand<string>("read_artifact", { artifactId: artifact.id });
     return JSON.parse(contents) as CadMesh;
+  }
+
+  async readGcode(artifact: CadArtifact): Promise<string> {
+    if (artifact.kind !== "gcode" || artifact.format !== "gcode") {
+      throw new Error(`Artifact ${artifact.id} is not G-code.`);
+    }
+    const contents = await invokeCommand<string>("read_artifact", { artifactId: artifact.id });
+    if (!contents.trim()) {
+      throw new Error(`G-code artifact ${artifact.id} is empty.`);
+    }
+    return contents;
   }
 
   openArtifact(artifactId: string): Promise<OpenArtifactResult> {

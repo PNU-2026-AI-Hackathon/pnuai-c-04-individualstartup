@@ -8,7 +8,7 @@ import {
   type FocusEvent,
   type ReactNode
 } from "react";
-import { Check, Download, Play, Save } from "lucide-react";
+import { Check, Download, Save } from "lucide-react";
 import type {
   CadAgentRun,
   CadDiagnostic,
@@ -35,6 +35,8 @@ import { Parameters, Timeline } from "./RevisionPanels";
 type WorkspacePanelProps = {
   state: CadSessionState;
   mesh: CadMesh | null;
+  gcode: string | null;
+  gcodeArtifactId?: string;
   runtimeState: OpenscadRuntimeState;
   busy: boolean;
   sessionArchived: boolean;
@@ -46,7 +48,6 @@ type WorkspacePanelProps = {
   activeRun?: CadAgentRun;
   agentPrompt: string;
   agentStreams?: CadAgentStreamingItem[];
-  onRenderPreview: () => void | Promise<void>;
   onSaveSource: () => void | Promise<void>;
   onEditSource: (value: string) => void;
   onDismissStarterOverlay: () => void;
@@ -65,6 +66,8 @@ type WorkspacePanelProps = {
 export function WorkspacePanel({
   state,
   mesh,
+  gcode,
+  gcodeArtifactId,
   runtimeState,
   busy,
   sessionArchived,
@@ -76,7 +79,6 @@ export function WorkspacePanel({
   activeRun,
   agentPrompt,
   agentStreams = [],
-  onRenderPreview,
   onSaveSource,
   onEditSource,
   onDismissStarterOverlay,
@@ -96,10 +98,16 @@ export function WorkspacePanel({
   );
   const [exportSelectorOpen, setExportSelectorOpen] = useState(false);
   const [selectedExportFormat, setSelectedExportFormat] = useState<ExportFormat>("stl");
+  const [previewMode, setPreviewMode] = useState<PreviewMode>("stl");
+  const activePreviewMode = previewMode === "gcode" && !gcode ? "stl" : previewMode;
 
   useEffect(() => {
     setInspectorTab(preferredInspectorTab(state, activeRun));
   }, [activeRun?.id, activeRun?.status, state.activeRevision?.parameters.length]);
+
+  useEffect(() => {
+    if (!gcode && previewMode === "gcode") setPreviewMode("stl");
+  }, [gcode, previewMode]);
 
   return (
     <section className="workspace">
@@ -112,9 +120,11 @@ export function WorkspacePanel({
               <span className={`runtime-state runtime-state-${runtimeState}`}>
                 {runtimeStateLabel(runtimeState)}
               </span>
-              <button onClick={onRenderPreview} disabled={busy || sessionArchived} title="Render preview">
-                <Play size={16} /> Render
-              </button>
+              <PreviewModeSelector
+                mode={activePreviewMode}
+                gcodeAvailable={Boolean(gcode)}
+                onChange={setPreviewMode}
+              />
               <div className="export-toolbar-control">
                 <button
                   onClick={() => setExportSelectorOpen((open) => !open)}
@@ -143,12 +153,12 @@ export function WorkspacePanel({
           </div>
           <UiErrorBoundary
             className="preview-error-boundary"
-            resetKey={`${activeRevision?.id ?? "no-revision"}:${
+            resetKey={`${activeRevision?.id ?? "no-revision"}:${activePreviewMode}:${gcodeArtifactId ?? "no-gcode"}:${
               state.activeRevision?.artifacts.find((artifact) => artifact.kind === "preview-mesh")?.id ?? "no-preview"
             }`}
             scope="Preview"
           >
-            <MeshPreview mesh={mesh} />
+            <MeshPreview mesh={mesh} gcode={gcode} mode={activePreviewMode} />
           </UiErrorBoundary>
         </div>
 
@@ -241,6 +251,42 @@ export function WorkspacePanel({
 
 type InspectorTab = "agent" | "parameters" | "revisions";
 type ExportFormat = "stl";
+export type PreviewMode = "stl" | "gcode";
+
+export function PreviewModeSelector({
+  mode,
+  gcodeAvailable,
+  onChange
+}: {
+  mode: PreviewMode;
+  gcodeAvailable: boolean;
+  onChange: (mode: PreviewMode) => void;
+}) {
+  return (
+    <div className="preview-mode-selector" role="radiogroup" aria-label="Preview type">
+      <button
+        className={mode === "stl" ? "active" : ""}
+        onClick={() => onChange("stl")}
+        role="radio"
+        aria-checked={mode === "stl"}
+        type="button"
+      >
+        STL
+      </button>
+      <button
+        className={mode === "gcode" ? "active" : ""}
+        disabled={!gcodeAvailable}
+        onClick={() => onChange("gcode")}
+        role="radio"
+        aria-checked={mode === "gcode"}
+        title={gcodeAvailable ? "Preview G-code toolpath" : "No G-code is available for this revision"}
+        type="button"
+      >
+        G-code
+      </button>
+    </div>
+  );
+}
 
 const INSPECTOR_TABS: Array<{ id: InspectorTab; label: string }> = [
   { id: "agent", label: "Agent" },

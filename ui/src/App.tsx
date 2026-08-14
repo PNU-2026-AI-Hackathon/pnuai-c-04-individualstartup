@@ -75,6 +75,7 @@ export function App() {
   const autoRenderedSessionIdsRef = useRef<Set<string>>(new Set());
   const starterPreviewRenderedSessionIdsRef = useRef<Set<string>>(new Set());
   const [mesh, setMesh] = useState<CadMesh | null>(null);
+  const [gcodePreview, setGcodePreview] = useState<{ artifactId: string; contents: string } | null>(null);
   const [runtimeState, setRuntimeState] = useState<OpenscadRuntimeState>("idle");
   const [draftParameters, setDraftParameters] = useState<CadParameter[] | null>(null);
   const draftParametersRef = useRef<CadParameter[] | null>(null);
@@ -115,6 +116,10 @@ export function App() {
     [state, draftDiagnostics]
   );
   const previewArtifact = activeRevision?.artifacts.find((artifact) => artifact.kind === "preview-mesh");
+  const gcodeArtifact = latestRenderableGcodeArtifact(activeRevision);
+  const gcode = gcodePreview && gcodePreview.artifactId === gcodeArtifact?.id
+    ? gcodePreview.contents
+    : null;
   const activeAgentRun = state?.agentRuns.find((run) => isActiveRunStatus(run.status));
   const sessionArchived = Boolean(state?.session.archivedAt);
   const isStarterSession = Boolean(state && isStarterSessionState(state));
@@ -155,6 +160,7 @@ export function App() {
         previewCacheRef.current = null;
         setRuntimeState("idle");
         setMesh(null);
+        setGcodePreview(null);
       }
       latestSessionIdRef.current = nextState.session.id;
       latestSessionUpdatedAtRef.current = nextState.session.updatedAt;
@@ -250,6 +256,25 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
+    if (!gcodeArtifact) {
+      setGcodePreview(null);
+      return;
+    }
+    backend.readGcode(gcodeArtifact).then((contents) => {
+      if (!cancelled) setGcodePreview({ artifactId: gcodeArtifact.id, contents });
+    }).catch((caught) => {
+      if (!cancelled) {
+        setGcodePreview(null);
+        setError(errorMessage(caught));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [backend, gcodeArtifact?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
     backend
       .listSessions({ includeArchived: true, query: sessionSearch })
       .then((result) => {
@@ -310,14 +335,6 @@ export function App() {
         parameters: currentDraftParameters()
       });
       applySessionSnapshot(result.state, { forceSource: true });
-    });
-  }
-
-  async function renderPreview() {
-    if (!state || sessionArchived) return;
-    await runBusy(async () => {
-      await resyncIfDisconnected();
-      await renderCurrentDraftPreview({ persistIfClean: true });
     });
   }
 
@@ -1076,6 +1093,8 @@ export function App() {
           <WorkspacePanel
             state={workspaceState ?? state}
             mesh={mesh}
+            gcode={gcode}
+            gcodeArtifactId={gcodeArtifact?.id}
             runtimeState={runtimeState}
             busy={busy}
             sessionArchived={sessionArchived}
@@ -1087,7 +1106,6 @@ export function App() {
             activeRun={activeAgentRun}
             agentPrompt={agentPrompt}
             agentStreams={streamingItems(agentStreamState)}
-            onRenderPreview={renderPreview}
             onSaveSource={saveSource}
             onEditSource={editSource}
             onDismissStarterOverlay={dismissStarterOverlay}
@@ -1222,6 +1240,20 @@ export function filterSessionsByDeletedIds(
 ): CadSessionListItem[] {
   if (deletedSessionIds.size === 0) return sessions;
   return sessions.filter((session) => !deletedSessionIds.has(session.id));
+}
+
+export function latestRenderableGcodeArtifact(revision?: CadRevision) {
+  return revision?.artifacts.reduce<(typeof revision.artifacts)[number] | undefined>((latest, artifact) => {
+    if (
+      artifact.kind !== "gcode" ||
+      artifact.format !== "gcode" ||
+      artifact.deletedAt ||
+      artifact.missingAt
+    ) {
+      return latest;
+    }
+    return !latest || artifact.createdAt > latest.createdAt ? artifact : latest;
+  }, undefined);
 }
 
 function topbarStatusLabel(state: CadSessionState, hasActiveRun: boolean, archived: boolean): string | null {

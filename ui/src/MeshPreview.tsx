@@ -1,14 +1,30 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GCodeLoader } from "three/addons/loaders/GCodeLoader.js";
 import type { CadMesh } from "./protocol";
+import type { PreviewMode } from "./components/WorkspacePanel";
 
-export function MeshPreview({ mesh }: { mesh: CadMesh | null }) {
+export function MeshPreview({
+  mesh,
+  gcode,
+  mode
+}: {
+  mesh: CadMesh | null;
+  gcode: string | null;
+  mode: PreviewMode;
+}) {
   const ref = useRef<HTMLDivElement>(null);
+  const gcodeObject = useMemo(
+    () => mode === "gcode" && gcode ? parseRenderableGCode(gcode) : null,
+    [gcode, mode]
+  );
+  const activeMesh = mode === "stl" ? mesh : null;
 
   useEffect(() => {
     const container = ref.current;
-    if (!container || !mesh) return;
+    const hasPreview = mode === "stl" ? Boolean(activeMesh) : Boolean(gcodeObject);
+    if (!container || !hasPreview) return;
     const width = Math.max(container.clientWidth, 1);
     const height = Math.max(container.clientHeight, 1);
     const scene = new THREE.Scene();
@@ -24,7 +40,8 @@ export function MeshPreview({ mesh }: { mesh: CadMesh | null }) {
     const ambient = new THREE.AmbientLight(0xffffff, 1.8);
     const key = new THREE.DirectionalLight(0xffffff, 2.4);
     key.position.set(50, -80, 120);
-    scene.add(ambient, key, new THREE.GridHelper(120, 12, 0x8d99a8, 0xd8dee8));
+    const axisLines = createAxisLines(5000);
+    scene.add(ambient, key, axisLines);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -35,28 +52,31 @@ export function MeshPreview({ mesh }: { mesh: CadMesh | null }) {
     controls.zoomSpeed = 0.9;
     controls.rotateSpeed = 0.7;
 
-    let modelGeometry: THREE.BufferGeometry | undefined;
-    let modelMaterial: THREE.Material | undefined;
-    if (mesh) {
+    let modelObject: THREE.Object3D;
+    if (mode === "stl") {
+      if (!activeMesh) throw new Error("STL preview mesh is unavailable.");
       const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute("position", new THREE.Float32BufferAttribute(mesh.vertices, 3));
-      geometry.setAttribute("normal", new THREE.Float32BufferAttribute(mesh.normals, 3));
-      geometry.setIndex(mesh.indices);
+      geometry.setAttribute("position", new THREE.Float32BufferAttribute(activeMesh.vertices, 3));
+      geometry.setAttribute("normal", new THREE.Float32BufferAttribute(activeMesh.normals, 3));
+      geometry.setIndex(activeMesh.indices);
       geometry.computeBoundingBox();
       geometry.computeBoundingSphere();
-      modelGeometry = geometry;
-      modelMaterial = new THREE.MeshStandardMaterial({
+      const material = new THREE.MeshStandardMaterial({
         color: 0x2c7a7b,
         metalness: 0.08,
         roughness: 0.48
       });
-      const model = new THREE.Mesh(geometry, modelMaterial);
-      scene.add(model);
+      modelObject = new THREE.Mesh(geometry, material);
+    } else {
+      if (!gcodeObject) throw new Error("G-code preview is unavailable.");
+      modelObject = gcodeObject;
     }
+    scene.add(modelObject);
 
-    const bounds = modelGeometry?.boundingSphere;
-    const center = bounds?.center ?? new THREE.Vector3(0, 0, 0);
-    const radius = Math.max(bounds?.radius ?? 70, 1);
+    const bounds = new THREE.Box3().setFromObject(modelObject);
+    const sphere = bounds.getBoundingSphere(new THREE.Sphere());
+    const center = sphere.center;
+    const radius = Math.max(sphere.radius, 1);
     controls.target.copy(center);
     controls.minDistance = radius * 0.25;
     controls.maxDistance = radius * 12;
@@ -99,12 +119,84 @@ export function MeshPreview({ mesh }: { mesh: CadMesh | null }) {
       observer.disconnect();
       controls.removeEventListener("change", updateCameraDebugState);
       controls.dispose();
-      modelGeometry?.dispose();
-      modelMaterial?.dispose();
+      disposeObject(modelObject);
+      disposeObject(axisLines);
       renderer.dispose();
       container.removeChild(renderer.domElement);
     };
-  }, [mesh]);
+  }, [activeMesh, gcodeObject, mode]);
 
-  return <div className="mesh-preview" ref={ref}>{!mesh ? <span>No preview rendered</span> : null}</div>;
+  const hasPreview = mode === "stl" ? Boolean(mesh) : Boolean(gcodeObject);
+  return (
+    <div className="mesh-preview" data-preview-mode={mode} ref={ref}>
+      {!hasPreview ? <span>No {mode === "stl" ? "STL" : "G-code"} preview available</span> : null}
+    </div>
+  );
+}
+
+function createAxisLines(extent: number): THREE.LineSegments {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute([
+    -extent, 0, 0, extent, 0, 0,
+    0, -extent, 0, 0, extent, 0,
+    0, 0, -extent, 0, 0, extent
+  ], 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute([
+    1, 0, 0, 1, 0, 0,
+    0, 1, 0, 0, 1, 0,
+    0, 0, 1, 0, 0, 1
+  ], 3));
+  return new THREE.LineSegments(
+    geometry,
+    new THREE.LineBasicMaterial({ vertexColors: true, toneMapped: false })
+  );
+}
+
+export function parseRenderableGCode(gcode: string): THREE.Group {
+  if (!gcode.trim()) throw new Error("G-code preview input is empty.");
+  const object = new GCodeLoader().parse(gcode);
+  let vertexCount = 0;
+  let invalidCoordinate = false;
+  object.traverse((child) => {
+    if (!(child instanceof THREE.LineSegments)) return;
+    const positions = child.geometry.getAttribute("position");
+    vertexCount += positions?.count ?? 0;
+    if (positions) {
+      for (let index = 0; index < positions.count * positions.itemSize; index += 1) {
+        if (!Number.isFinite(positions.array[index])) invalidCoordinate = true;
+      }
+    }
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    for (const material of materials) {
+      if (material instanceof THREE.LineBasicMaterial) {
+        material.color.set(material.name === "extruded" ? 0x138a72 : 0xe06c3b);
+      }
+    }
+  });
+  if (vertexCount === 0) {
+    disposeObject(object);
+    throw new Error("G-code contains no renderable G0/G1 toolpath moves.");
+  }
+  if (invalidCoordinate) {
+    disposeObject(object);
+    throw new Error("G-code contains an invalid toolpath coordinate.");
+  }
+  return object;
+}
+
+function disposeObject(object: THREE.Object3D): void {
+  const geometries = new Set<THREE.BufferGeometry>();
+  const materials = new Set<THREE.Material>();
+  object.traverse((child) => {
+    if ("geometry" in child && child.geometry instanceof THREE.BufferGeometry) {
+      geometries.add(child.geometry);
+    }
+    if (!("material" in child)) return;
+    const childMaterials = Array.isArray(child.material) ? child.material : [child.material];
+    for (const material of childMaterials) {
+      if (material instanceof THREE.Material) materials.add(material);
+    }
+  });
+  for (const geometry of geometries) geometry.dispose();
+  for (const material of materials) material.dispose();
 }
