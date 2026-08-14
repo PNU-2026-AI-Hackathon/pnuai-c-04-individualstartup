@@ -8,16 +8,22 @@ import type { PreviewMode } from "./components/WorkspacePanel";
 export function MeshPreview({
   mesh,
   gcode,
+  bedShape,
   mode
 }: {
   mesh: CadMesh | null;
   gcode: string | null;
+  bedShape?: unknown;
   mode: PreviewMode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const gcodeObject = useMemo(
     () => mode === "gcode" && gcode ? parseRenderableGCode(gcode) : null,
     [gcode, mode]
+  );
+  const bedBounds = useMemo(
+    () => mode === "gcode" && bedShape !== undefined ? parseRectangularBedShape(bedShape) : null,
+    [bedShape, mode]
   );
   const activeMesh = mode === "stl" ? mesh : null;
 
@@ -40,8 +46,11 @@ export function MeshPreview({
     const ambient = new THREE.AmbientLight(0xffffff, 1.8);
     const key = new THREE.DirectionalLight(0xffffff, 2.4);
     key.position.set(50, -80, 120);
-    const axisLines = createAxisLines(5000);
-    scene.add(ambient, key, axisLines);
+    scene.add(ambient, key);
+    const axisLines = mode === "stl" ? createAxisLines(5000) : null;
+    if (axisLines) scene.add(axisLines);
+    const bedGrid = mode === "gcode" && bedBounds ? createBedGrid(bedBounds) : null;
+    if (bedGrid) scene.add(bedGrid);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -74,6 +83,7 @@ export function MeshPreview({
     scene.add(modelObject);
 
     const bounds = new THREE.Box3().setFromObject(modelObject);
+    if (bedGrid) bounds.expandByObject(bedGrid);
     const sphere = bounds.getBoundingSphere(new THREE.Sphere());
     const center = sphere.center;
     const radius = Math.max(sphere.radius, 1);
@@ -120,11 +130,12 @@ export function MeshPreview({
       controls.removeEventListener("change", updateCameraDebugState);
       controls.dispose();
       disposeObject(modelObject);
-      disposeObject(axisLines);
+      if (axisLines) disposeObject(axisLines);
+      if (bedGrid) disposeObject(bedGrid);
       renderer.dispose();
       container.removeChild(renderer.domElement);
     };
-  }, [activeMesh, gcodeObject, mode]);
+  }, [activeMesh, bedBounds, gcodeObject, mode]);
 
   const hasPreview = mode === "stl" ? Boolean(mesh) : Boolean(gcodeObject);
   return (
@@ -149,6 +160,84 @@ function createAxisLines(extent: number): THREE.LineSegments {
   return new THREE.LineSegments(
     geometry,
     new THREE.LineBasicMaterial({ vertexColors: true, toneMapped: false })
+  );
+}
+
+export type RectangularBedShape = {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+};
+
+export function parseRectangularBedShape(value: unknown): RectangularBedShape {
+  if (!Array.isArray(value) || value.length !== 4) {
+    throw new Error("G-code bedShape metadata must contain four corner points.");
+  }
+  const points = value.map((point, index) => {
+    if (
+      !Array.isArray(point) ||
+      point.length !== 2 ||
+      typeof point[0] !== "number" ||
+      typeof point[1] !== "number" ||
+      !Number.isFinite(point[0]) ||
+      !Number.isFinite(point[1])
+    ) {
+      throw new Error(`G-code bedShape point ${index + 1} must contain two finite coordinates.`);
+    }
+    return { x: point[0], y: point[1] };
+  });
+  const minX = Math.min(...points.map((point) => point.x));
+  const maxX = Math.max(...points.map((point) => point.x));
+  const minY = Math.min(...points.map((point) => point.y));
+  const maxY = Math.max(...points.map((point) => point.y));
+  if (minX === maxX || minY === maxY) {
+    throw new Error("G-code bedShape must have non-zero width and depth.");
+  }
+  const expectedCorners = new Set([
+    `${minX}:${minY}`,
+    `${maxX}:${minY}`,
+    `${maxX}:${maxY}`,
+    `${minX}:${maxY}`
+  ]);
+  for (const point of points) expectedCorners.delete(`${point.x}:${point.y}`);
+  if (expectedCorners.size !== 0) {
+    throw new Error("G-code bedShape must describe an axis-aligned rectangular bed.");
+  }
+  return { minX, maxX, minY, maxY };
+}
+
+export function createBedGrid(
+  bounds: RectangularBedShape,
+  spacing = 10
+): THREE.LineSegments {
+  if (!Number.isFinite(spacing) || spacing <= 0) {
+    throw new Error("G-code bed grid spacing must be greater than zero.");
+  }
+  const positions: number[] = [];
+  const colors: number[] = [];
+  const addSegment = (x1: number, z1: number, x2: number, z2: number, color: [number, number, number]) => {
+    positions.push(x1, 0, z1, x2, 0, z2);
+    colors.push(...color, ...color);
+  };
+  const gridColor: [number, number, number] = [0.72, 0.76, 0.8];
+  const edgeColor: [number, number, number] = [0.38, 0.44, 0.5];
+  for (let x = Math.ceil(bounds.minX / spacing) * spacing; x < bounds.maxX; x += spacing) {
+    if (x > bounds.minX) addSegment(x, -bounds.minY, x, -bounds.maxY, gridColor);
+  }
+  for (let y = Math.ceil(bounds.minY / spacing) * spacing; y < bounds.maxY; y += spacing) {
+    if (y > bounds.minY) addSegment(bounds.minX, -y, bounds.maxX, -y, gridColor);
+  }
+  addSegment(bounds.minX, -bounds.minY, bounds.maxX, -bounds.minY, edgeColor);
+  addSegment(bounds.maxX, -bounds.minY, bounds.maxX, -bounds.maxY, edgeColor);
+  addSegment(bounds.maxX, -bounds.maxY, bounds.minX, -bounds.maxY, edgeColor);
+  addSegment(bounds.minX, -bounds.maxY, bounds.minX, -bounds.minY, edgeColor);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  return new THREE.LineSegments(
+    geometry,
+    new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.8, toneMapped: false })
   );
 }
 

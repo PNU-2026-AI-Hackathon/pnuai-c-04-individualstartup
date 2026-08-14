@@ -1095,6 +1095,7 @@ export function App() {
             mesh={mesh}
             gcode={gcode}
             gcodeArtifactId={gcodeArtifact?.id}
+            gcodeBedShape={gcodeArtifact?.metadata?.bedShape}
             runtimeState={runtimeState}
             busy={busy}
             sessionArchived={sessionArchived}

@@ -4,7 +4,11 @@ import React, { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import * as THREE from "three";
 import { Window } from "happy-dom";
-import { parseRenderableGCode } from "../ui/src/MeshPreview";
+import {
+  createBedGrid,
+  parseRectangularBedShape,
+  parseRenderableGCode
+} from "../ui/src/MeshPreview";
 import {
   PreviewModeSelector,
   type PreviewMode
@@ -41,6 +45,25 @@ test("G-code preview fails fast when no renderable toolpath exists", () => {
   assert.throws(
     () => parseRenderableGCode("G1 Xnot-a-number Y2"),
     /invalid toolpath coordinate/
+  );
+});
+
+test("Prusa bed_shape metadata creates a 50 by 50 XZ grid", () => {
+  const bounds = parseRectangularBedShape([[0, 0], [50, 0], [50, 50], [0, 50]]);
+  const grid = createBedGrid(bounds);
+  const box = new THREE.Box3().setFromObject(grid);
+
+  assert.deepEqual(bounds, { minX: 0, maxX: 50, minY: 0, maxY: 50 });
+  assert.deepEqual(box.min.toArray(), [0, 0, -50]);
+  assert.deepEqual(box.max.toArray(), [50, 0, 0]);
+  assert.equal(grid.geometry.getAttribute("position").count, 24);
+});
+
+test("G-code bed preview rejects malformed or non-rectangular metadata", () => {
+  assert.throws(() => parseRectangularBedShape([[0, 0], [50, 0], [25, 50]]), /four corner points/);
+  assert.throws(
+    () => parseRectangularBedShape([[0, 0], [50, 0], [40, 50], [0, 50]]),
+    /axis-aligned rectangular bed/
   );
 });
 
