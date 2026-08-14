@@ -12,6 +12,7 @@ import type {
 import type { CadAgentStreamingItem } from "../runtime/agentStream";
 import {
   AgentRunProgressDetails,
+  type AgentProgressCommentary,
   WorkflowRunSummary,
   failureSummary,
   failureTitle,
@@ -59,6 +60,9 @@ export function AgentWorkspace(props: {
         props.validationChecks
       )
     : undefined;
+  const latestRunCommentary = latestRun
+    ? buildRunCommentary(props.conversation, props.streams ?? [], latestRun.id)
+    : [];
   return (
     <section className="panel agent-workspace">
       <div className="panel-heading">
@@ -93,7 +97,7 @@ export function AgentWorkspace(props: {
         />
       ) : null}
       {latestRun && latestWorkflow ? (
-        <AgentRunProgressDetails run={latestRun} events={latestRunEvents} view={latestWorkflow} />
+        <AgentRunProgressDetails run={latestRun} commentary={latestRunCommentary} view={latestWorkflow} />
       ) : null}
       <ol className="conversation" data-testid="conversation-timeline">
         {conversation.map((message) => (
@@ -114,14 +118,6 @@ export function AgentWorkspace(props: {
           </li>
         ))}
       </ol>
-      {streams.commentary.length ? (
-        <details className="agent-stream-commentary" open data-testid="streaming-commentary">
-          <summary>Live commentary</summary>
-          {streams.commentary.map((item) => (
-            <p key={`stream-${item.runId}-${item.itemId}`}>{item.text}</p>
-          ))}
-        </details>
-      ) : null}
       <textarea
         className="small-textarea"
         aria-label="Ask Codex agent"
@@ -261,4 +257,49 @@ export function splitAgentStreams(streams: CadAgentStreamingItem[]) {
     commentary: streams.filter((item) => item.phase === "commentary"),
     finalAnswers: streams.filter((item) => item.phase === "final_answer")
   };
+}
+
+export function buildRunCommentary(
+  conversation: CadConversationMessage[],
+  streams: CadAgentStreamingItem[],
+  runId: string
+): AgentProgressCommentary[] {
+  const commentary = new Map<string, AgentProgressCommentary>();
+  for (const item of streams) {
+    if (item.runId !== runId || item.phase !== "commentary") continue;
+    const key = commentaryItemKey(runId, item.itemId);
+    commentary.set(key, {
+      key,
+      text: item.text,
+      sequence: item.sequence,
+      streaming: true
+    });
+  }
+  for (const message of conversation) {
+    if (message.runId !== runId || message.role !== "assistant" || message.phase !== "commentary") continue;
+    if (!message.externalItemId) {
+      throw new Error(`Durable commentary message ${message.id} is missing externalItemId.`);
+    }
+    const sequence = message.sequence;
+    if (typeof sequence !== "number" || !Number.isSafeInteger(sequence) || sequence < 0) {
+      throw new Error(`Durable commentary message ${message.id} has an invalid sequence.`);
+    }
+    const key = commentaryItemKey(runId, message.externalItemId);
+    commentary.set(key, {
+      key,
+      text: message.content,
+      sequence,
+      createdAt: message.createdAt,
+      streaming: false
+    });
+  }
+  return [...commentary.values()].sort((left, right) =>
+    left.sequence - right.sequence
+    || (left.createdAt ?? "").localeCompare(right.createdAt ?? "")
+    || left.key.localeCompare(right.key)
+  );
+}
+
+function commentaryItemKey(runId: string, itemId: string): string {
+  return `${runId}\u0000${itemId}`;
 }

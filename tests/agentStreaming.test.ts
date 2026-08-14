@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import {
+  AgentWorkspace,
   agentDiagnosticRows,
   buildAgentConversation,
+  buildRunCommentary,
   splitAgentStreams
 } from "../ui/src/components/AgentWorkspace";
 import type {
@@ -105,6 +109,120 @@ test("default conversation hides commentary while live streams retain separate c
   assert.deepEqual(groups.finalAnswers.map((item) => item.text), ["ready"]);
 });
 
+test("run commentary survives stream completion through the durable conversation snapshot", () => {
+  const durable = [message({
+    id: "durable-commentary",
+    runId: "run-1",
+    externalItemId: "commentary-item",
+    phase: "commentary",
+    content: "Durable constraint analysis",
+    sequence: 2
+  })];
+  const whileStreaming = buildRunCommentary(durable, [{
+    sessionId: "session-a",
+    runId: "run-1",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "commentary-item",
+    phase: "commentary",
+    text: "Ephemeral draft",
+    sequence: 2
+  }, {
+    sessionId: "session-a",
+    runId: "run-1",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "commentary-live",
+    phase: "commentary",
+    text: "Still checking geometry",
+    sequence: 3
+  }], "run-1");
+
+  assert.deepEqual(whileStreaming.map((item) => [item.text, item.streaming]), [
+    ["Durable constraint analysis", false],
+    ["Still checking geometry", true]
+  ]);
+  assert.deepEqual(
+    buildRunCommentary(durable, [], "run-1").map((item) => item.text),
+    ["Durable constraint analysis"]
+  );
+});
+
+test("durable run commentary fails fast when its persistence identity is incomplete", () => {
+  assert.throws(
+    () => buildRunCommentary([message({
+      id: "broken-commentary",
+      runId: "run-1",
+      phase: "commentary",
+      sequence: 1
+    })], [], "run-1"),
+    /missing externalItemId/
+  );
+  assert.throws(
+    () => buildRunCommentary([message({
+      id: "broken-commentary",
+      runId: "run-1",
+      externalItemId: "commentary-item",
+      phase: "commentary"
+    })], [], "run-1"),
+    /invalid sequence/
+  );
+});
+
+test("progress details replace low-level events with expandable live commentary", () => {
+  const now = "2026-08-12T00:00:00.000Z";
+  const html = renderToStaticMarkup(React.createElement(AgentWorkspace, {
+    conversation: [message({
+      id: "commentary",
+      runId: "run-1",
+      externalItemId: "commentary-item",
+      phase: "commentary",
+      content: "I checked the wall thickness.",
+      sequence: 2
+    })],
+    runs: [{
+      id: "run-1",
+      sessionId: "session-a",
+      status: "completed",
+      prompt: "Create a part",
+      createdAt: now,
+      updatedAt: now,
+      completedAt: now,
+      recoveryStatus: "none"
+    }],
+    threads: [],
+    events: [{
+      id: "event-1",
+      sessionId: "session-a",
+      runId: "run-1",
+      type: "agent.tool.completed",
+      sequence: 1,
+      createdAt: now,
+      payload: { status: "completed" }
+    }],
+    workflow: { plans: [], outerIterations: [], pendingVlm: [] },
+    validationEvaluations: [],
+    validationBatches: [],
+    validationChecks: [],
+    prompt: "",
+    busy: false,
+    readOnly: false,
+    streams: [],
+    onPromptChange: () => undefined,
+    onStartRun: () => undefined,
+    onStartNewConversation: () => undefined,
+    onRetryRun: () => undefined,
+    onCancelRun: () => undefined,
+    onOpenFullHistory: () => undefined
+  }));
+
+  assert.match(html, /data-testid="agent-progress-commentary"/);
+  assert.match(html, /<summary><span>Live commentary<\/span>/);
+  assert.match(html, /I checked the wall thickness\./);
+  assert.doesNotMatch(html, /agent\.tool\.completed/);
+  assert.doesNotMatch(html, /data-testid="streaming-commentary"/);
+});
+
 test("stream identity collision fails fast instead of joining unrelated turns", () => {
   const state = reduceAgentStreamEvent(
     createAgentStreamState("session-a"),
@@ -173,6 +291,7 @@ function message(overrides: {
   runId?: string;
   externalItemId?: string;
   phase?: CadAgentMessagePhase;
+  sequence?: number;
 } = {}): CadConversationMessage {
   return {
     id: overrides.id ?? "message-1",
@@ -182,6 +301,7 @@ function message(overrides: {
     createdAt: "2026-08-12T00:00:00.000Z",
     runId: overrides.runId,
     externalItemId: overrides.externalItemId,
-    phase: overrides.phase
+    phase: overrides.phase,
+    sequence: overrides.sequence
   };
 }

@@ -25,16 +25,23 @@ export interface WorkflowRunView {
   latestNextAction?: string;
 }
 
+export interface AgentProgressCommentary {
+  key: string;
+  text: string;
+  sequence: number;
+  createdAt?: string;
+  streaming: boolean;
+}
+
 export function AgentRunProgressDetails({
   run,
-  events,
+  commentary,
   view
 }: {
   run: CadAgentRun;
-  events: CadAgentRunEvent[];
+  commentary: AgentProgressCommentary[];
   view: WorkflowRunView;
 }) {
-  const recentEvents = events.slice(-10).reverse();
   const activeLabel = run.activeStep ?? view.latestCommand ?? view.stage;
   return (
     <details
@@ -56,23 +63,35 @@ export function AgentRunProgressDetails({
           <dd>{view.stage}</dd>
         </div>
         <div>
-          <dt>events</dt>
-          <dd>{events.length}</dd>
+          <dt>commentary</dt>
+          <dd>{commentary.length}</dd>
         </div>
       </div>
       {run.error ? <p className="agent-progress-error">{run.error}</p> : null}
-      {recentEvents.length ? (
-        <ol>
-          {recentEvents.map((event) => (
-            <li className={`event-${event.type.replaceAll(".", "-")}`} key={event.id}>
-              <span>{event.sequence}. {event.type}</span>
-              <small>{new Date(event.createdAt).toLocaleTimeString()}</small>
-              <EventPayloadSummary event={event} />
+      {commentary.length ? (
+        <ol className="agent-progress-commentary-list" data-testid="agent-progress-commentary-list">
+          {commentary.map((item) => (
+            <li key={item.key}>
+              <details className="agent-progress-commentary" data-testid="agent-progress-commentary">
+                <summary>
+                  <span>Live commentary</span>
+                  <small>
+                    {item.streaming
+                      ? "live"
+                      : item.createdAt
+                        ? new Date(item.createdAt).toLocaleTimeString()
+                        : "recorded"}
+                  </small>
+                </summary>
+                <p>{item.text}</p>
+              </details>
             </li>
           ))}
         </ol>
       ) : (
-        <p className="agent-progress-empty">No progress events yet.</p>
+        <p className="agent-progress-empty">
+          {isActiveRunStatus(run.status) ? "Waiting for live commentary." : "No commentary recorded."}
+        </p>
       )}
     </details>
   );
