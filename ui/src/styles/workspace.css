@@ -296,6 +296,29 @@
   gap: 8px;
 }
 
+.preview-mode-selector {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid #b8c2cc;
+  border-radius: 6px;
+}
+
+.preview-mode-selector button {
+  min-width: 62px;
+  border: 0;
+  border-radius: 0;
+}
+
+.preview-mode-selector button + button {
+  border-left: 1px solid #b8c2cc;
+}
+
+.preview-mode-selector button.active {
+  background: #216a6b;
+  color: #ffffff;
+  font-weight: 700;
+}
+
 h2 {
   margin: 0;
   font-size: 15px;

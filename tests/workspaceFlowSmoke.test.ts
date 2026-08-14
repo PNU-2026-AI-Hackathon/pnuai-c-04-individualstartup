@@ -3,7 +3,7 @@ import test from "node:test";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { Window } from "happy-dom";
-import { filterSessionsByDeletedIds } from "../ui/src/App";
+import { filterSessionsByDeletedIds, latestRenderableGcodeArtifact } from "../ui/src/App";
 import { SessionRail } from "../ui/src/components/SessionRail";
 import { WorkspacePanel } from "../ui/src/components/WorkspacePanel";
 import type { CadRevision, CadSessionListItem, CadSessionState } from "../ui/src/protocol";
@@ -81,6 +81,33 @@ test("locally deleted sessions stay hidden when a stale session list arrives", (
   );
 });
 
+test("G-code preview uses the latest available artifact from the active revision", () => {
+  const revision = sampleState().activeRevision;
+  assert.ok(revision);
+  const artifact = (id: string, createdAt: string, unavailable?: "deleted" | "missing") => ({
+    id,
+    revisionId: revision.id,
+    revisionHash: "b".repeat(64),
+    kind: "gcode" as const,
+    format: "gcode",
+    uri: `artifact://${id}`,
+    createdAt,
+    deletedAt: unavailable === "deleted" ? createdAt : undefined,
+    missingAt: unavailable === "missing" ? createdAt : undefined
+  });
+  const oldArtifact = artifact("gcode-old", "2026-07-30T00:00:01.000Z");
+  revision.artifacts.push(
+    oldArtifact,
+    artifact("gcode-new-missing", "2026-07-30T00:00:03.000Z", "missing"),
+    artifact("gcode-new", "2026-07-30T00:00:02.000Z")
+  );
+
+  assert.equal(latestRenderableGcodeArtifact(revision)?.id, "gcode-new");
+  revision.artifacts = revision.artifacts.filter((candidate) => candidate.id !== "gcode-new");
+  oldArtifact.deletedAt = "2026-07-30T00:00:04.000Z";
+  assert.equal(latestRenderableGcodeArtifact(revision), undefined);
+});
+
 test("session rail keeps a deleted session out of the DOM after a stale refresh", async () => {
   const browserWindow = installDom();
   const container = document.createElement("div");
@@ -151,6 +178,13 @@ test("workspace preview toolbar export selector does not add result actions unde
     await act(async () => {
       root.render(React.createElement(WorkspacePanel, workspaceProps(state, exports)));
     });
+
+    assert.doesNotMatch(container.textContent ?? "", /\bRender\b/);
+    const previewModes = container.querySelector("[aria-label='Preview type']");
+    assert.ok(previewModes);
+    const gcodeButton = buttonByText(previewModes as HTMLElement, "G-code");
+    assert.equal(gcodeButton.disabled, true);
+    assert.equal(previewModes.querySelectorAll("[aria-checked='true']").length, 1);
 
     const exportButton = buttonByText(container, "Export");
     await act(async () => exportButton.click());
@@ -223,6 +257,8 @@ function workspaceProps(state: CadSessionState, exports: string[]) {
   return {
     state,
     mesh: null,
+    gcode: null,
+    gcodeArtifactId: undefined,
     runtimeState: "completed" as const,
     busy: false,
     sessionArchived: false,
@@ -232,7 +268,6 @@ function workspaceProps(state: CadSessionState, exports: string[]) {
     activeRevision: state.activeRevision,
     activeRun: undefined,
     agentPrompt: "",
-    onRenderPreview: () => undefined,
     onSaveSource: () => undefined,
     onEditSource: () => undefined,
     onDismissStarterOverlay: () => undefined,
