@@ -37,6 +37,7 @@ type WorkspacePanelProps = {
   mesh: CadMesh | null;
   gcode: string | null;
   gcodeArtifactId?: string;
+  gcodeBedShape?: unknown;
   runtimeState: OpenscadRuntimeState;
   busy: boolean;
   sessionArchived: boolean;
@@ -68,6 +69,7 @@ export function WorkspacePanel({
   mesh,
   gcode,
   gcodeArtifactId,
+  gcodeBedShape,
   runtimeState,
   busy,
   sessionArchived,
@@ -158,7 +160,7 @@ export function WorkspacePanel({
             }`}
             scope="Preview"
           >
-            <MeshPreview mesh={mesh} gcode={gcode} mode={activePreviewMode} />
+            <MeshPreview mesh={mesh} gcode={gcode} bedShape={gcodeBedShape} mode={activePreviewMode} />
           </UiErrorBoundary>
         </div>
 

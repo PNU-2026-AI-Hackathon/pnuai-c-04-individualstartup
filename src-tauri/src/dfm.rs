@@ -264,6 +264,10 @@ fn validate_profile_entries(
             .ok_or_else(|| format!("DFM profile is missing required setting {key}."))?;
         key_settings.insert((*key).to_string(), value.clone());
     }
+    if let Some(bed_shape) = entries.get("bed_shape").filter(|value| !value.is_empty()) {
+        parse_bed_shape(bed_shape)?;
+        key_settings.insert("bed_shape".to_string(), bed_shape.clone());
+    }
     if key_settings.get("printer_technology").map(String::as_str) != Some("FFF") {
         return Err("DFM profile printer_technology must be FFF.".to_string());
     }
@@ -279,6 +283,32 @@ fn validate_profile_entries(
         hash: storage::sha256_hex(contents.as_bytes()),
         key_settings,
     })
+}
+
+fn parse_bed_shape(value: &str) -> Result<Vec<[f64; 2]>, String> {
+    let points = value
+        .split(',')
+        .map(|point| {
+            let point = point.trim();
+            let (x, y) = point.split_once('x').ok_or_else(|| {
+                format!("DFM profile bed_shape point {point:?} must use x-by-y coordinates.")
+            })?;
+            let x = x.trim().parse::<f64>().map_err(|error| {
+                format!("DFM profile bed_shape X coordinate {x:?} must be numeric: {error}")
+            })?;
+            let y = y.trim().parse::<f64>().map_err(|error| {
+                format!("DFM profile bed_shape Y coordinate {y:?} must be numeric: {error}")
+            })?;
+            if !x.is_finite() || !y.is_finite() {
+                return Err("DFM profile bed_shape coordinates must be finite.".to_string());
+            }
+            Ok([x, y])
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if points.len() < 3 {
+        return Err("DFM profile bed_shape must contain at least three points.".to_string());
+    }
+    Ok(points)
 }
 
 fn design_context_from_profile(contents: &str) -> Result<DfmDesignContext, String> {
@@ -416,6 +446,11 @@ pub(crate) fn evaluate_prepared(
     let profile_contents = &prepared.profile_contents;
     let profile_source = &prepared.profile_source;
     let profile = &prepared.profile;
+    let bed_shape = profile
+        .key_settings
+        .get("bed_shape")
+        .map(|value| parse_bed_shape(value))
+        .transpose()?;
     let executable_sha256 = storage::sha256_hex(&fs::read(&executable.path).map_err(|error| {
         format!(
             "Failed to verify PrusaSlicer executable {}: {error}",
@@ -487,7 +522,7 @@ pub(crate) fn evaluate_prepared(
 
     let diagnostics = parse_diagnostics(&stdout, &stderr);
     let passed = !diagnostics.iter().any(|item| item["severity"] == "error");
-    let gcode_metadata = json!({
+    let mut gcode_metadata = json!({
         "contractType": "cadastrophe.gcode_artifact.v1",
         "runId": run_id,
         "revisionId": revision_id,
@@ -496,6 +531,9 @@ pub(crate) fn evaluate_prepared(
         "profileSource": profile_source,
         "prusaslicerVersion": executable.version
     });
+    if let Some(bed_shape) = bed_shape {
+        gcode_metadata["bedShape"] = json!(bed_shape);
+    }
     let gcode_artifact = service
         .persist_runtime_artifact(PersistRuntimeArtifactInput {
             session_id: session_id.to_string(),
@@ -697,6 +735,21 @@ mod tests {
         assert_eq!(first.hash, second.hash);
         assert_eq!(first.hash.len(), 64);
         assert_eq!(first.key_settings["printer_technology"], "FFF");
+        assert_eq!(first.key_settings["bed_shape"], "0x0,200x0,200x200,0x200");
+    }
+
+    #[test]
+    fn bed_shape_parser_accepts_rectangular_prusa_coordinates() {
+        assert_eq!(
+            parse_bed_shape("0x0,50x0,50x50,0x50").unwrap(),
+            vec![[0.0, 0.0], [50.0, 0.0], [50.0, 50.0], [0.0, 50.0]]
+        );
+    }
+
+    #[test]
+    fn bed_shape_parser_rejects_invalid_coordinates() {
+        let error = parse_bed_shape("0x0,50xnope,0x50").unwrap_err();
+        assert!(error.contains("must be numeric"));
     }
 
     #[test]
