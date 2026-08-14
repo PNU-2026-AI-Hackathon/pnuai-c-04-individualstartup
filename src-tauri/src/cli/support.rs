@@ -222,13 +222,13 @@ impl CommandOutput {
     }
 }
 
-pub(super) type CliResult<T> = Result<T, CliError>;
+pub(crate) type CliResult<T> = Result<T, CliError>;
 
 #[derive(Debug)]
-pub(super) struct CliError {
-    pub(super) code: &'static str,
-    pub(super) message: String,
-    pub(super) exit_code: i32,
+pub(crate) struct CliError {
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
+    pub(crate) exit_code: i32,
 }
 
 impl CliError {

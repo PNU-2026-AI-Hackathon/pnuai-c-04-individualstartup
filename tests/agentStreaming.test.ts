@@ -121,6 +121,8 @@ test("agent diagnostics expose thread, turn, run, status, generation, and recove
     [{
       id: "agent-thread-1",
       sessionId: "session-a",
+      plane: "modeling",
+      ownerId: "session-a",
       externalAgent: "codex",
       externalThreadId: "thread-1",
       status: "ready",

@@ -99,6 +99,54 @@ pub enum CadAgentThreadStatus {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum CadAgentPlane {
+    Modeling,
+    Validation,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CadValidationEvaluationKind {
+    Vlm,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CadValidationEvaluationStatus {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum CadValidationCheckKind {
+    Structural,
+    Dfm,
+    Vlm,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CadValidationCheckStatus {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CadValidationBatchStatus {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum CadConversationPhase {
     Commentary,
     FinalAnswer,

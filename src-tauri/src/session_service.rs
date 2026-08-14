@@ -31,6 +31,8 @@ mod runtime_render;
 mod sessions;
 mod state_view;
 mod support;
+mod validation_batch_persistence;
+mod validation_persistence;
 
 use artifact_paths::*;
 use events::*;
@@ -55,6 +57,10 @@ pub(crate) struct ServiceState {
     pub(crate) agent_runs: HashMap<String, Vec<CadAgentRun>>,
     pub(crate) agent_run_events: HashMap<String, Vec<CadAgentRunEvent>>,
     pub(crate) agent_transport_events: HashMap<String, Vec<CadAgentTransportEvent>>,
+    pub(crate) validation_evaluations: HashMap<String, Vec<CadValidationEvaluation>>,
+    pub(crate) validation_evaluation_events: HashMap<String, Vec<CadValidationEvaluationEvent>>,
+    pub(crate) validation_batches: HashMap<String, Vec<CadValidationBatch>>,
+    pub(crate) validation_checks: HashMap<String, Vec<CadValidationCheck>>,
     pub(crate) workflow_plans: HashMap<String, CadWorkflowPlan>,
     pub(crate) workflow_outer_iterations: HashMap<String, Vec<CadWorkflowOuterIteration>>,
     pub(crate) workflow_pending_vlm: HashMap<String, CadWorkflowPendingVlm>,
@@ -70,6 +76,10 @@ impl From<SessionRepositorySnapshot> for ServiceState {
         let mut agent_runs = HashMap::new();
         let mut agent_run_events = HashMap::new();
         let mut agent_transport_events = HashMap::new();
+        let mut validation_evaluations = HashMap::new();
+        let mut validation_evaluation_events = HashMap::new();
+        let mut validation_batches = HashMap::new();
+        let mut validation_checks = HashMap::new();
         let workflow_plans = snapshot.workflow_plans;
         let workflow_outer_iterations = snapshot.workflow_outer_iterations;
         let workflow_pending_vlm = snapshot.workflow_pending_vlm;
@@ -116,6 +126,38 @@ impl From<SessionRepositorySnapshot> for ServiceState {
                     .cloned()
                     .unwrap_or_default(),
             );
+            validation_evaluations.insert(
+                session_id.clone(),
+                snapshot
+                    .validation_evaluations
+                    .get(session_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            validation_evaluation_events.insert(
+                session_id.clone(),
+                snapshot
+                    .validation_evaluation_events
+                    .get(session_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            validation_batches.insert(
+                session_id.clone(),
+                snapshot
+                    .validation_batches
+                    .get(session_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            validation_checks.insert(
+                session_id.clone(),
+                snapshot
+                    .validation_checks
+                    .get(session_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
         }
         Self {
             sessions: snapshot.sessions,
@@ -127,6 +169,10 @@ impl From<SessionRepositorySnapshot> for ServiceState {
             agent_runs,
             agent_run_events,
             agent_transport_events,
+            validation_evaluations,
+            validation_evaluation_events,
+            validation_batches,
+            validation_checks,
             workflow_plans,
             workflow_outer_iterations,
             workflow_pending_vlm,
@@ -152,28 +198,32 @@ impl SessionService {
 
     #[cfg(test)]
     pub fn with_storage_layout(storage_layout: StorageLayout) -> Self {
-        Self::with_repository(storage_layout, Arc::new(InMemorySessionRepository))
-            .expect("in-memory session repository cannot fail")
+        Self::with_repository(
+            storage_layout,
+            Arc::new(InMemorySessionRepository::default()),
+        )
+        .expect("in-memory session repository cannot fail")
     }
 
     pub(crate) fn with_repository(
         storage_layout: StorageLayout,
         repository: Arc<dyn SessionRepository>,
     ) -> Result<Self, String> {
-        Self::with_repository_options(storage_layout, repository, true)
+        Self::with_repository_options(storage_layout, repository, true, true)
     }
 
     pub(crate) fn with_repository_without_startup_verification(
         storage_layout: StorageLayout,
         repository: Arc<dyn SessionRepository>,
     ) -> Result<Self, String> {
-        Self::with_repository_options(storage_layout, repository, false)
+        Self::with_repository_options(storage_layout, repository, false, false)
     }
 
     fn with_repository_options(
         storage_layout: StorageLayout,
         repository: Arc<dyn SessionRepository>,
         verify_artifacts: bool,
+        normalize_process_state: bool,
     ) -> Result<Self, String> {
         let (event_sender, _) = broadcast::channel(256);
         let (stream_sender, _) = broadcast::channel(1024);
@@ -185,14 +235,17 @@ impl SessionService {
             event_sender,
             stream_sender,
         };
-        service.normalize_agent_threads_after_process_restart()?;
+        if normalize_process_state {
+            service.normalize_agent_threads_after_process_restart()?;
+            service.normalize_validation_batches_after_process_restart()?;
+        }
         if verify_artifacts {
             service.verify_artifact_files_inner(None)?;
         }
         Ok(service)
     }
 
-    fn normalize_agent_threads_after_process_restart(&self) -> Result<(), String> {
+    pub(crate) fn normalize_agent_threads_after_process_restart(&self) -> Result<(), String> {
         let mut state = self.inner.lock().map_err(lock_error)?;
         let mut changed_sessions = Vec::new();
         for (session_id, threads) in &mut state.agent_threads {
@@ -214,6 +267,92 @@ impl SessionService {
         }
         for session_id in changed_sessions {
             self.persist_session_graph(&state, &session_id)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn normalize_validation_batches_after_process_restart(&self) -> Result<(), String> {
+        let mut state = self.inner.lock().map_err(lock_error)?;
+        let running_checks = state
+            .validation_checks
+            .values()
+            .flatten()
+            .filter(|check| {
+                check.status == CadValidationCheckStatus::Running
+                    && matches!(
+                        check.kind,
+                        CadValidationCheckKind::Structural | CadValidationCheckKind::Dfm
+                    )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for persisted in running_checks {
+            let mut reset = persisted.clone();
+            reset.status = CadValidationCheckStatus::Queued;
+            reset.started_at = None;
+            let saved = self
+                .repository
+                .update_validation_check(&reset, &persisted.status)?;
+            let slot = state
+                .validation_checks
+                .get_mut(&saved.session_id)
+                .into_iter()
+                .flatten()
+                .find(|check| check.id == saved.id)
+                .ok_or_else(|| format!("Validation check state not found: {}", saved.id))?;
+            *slot = saved;
+        }
+        let claimed_batches = state
+            .validation_batches
+            .values()
+            .flatten()
+            .filter_map(|batch| {
+                batch
+                    .settlement_claimed_at
+                    .as_ref()
+                    .map(|claim| (batch.session_id.clone(), batch.id.clone(), claim.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (session_id, batch_id, claim_token) in claimed_batches {
+            let saved = self.repository.release_validation_batch_settlement(
+                &session_id,
+                &batch_id,
+                &claim_token,
+            )?;
+            let slot = state
+                .validation_batches
+                .get_mut(&session_id)
+                .into_iter()
+                .flatten()
+                .find(|batch| batch.id == batch_id)
+                .ok_or_else(|| format!("Validation batch state not found: {batch_id}"))?;
+            *slot = saved;
+        }
+        let effect_claims = state
+            .validation_batches
+            .values()
+            .flatten()
+            .filter_map(|batch| {
+                batch
+                    .effects_claimed_at
+                    .as_ref()
+                    .map(|claim| (batch.session_id.clone(), batch.id.clone(), claim.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (session_id, batch_id, claim_token) in effect_claims {
+            let saved = self.repository.release_validation_batch_effects(
+                &session_id,
+                &batch_id,
+                &claim_token,
+            )?;
+            let slot = state
+                .validation_batches
+                .get_mut(&session_id)
+                .into_iter()
+                .flatten()
+                .find(|batch| batch.id == batch_id)
+                .ok_or_else(|| format!("Validation batch state not found: {batch_id}"))?;
+            *slot = saved;
         }
         Ok(())
     }

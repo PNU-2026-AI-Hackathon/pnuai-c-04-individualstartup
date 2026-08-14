@@ -265,6 +265,7 @@ pub(super) fn load_agent_threads(
             r#"
             SELECT agent_threads.id, agent_threads.session_id,
                    agent_threads.external_agent, agent_threads.external_thread_id,
+                   agent_threads.plane, agent_threads.owner_id,
                    agent_threads.status, agent_threads.connection_generation,
                    agent_threads.created_at, agent_threads.updated_at,
                    agent_threads.last_resumed_at, agent_threads.archived_at,
@@ -278,22 +279,25 @@ pub(super) fn load_agent_threads(
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map([], |row| {
-            let status: String = row.get(4)?;
-            let metadata_json: Option<String> = row.get(11)?;
+            let plane: String = row.get(4)?;
+            let status: String = row.get(6)?;
+            let metadata_json: Option<String> = row.get(13)?;
             Ok(CadAgentThread {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
                 external_agent: row.get(2)?,
                 external_thread_id: row.get(3)?,
+                plane: from_db_text(&plane).map_err(to_rusqlite_error)?,
+                owner_id: row.get(5)?,
                 status: from_db_text(&status).map_err(to_rusqlite_error)?,
                 connection_generation: row
-                    .get::<_, Option<i64>>(5)?
+                    .get::<_, Option<i64>>(7)?
                     .map(|value| value.max(0) as u64),
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
-                last_resumed_at: row.get(8)?,
-                archived_at: row.get(9)?,
-                replaced_by_id: row.get(10)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+                last_resumed_at: row.get(10)?,
+                archived_at: row.get(11)?,
+                replaced_by_id: row.get(12)?,
                 metadata: optional_metadata(metadata_json).map_err(to_rusqlite_error)?,
             })
         })
@@ -411,6 +415,263 @@ pub(super) fn load_agent_transport_events(
             .push(event);
     }
     Ok(events)
+}
+
+pub(super) fn load_validation_evaluations(
+    connection: &Connection,
+) -> SessionRepositoryResult<HashMap<String, Vec<CadValidationEvaluation>>> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT validation_evaluations.id, validation_evaluations.session_id,
+                   validation_evaluations.run_id, validation_evaluations.revision_id,
+                   validation_evaluations.artifact_id, validation_evaluations.kind,
+                   validation_evaluations.attempt, validation_evaluations.status,
+                   validation_evaluations.evaluator_thread_id,
+                   validation_evaluations.external_turn_id,
+                   validation_evaluations.input_contract_json,
+                   validation_evaluations.report_json, validation_evaluations.passed,
+                   validation_evaluations.score, validation_evaluations.pass_threshold,
+                   validation_evaluations.error, validation_evaluations.created_at,
+                   validation_evaluations.started_at, validation_evaluations.completed_at
+            FROM validation_evaluations
+            INNER JOIN sessions ON sessions.id = validation_evaluations.session_id
+            WHERE sessions.deleted_at IS NULL
+            ORDER BY validation_evaluations.created_at ASC, validation_evaluations.id ASC
+            "#,
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], validation_evaluation_from_row)
+        .map_err(|error| error.to_string())?;
+    let mut evaluations: HashMap<String, Vec<CadValidationEvaluation>> = HashMap::new();
+    for row in rows {
+        let evaluation = row.map_err(|error| error.to_string())?;
+        evaluations
+            .entry(evaluation.session_id.clone())
+            .or_default()
+            .push(evaluation);
+    }
+    Ok(evaluations)
+}
+
+pub(super) fn load_validation_batches(
+    connection: &Connection,
+) -> SessionRepositoryResult<HashMap<String, Vec<CadValidationBatch>>> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT validation_batches.id, validation_batches.session_id,
+                   validation_batches.run_id, validation_batches.revision_id,
+                   validation_batches.artifact_id, validation_batches.attempt,
+                   validation_batches.status, validation_batches.aggregate_report_json,
+                   validation_batches.created_at, validation_batches.started_at,
+                   validation_batches.settlement_claimed_at, validation_batches.settled_at,
+                   validation_batches.effects_claimed_at,
+                   validation_batches.refinement_requested_at,
+                   validation_batches.refinement_bound_at,
+                   validation_batches.effects_applied_at
+            FROM validation_batches
+            INNER JOIN sessions ON sessions.id = validation_batches.session_id
+            WHERE sessions.deleted_at IS NULL
+            ORDER BY validation_batches.created_at, validation_batches.id
+            "#,
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], validation_batch_from_row)
+        .map_err(|error| error.to_string())?;
+    let mut batches: HashMap<String, Vec<CadValidationBatch>> = HashMap::new();
+    for row in rows {
+        let batch = row.map_err(|error| error.to_string())?;
+        batches
+            .entry(batch.session_id.clone())
+            .or_default()
+            .push(batch);
+    }
+    Ok(batches)
+}
+
+pub(super) fn validation_batch_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<CadValidationBatch> {
+    let status: String = row.get(6)?;
+    let aggregate_report_json: Option<String> = row.get(7)?;
+    let attempt = row.get::<_, i64>(5)?.try_into().map_err(|_| {
+        to_rusqlite_error("validation batch attempt is outside u32 range".to_string())
+    })?;
+    Ok(CadValidationBatch {
+        id: row.get(0)?,
+        session_id: row.get(1)?,
+        run_id: row.get(2)?,
+        revision_id: row.get(3)?,
+        artifact_id: row.get(4)?,
+        attempt,
+        status: from_db_text(&status).map_err(to_rusqlite_error)?,
+        aggregate_report: optional_json_value(aggregate_report_json).map_err(to_rusqlite_error)?,
+        created_at: row.get(8)?,
+        started_at: row.get(9)?,
+        settlement_claimed_at: row.get(10)?,
+        settled_at: row.get(11)?,
+        effects_claimed_at: row.get(12)?,
+        refinement_requested_at: row.get(13)?,
+        refinement_bound_at: row.get(14)?,
+        effects_applied_at: row.get(15)?,
+    })
+}
+
+pub(super) fn load_validation_checks(
+    connection: &Connection,
+) -> SessionRepositoryResult<HashMap<String, Vec<CadValidationCheck>>> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT validation_checks.id, validation_checks.batch_id,
+                   validation_checks.session_id, validation_checks.kind,
+                   validation_checks.status, validation_checks.input_contract_json,
+                   validation_checks.report_json, validation_checks.passed,
+                   validation_checks.error, validation_checks.evaluator_thread_id,
+                   validation_checks.external_turn_id, validation_checks.created_at,
+                   validation_checks.started_at, validation_checks.completed_at
+            FROM validation_checks
+            INNER JOIN sessions ON sessions.id = validation_checks.session_id
+            WHERE sessions.deleted_at IS NULL
+            ORDER BY validation_checks.created_at, validation_checks.id
+            "#,
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], validation_check_from_row)
+        .map_err(|error| error.to_string())?;
+    let mut checks: HashMap<String, Vec<CadValidationCheck>> = HashMap::new();
+    for row in rows {
+        let check = row.map_err(|error| error.to_string())?;
+        checks
+            .entry(check.session_id.clone())
+            .or_default()
+            .push(check);
+    }
+    Ok(checks)
+}
+
+pub(super) fn validation_check_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<CadValidationCheck> {
+    let kind: String = row.get(3)?;
+    let status: String = row.get(4)?;
+    let input_contract_json: String = row.get(5)?;
+    let report_json: Option<String> = row.get(6)?;
+    Ok(CadValidationCheck {
+        id: row.get(0)?,
+        batch_id: row.get(1)?,
+        session_id: row.get(2)?,
+        kind: from_db_text(&kind).map_err(to_rusqlite_error)?,
+        status: from_db_text(&status).map_err(to_rusqlite_error)?,
+        input_contract: serde_json::from_str(&input_contract_json)
+            .map_err(|error| to_rusqlite_error(error.to_string()))?,
+        report: optional_json_value(report_json).map_err(to_rusqlite_error)?,
+        passed: row.get::<_, Option<i64>>(7)?.map(|value| value != 0),
+        error: row.get(8)?,
+        evaluator_thread_id: row.get(9)?,
+        external_turn_id: row.get(10)?,
+        created_at: row.get(11)?,
+        started_at: row.get(12)?,
+        completed_at: row.get(13)?,
+    })
+}
+
+pub(super) fn validation_evaluation_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<CadValidationEvaluation> {
+    let kind: String = row.get(5)?;
+    let status: String = row.get(7)?;
+    let input_contract_json: String = row.get(10)?;
+    let report_json: Option<String> = row.get(11)?;
+    Ok(CadValidationEvaluation {
+        id: row.get(0)?,
+        session_id: row.get(1)?,
+        run_id: row.get(2)?,
+        revision_id: row.get(3)?,
+        artifact_id: row.get(4)?,
+        kind: from_db_text(&kind).map_err(to_rusqlite_error)?,
+        attempt: row.get::<_, i64>(6)?.try_into().map_err(|_| {
+            to_rusqlite_error("validation evaluation attempt is outside u32 range".to_string())
+        })?,
+        status: from_db_text(&status).map_err(to_rusqlite_error)?,
+        evaluator_thread_id: row.get(8)?,
+        external_turn_id: row.get(9)?,
+        input_contract: serde_json::from_str(&input_contract_json)
+            .map_err(|error| to_rusqlite_error(error.to_string()))?,
+        report: optional_json_value(report_json).map_err(to_rusqlite_error)?,
+        passed: row.get::<_, Option<i64>>(12)?.map(|value| value != 0),
+        score: row.get(13)?,
+        pass_threshold: row.get(14)?,
+        error: row.get(15)?,
+        created_at: row.get(16)?,
+        started_at: row.get(17)?,
+        completed_at: row.get(18)?,
+    })
+}
+
+pub(super) fn load_validation_evaluation_events(
+    connection: &Connection,
+) -> SessionRepositoryResult<HashMap<String, Vec<CadValidationEvaluationEvent>>> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT validation_evaluation_events.id,
+                   validation_evaluation_events.session_id,
+                   validation_evaluation_events.evaluation_id,
+                   validation_evaluation_events.evaluator_thread_id,
+                   validation_evaluation_events.external_turn_id,
+                   validation_evaluation_events.external_item_id,
+                   validation_evaluation_events.method,
+                   validation_evaluation_events.sequence,
+                   validation_evaluation_events.payload_json,
+                   validation_evaluation_events.created_at
+            FROM validation_evaluation_events
+            INNER JOIN sessions ON sessions.id = validation_evaluation_events.session_id
+            WHERE sessions.deleted_at IS NULL
+            ORDER BY validation_evaluation_events.evaluation_id ASC,
+                     validation_evaluation_events.sequence ASC
+            "#,
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], validation_evaluation_event_from_row)
+        .map_err(|error| error.to_string())?;
+    let mut events: HashMap<String, Vec<CadValidationEvaluationEvent>> = HashMap::new();
+    for row in rows {
+        let event = row.map_err(|error| error.to_string())?;
+        events
+            .entry(event.session_id.clone())
+            .or_default()
+            .push(event);
+    }
+    Ok(events)
+}
+
+pub(super) fn validation_evaluation_event_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<CadValidationEvaluationEvent> {
+    let payload_json: String = row.get(8)?;
+    Ok(CadValidationEvaluationEvent {
+        id: row.get(0)?,
+        session_id: row.get(1)?,
+        evaluation_id: row.get(2)?,
+        evaluator_thread_id: row.get(3)?,
+        external_turn_id: row.get(4)?,
+        external_item_id: row.get(5)?,
+        method: row.get(6)?,
+        sequence: row.get::<_, i64>(7)?.try_into().map_err(|_| {
+            to_rusqlite_error(
+                "validation evaluation event sequence is outside u64 range".to_string(),
+            )
+        })?,
+        payload: serde_json::from_str(&payload_json)
+            .map_err(|error| to_rusqlite_error(error.to_string()))?,
+        created_at: row.get(9)?,
+    })
 }
 
 pub(super) fn load_agent_run_events(

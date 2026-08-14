@@ -59,6 +59,12 @@ impl SessionService {
             state
                 .agent_transport_events
                 .insert(session_id.clone(), Vec::new());
+            state
+                .validation_evaluations
+                .insert(session_id.clone(), Vec::new());
+            state
+                .validation_evaluation_events
+                .insert(session_id.clone(), Vec::new());
             self.persist_session_graph(&state, &session_id)?;
         }
         let state = self.get_session_state(&session_id)?;
@@ -313,6 +319,8 @@ impl SessionService {
             state.agent_runs.remove(session_id);
             state.agent_run_events.remove(session_id);
             state.agent_transport_events.remove(session_id);
+            state.validation_evaluations.remove(session_id);
+            state.validation_evaluation_events.remove(session_id);
             for run_id in &run_ids {
                 state.workflow_plans.remove(run_id);
                 state.workflow_outer_iterations.remove(run_id);
@@ -415,6 +423,12 @@ impl SessionService {
                 .insert(new_session_id.clone(), Vec::new());
             state
                 .agent_transport_events
+                .insert(new_session_id.clone(), Vec::new());
+            state
+                .validation_evaluations
+                .insert(new_session_id.clone(), Vec::new());
+            state
+                .validation_evaluation_events
                 .insert(new_session_id.clone(), Vec::new());
             if let (Some(mut revision), Some(new_revision_id)) =
                 (active_revision, active_revision_id)

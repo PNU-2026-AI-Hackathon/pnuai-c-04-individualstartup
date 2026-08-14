@@ -1,5 +1,7 @@
 use super::events::{map_item_started, CodexEventCollector};
-use super::prompt::{build_cad_prompt, build_thread_start_params, build_turn_start_params};
+use super::prompt::{
+    build_modeling_turn_input, build_thread_start_params, build_turn_start_params,
+};
 use super::terminal_result;
 use crate::agent_adapter::{AgentAdapterEvent, AgentAdapterRunInput};
 use crate::notification_router::{NotificationIdentifiers, RoutedNotification};
@@ -8,8 +10,8 @@ use serde_json::json;
 use std::path::PathBuf;
 
 #[test]
-fn prompt_limits_agent_to_modeling_cli_surface() {
-    let prompt = build_cad_prompt(&AgentAdapterRunInput {
+fn turn_input_contains_current_modeling_cli_scope_without_developer_instructions() {
+    let prompt = build_modeling_turn_input(&AgentAdapterRunInput {
         session_id: "session-1".to_string(),
         run_id: "run-1".to_string(),
         app_data_dir: PathBuf::from("/tmp/Cad App Data"),
@@ -23,13 +25,13 @@ fn prompt_limits_agent_to_modeling_cli_surface() {
             "nextAction": "outer_loop_refine_source"
         })),
         event_sink: None,
-    });
+    })
+    .unwrap();
 
     assert!(prompt.contains("--app-data-dir '/tmp/Cad App Data'"));
     assert!(prompt.contains(
         "cadastrophe-plan-commit --app-data-dir '/tmp/Cad App Data' --session 'session-1' --run 'run-1' --revision 'revision-1' --plan <file>"
     ));
-    assert!(prompt.contains("Do not call `cadastrophe-source-apply`"));
     assert!(prompt.contains(
         "cadastrophe-finalize --app-data-dir '/tmp/Cad App Data' --session 'session-1' --run 'run-1' --revision <revision_id_from_source_apply>"
     ));
@@ -50,26 +52,13 @@ fn prompt_limits_agent_to_modeling_cli_surface() {
         }
     }
     assert!(!prompt.contains("--language openscad"));
-    assert!(prompt.contains("--revision <revision_id>"));
-    assert!(prompt.contains("sessionId: 'session-1'"));
-    assert!(prompt.contains("runId: 'run-1'"));
-    assert!(prompt.contains("cadastrophe.vlm_judge.v1"));
-    assert!(prompt.contains("the app will consume it and record the VLM result automatically"));
-    assert!(prompt.contains("Do not call `cadastrophe-preview-render`"));
-    assert!(prompt.contains("CadModelPlanDraft"));
-    assert!(prompt.contains(
-        "Shape it with `summary`, `mainComponent`, `supportingComponents`, and `expectedAspectRatio`"
-    ));
-    assert!(!prompt.contains("full persisted `CadModelPlan`"));
-    assert!(!prompt.contains("Do not include `schemaVersion`"));
-    assert!(!prompt.contains("cadastrophe-preview-render --app-data-dir"));
-    assert!(!prompt.contains("cadastrophe-artifact-export --app-data-dir"));
-    assert!(!prompt.contains("cadastrophe-evaluate-structural --app-data-dir"));
-    assert!(!prompt.contains("cadastrophe-vlm-submit --app-data-dir"));
-    assert!(prompt.contains("// @main_component <name>"));
+    assert!(prompt.contains("--revision 'revision-1' --source <file>"));
+    assert!(prompt.contains("\"sessionId\": \"session-1\""));
+    assert!(prompt.contains("\"runId\": \"run-1\""));
     assert!(prompt.contains("latestWorkflowFailureReport"));
     assert!(prompt.contains("missing_support_tab"));
-    assert!(!prompt.contains("Return only a JSON object"));
+    assert!(!prompt.contains("# Cadastrophe modeling agent"));
+    assert!(!prompt.contains("## Required workflow"));
 }
 
 #[test]
@@ -77,16 +66,33 @@ fn codex_turn_uses_workspace_write_with_app_data_writable_root() {
     let cwd = PathBuf::from("/Users/example/cadastrophe");
     let app_data_dir = PathBuf::from("/Users/example/Library/Application Support/Cadastrophe");
 
-    let thread = build_thread_start_params(&cwd);
+    let thread = build_thread_start_params(&cwd).unwrap();
     assert_eq!(thread["cwd"], "/Users/example/cadastrophe");
     assert_eq!(thread["sandbox"], "workspace-write");
     assert_eq!(thread["approvalPolicy"], "never");
+    assert!(thread["developerInstructions"]
+        .as_str()
+        .unwrap()
+        .starts_with("# Cadastrophe modeling agent\n"));
+    assert!(thread["developerInstructions"]
+        .as_str()
+        .unwrap()
+        .contains("Do not call `cadastrophe-preview-render`"));
 
     let turn = build_turn_start_params("prompt", &cwd, &app_data_dir);
     assert!(turn.get("threadId").is_none());
+    assert!(turn.get("developerInstructions").is_none());
     assert_eq!(turn["cwd"], "/Users/example/cadastrophe");
     assert_eq!(turn["approvalPolicy"], "never");
     assert_eq!(turn["sandboxPolicy"]["type"], "workspaceWrite");
+    assert_eq!(
+        turn["input"],
+        json!([{
+            "type": "text",
+            "text": "prompt",
+            "text_elements": []
+        }])
+    );
     assert_eq!(
         turn["sandboxPolicy"]["writableRoots"][0],
         "/Users/example/Library/Application Support/Cadastrophe"

@@ -3,9 +3,10 @@ use crate::notification_router::{
     NotificationRouteKey, NotificationRouter, PendingRouteHandle, RoutedNotification,
 };
 use crate::protocol::{
-    CadAgentRecoveryStatus, CadAgentRunHistoryOutcome, CadAgentRunHistoryRecoveryInput,
-    CadAgentRunStatus, CadAgentThread, CadAgentThreadStatus, CadConversationPhase,
-    CadRecoveredAgentMessage, Metadata, StartNewAgentConversationResult,
+    CadAgentPlane, CadAgentRecoveryStatus, CadAgentRunHistoryOutcome,
+    CadAgentRunHistoryRecoveryInput, CadAgentRunStatus, CadAgentThread, CadAgentThreadStatus,
+    CadConversationPhase, CadRecoveredAgentMessage, Metadata, StartNewAgentConversationResult,
+    ThreadScope,
 };
 use crate::session_service::{timestamp, SessionService};
 use async_trait::async_trait;
@@ -44,6 +45,28 @@ pub struct StartManagedTurn {
     pub replacement_context: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct ScopedTurnBinding {
+    pub scope: ThreadScope,
+    pub agent_thread_id: String,
+    pub external_thread_id: String,
+    pub external_turn_id: String,
+    pub connection_generation: u64,
+}
+
+pub type ScopedTurnBindCallback =
+    Arc<dyn Fn(&ScopedTurnBinding) -> Result<(), String> + Send + Sync>;
+
+#[derive(Clone)]
+pub struct StartScopedTurn {
+    pub scope: ThreadScope,
+    pub thread_start_params: Value,
+    /// Complete `turn/start` parameters except `threadId`.
+    pub turn_start_params: Value,
+    /// Atomically binds the owning plane record after the external turn route exists.
+    pub bind: ScopedTurnBindCallback,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ManagedThreadActivation {
     Started,
@@ -53,6 +76,7 @@ pub enum ManagedThreadActivation {
 }
 
 pub struct ManagedAgentTurn {
+    pub scope: ThreadScope,
     pub session_id: String,
     pub run_id: String,
     pub agent_thread_id: String,
@@ -63,7 +87,7 @@ pub struct ManagedAgentTurn {
     pub notifications: mpsc::Receiver<RoutedNotification>,
     route_key: NotificationRouteKey,
     router: NotificationRouter,
-    lease: Option<SessionTurnLease>,
+    lease: Option<ScopedTurnLease>,
 }
 
 impl ManagedAgentTurn {
@@ -141,14 +165,14 @@ impl fmt::Display for AgentThreadManagerError {
 impl std::error::Error for AgentThreadManagerError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum TransportRequestError {
+pub(crate) enum TransportRequestError {
     ThreadNotFound,
     Rejected(String),
     Connection(String),
 }
 
 #[async_trait]
-trait AgentThreadTransport: Send + Sync {
+pub(crate) trait AgentThreadTransport: Send + Sync {
     async fn ensure_initialized(&self) -> Result<(), String>;
     async fn current_connection_generation(&self) -> Option<u64>;
     fn notification_router(&self) -> NotificationRouter;
@@ -201,19 +225,37 @@ pub struct AgentThreadManager {
 
 #[derive(Default)]
 struct ManagerRuntime {
-    active_sessions: HashSet<String>,
+    active_scopes: HashSet<ScopeLeaseKey>,
     loaded_threads: HashSet<(u64, String)>,
 }
 
-struct SessionTurnLease {
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ScopeLeaseKey {
     session_id: String,
+    plane: &'static str,
+}
+
+impl From<&ThreadScope> for ScopeLeaseKey {
+    fn from(scope: &ThreadScope) -> Self {
+        Self {
+            session_id: scope.session_id.clone(),
+            plane: match scope.plane {
+                CadAgentPlane::Modeling => "modeling",
+                CadAgentPlane::Validation => "validation",
+            },
+        }
+    }
+}
+
+struct ScopedTurnLease {
+    key: ScopeLeaseKey,
     runtime: Arc<Mutex<ManagerRuntime>>,
 }
 
-impl Drop for SessionTurnLease {
+impl Drop for ScopedTurnLease {
     fn drop(&mut self) {
         if let Ok(mut runtime) = self.runtime.lock() {
-            runtime.active_sessions.remove(&self.session_id);
+            runtime.active_scopes.remove(&self.key);
         }
     }
 }
@@ -227,7 +269,7 @@ impl AgentThreadManager {
         Self::with_transport(service, Arc::new(client), config)
     }
 
-    fn with_transport(
+    pub(crate) fn with_transport(
         service: Arc<SessionService>,
         transport: Arc<dyn AgentThreadTransport>,
         config: AgentThreadManagerConfig,
@@ -252,7 +294,8 @@ impl AgentThreadManager {
         input: StartManagedTurn,
     ) -> Result<ManagedAgentTurn, AgentThreadManagerError> {
         validate_start_input(&input)?;
-        let lease = self.acquire_session_lease(&input.session_id)?;
+        let scope = modeling_scope(&input.session_id);
+        let lease = self.acquire_scope_lease(&scope)?;
         let run = self
             .service
             .get_agent_run(&input.session_id, &input.run_id)
@@ -376,6 +419,7 @@ impl AgentThreadManager {
         }
 
         Ok(ManagedAgentTurn {
+            scope,
             session_id: input.session_id,
             run_id: input.run_id,
             agent_thread_id: thread.id,
@@ -385,6 +429,149 @@ impl AgentThreadManager {
             activation,
             notifications,
             route_key: NotificationRouteKey::new(thread.external_thread_id, turn_id),
+            router: self.router.clone(),
+            lease: Some(lease),
+        })
+    }
+
+    /// Starts a fresh Codex thread and turn for a non-modeling owner. This path
+    /// deliberately has no resume, reuse, or replacement behavior.
+    pub async fn start_scoped_turn(
+        &self,
+        input: StartScopedTurn,
+    ) -> Result<ManagedAgentTurn, AgentThreadManagerError> {
+        validate_scoped_start_input(&input)?;
+        let lease = self.acquire_scope_lease(&input.scope)?;
+        let active_in_plane = self
+            .service
+            .list_agent_threads(&input.scope.session_id)
+            .map_err(AgentThreadManagerError::Persistence)?
+            .into_iter()
+            .find(|thread| {
+                thread.external_agent == EXTERNAL_AGENT
+                    && thread.plane == input.scope.plane
+                    && thread.archived_at.is_none()
+                    && thread.replaced_by_id.is_none()
+            });
+        if let Some(active) = active_in_plane {
+            return Err(AgentThreadManagerError::InvalidInput(format!(
+                "Session {} already has active {:?} Codex thread {} owned by {}; scoped turns require an empty plane.",
+                input.scope.session_id, input.scope.plane, active.id, active.owner_id
+            )));
+        }
+
+        self.transport
+            .ensure_initialized()
+            .await
+            .map_err(AgentThreadManagerError::Transport)?;
+        let generation = self
+            .transport
+            .current_connection_generation()
+            .await
+            .ok_or_else(|| {
+                AgentThreadManagerError::Transport(
+                    "Codex process has no active connection after initialization.".to_string(),
+                )
+            })?;
+        let thread_response = self
+            .transport
+            .request("thread/start", input.thread_start_params)
+            .await
+            .map_err(|error| map_transport_error("thread/start", error))?;
+        let external_thread_id = required_nested_id(&thread_response, "thread", "thread/start")?;
+        let now = timestamp();
+        let mut thread = CadAgentThread {
+            id: Uuid::new_v4().to_string(),
+            session_id: input.scope.session_id.clone(),
+            plane: input.scope.plane.clone(),
+            owner_id: input.scope.owner_id.clone(),
+            external_agent: EXTERNAL_AGENT.to_string(),
+            external_thread_id: external_thread_id.clone(),
+            status: CadAgentThreadStatus::Active,
+            connection_generation: Some(generation),
+            created_at: now.clone(),
+            updated_at: now,
+            last_resumed_at: None,
+            archived_at: None,
+            replaced_by_id: None,
+            metadata: None,
+        };
+        thread = self
+            .service
+            .upsert_agent_thread(thread)
+            .map_err(|error| orphan_thread_error(&external_thread_id, error))?;
+        self.mark_loaded(generation, &external_thread_id)?;
+
+        let pending = match self.router.begin_pending_route(external_thread_id.clone()) {
+            Ok(pending) => pending,
+            Err(error) => {
+                self.archive_scoped_thread(&mut thread, CadAgentThreadStatus::Failed)?;
+                return Err(AgentThreadManagerError::Routing(error.to_string()));
+            }
+        };
+        let turn_params =
+            match prepare_turn_params(input.turn_start_params, &external_thread_id, None) {
+                Ok(params) => params,
+                Err(error) => {
+                    self.cancel_pending(&pending)?;
+                    self.archive_scoped_thread(&mut thread, CadAgentThreadStatus::Failed)?;
+                    return Err(error);
+                }
+            };
+        let turn_response = match self.transport.request("turn/start", turn_params).await {
+            Ok(response) => response,
+            Err(error) => {
+                self.cancel_pending(&pending)?;
+                self.archive_scoped_thread(&mut thread, CadAgentThreadStatus::Failed)?;
+                return Err(map_transport_error("turn/start", error));
+            }
+        };
+        let turn_id = match required_nested_id(&turn_response, "turn", "turn/start") {
+            Ok(turn_id) => turn_id,
+            Err(error) => {
+                self.cancel_pending(&pending)?;
+                self.archive_scoped_thread(&mut thread, CadAgentThreadStatus::Failed)?;
+                return Err(error);
+            }
+        };
+        let route_key = NotificationRouteKey::new(&external_thread_id, &turn_id);
+        let notifications = match self
+            .router
+            .promote_pending_route(pending.clone(), turn_id.clone())
+        {
+            Ok(receiver) => receiver,
+            Err(error) => {
+                self.cancel_pending(&pending)?;
+                self.archive_scoped_thread(&mut thread, CadAgentThreadStatus::Failed)?;
+                return Err(AgentThreadManagerError::Routing(error.to_string()));
+            }
+        };
+        let binding = ScopedTurnBinding {
+            scope: input.scope.clone(),
+            agent_thread_id: thread.id.clone(),
+            external_thread_id: external_thread_id.clone(),
+            external_turn_id: turn_id.clone(),
+            connection_generation: generation,
+        };
+        if let Err(error) = (input.bind)(&binding) {
+            self.router
+                .unregister_route(&route_key)
+                .map_err(|route_error| AgentThreadManagerError::Routing(route_error.to_string()))?;
+            self.archive_scoped_thread(&mut thread, CadAgentThreadStatus::Failed)?;
+            return Err(AgentThreadManagerError::Persistence(error));
+        }
+
+        Ok(ManagedAgentTurn {
+            scope: input.scope.clone(),
+            session_id: input.scope.session_id,
+            run_id: input.scope.owner_id,
+            agent_thread_id: thread.id,
+            external_thread_id,
+            external_turn_id: turn_id,
+            connection_generation: generation,
+            activation: ManagedThreadActivation::Started,
+            notifications,
+            route_key,
             router: self.router.clone(),
             lease: Some(lease),
         })
@@ -405,10 +592,11 @@ impl AgentThreadManager {
                 "thread_start_params must be an object.".to_string(),
             ));
         }
-        let _lease = self.acquire_session_lease(session_id)?;
+        let scope = modeling_scope(session_id);
+        let _lease = self.acquire_scope_lease(&scope)?;
         let preparation = self
             .service
-            .prepare_agent_thread_replacement(session_id, EXTERNAL_AGENT)
+            .prepare_agent_thread_replacement(&scope, EXTERNAL_AGENT)
             .map_err(AgentThreadManagerError::Persistence)?;
         self.transport
             .ensure_initialized()
@@ -433,6 +621,8 @@ impl AgentThreadManager {
         let replacement = CadAgentThread {
             id: Uuid::new_v4().to_string(),
             session_id: session_id.to_string(),
+            plane: CadAgentPlane::Modeling,
+            owner_id: session_id.to_string(),
             external_agent: EXTERNAL_AGENT.to_string(),
             external_thread_id: external_thread_id.clone(),
             status: CadAgentThreadStatus::Ready,
@@ -493,9 +683,26 @@ impl AgentThreadManager {
                     turn.agent_thread_id
                 ))
             })?;
+        if thread.session_id != turn.scope.session_id
+            || thread.plane != turn.scope.plane
+            || thread.owner_id != turn.scope.owner_id
+            || thread.external_thread_id != turn.external_thread_id
+        {
+            return Err(AgentThreadManagerError::Persistence(format!(
+                "Managed turn scope or external identity does not match agent thread {}.",
+                turn.agent_thread_id
+            )));
+        }
         if thread.replaced_by_id.is_none() && thread.archived_at.is_none() {
-            thread.status = CadAgentThreadStatus::Ready;
-            thread.updated_at = timestamp();
+            let now = timestamp();
+            match turn.scope.plane {
+                CadAgentPlane::Modeling => thread.status = CadAgentThreadStatus::Ready,
+                CadAgentPlane::Validation => {
+                    thread.status = CadAgentThreadStatus::Archived;
+                    thread.archived_at = Some(now.clone());
+                }
+            }
+            thread.updated_at = now;
             self.service
                 .upsert_agent_thread(thread)
                 .map_err(AgentThreadManagerError::Persistence)?;
@@ -542,9 +749,16 @@ impl AgentThreadManager {
                 Ok(None) | Err(_) => break,
             }
         }
-        let reconciliation = self
-            .recover_run_from_history(&turn.session_id, &turn.run_id)
-            .await?;
+        let reconciliation = match turn.scope.plane {
+            CadAgentPlane::Modeling => {
+                self.recover_run_from_history(&turn.session_id, &turn.run_id)
+                    .await?
+            }
+            CadAgentPlane::Validation => {
+                self.recover_turn_from_history(&turn.external_thread_id, &turn.external_turn_id)
+                    .await?
+            }
+        };
         Ok(InterruptReconciliation {
             observed_notifications: observed,
             reconciliation,
@@ -694,6 +908,67 @@ impl AgentThreadManager {
         Ok(reconciliation)
     }
 
+    pub async fn recover_turn_from_history(
+        &self,
+        external_thread_id: &str,
+        external_turn_id: &str,
+    ) -> Result<TurnReconciliation, AgentThreadManagerError> {
+        if external_thread_id.trim().is_empty() || external_turn_id.trim().is_empty() {
+            return Err(AgentThreadManagerError::InvalidInput(
+                "External thread and turn ids must not be empty when reading history.".to_string(),
+            ));
+        }
+        self.transport
+            .ensure_initialized()
+            .await
+            .map_err(AgentThreadManagerError::Transport)?;
+        let response = match self
+            .transport
+            .request(
+                "thread/read",
+                json!({"threadId": external_thread_id, "includeTurns": true}),
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(TransportRequestError::ThreadNotFound) => {
+                return Ok(TurnReconciliation {
+                    status: RecoveredTurnStatus::NotFound,
+                    messages: Vec::new(),
+                })
+            }
+            Err(error) => return Err(map_transport_error("thread/read", error)),
+        };
+        parse_turn_history(&response, external_turn_id)
+    }
+
+    pub async fn read_thread_history(
+        &self,
+        external_thread_id: &str,
+    ) -> Result<Option<Value>, AgentThreadManagerError> {
+        if external_thread_id.trim().is_empty() {
+            return Err(AgentThreadManagerError::InvalidInput(
+                "External thread id must not be empty when reading history.".to_string(),
+            ));
+        }
+        self.transport
+            .ensure_initialized()
+            .await
+            .map_err(AgentThreadManagerError::Transport)?;
+        match self
+            .transport
+            .request(
+                "thread/read",
+                json!({"threadId": external_thread_id, "includeTurns": true}),
+            )
+            .await
+        {
+            Ok(response) => Ok(Some(response)),
+            Err(TransportRequestError::ThreadNotFound) => Ok(None),
+            Err(error) => Err(map_transport_error("thread/read", error)),
+        }
+    }
+
     fn persist_reconciliation(
         &self,
         session_id: &str,
@@ -768,7 +1043,7 @@ impl AgentThreadManager {
     ) -> Result<(CadAgentThread, ManagedThreadActivation), AgentThreadManagerError> {
         let active = self
             .service
-            .get_active_agent_thread(&input.session_id, EXTERNAL_AGENT)
+            .get_active_agent_thread(&modeling_scope(&input.session_id), EXTERNAL_AGENT)
             .map_err(AgentThreadManagerError::Persistence)?;
         let Some(mut thread) = active else {
             let response = self
@@ -781,6 +1056,8 @@ impl AgentThreadManager {
             let thread = CadAgentThread {
                 id: Uuid::new_v4().to_string(),
                 session_id: input.session_id.clone(),
+                plane: CadAgentPlane::Modeling,
+                owner_id: input.session_id.clone(),
                 external_agent: EXTERNAL_AGENT.to_string(),
                 external_thread_id: external_thread_id.clone(),
                 status: CadAgentThreadStatus::Ready,
@@ -893,6 +1170,8 @@ impl AgentThreadManager {
         let replacement = CadAgentThread {
             id: Uuid::new_v4().to_string(),
             session_id: input.session_id.clone(),
+            plane: CadAgentPlane::Modeling,
+            owner_id: input.session_id.clone(),
             external_agent: EXTERNAL_AGENT.to_string(),
             external_thread_id: external_thread_id.clone(),
             status: CadAgentThreadStatus::Ready,
@@ -923,22 +1202,25 @@ impl AgentThreadManager {
         ))
     }
 
-    fn acquire_session_lease(
+    fn acquire_scope_lease(
         &self,
-        session_id: &str,
-    ) -> Result<SessionTurnLease, AgentThreadManagerError> {
+        scope: &ThreadScope,
+    ) -> Result<ScopedTurnLease, AgentThreadManagerError> {
+        validate_scope(scope)?;
+        let key = ScopeLeaseKey::from(scope);
         let mut runtime = self.runtime.lock().map_err(|_| {
             AgentThreadManagerError::ActiveTurn(
                 "Agent thread manager runtime lock is poisoned.".to_string(),
             )
         })?;
-        if !runtime.active_sessions.insert(session_id.to_string()) {
+        if !runtime.active_scopes.insert(key.clone()) {
             return Err(AgentThreadManagerError::ActiveTurn(format!(
-                "Session {session_id} already has an active Codex turn."
+                "Scope {}/{:?}/{} already has an active Codex turn.",
+                scope.session_id, scope.plane, scope.owner_id
             )));
         }
-        Ok(SessionTurnLease {
-            session_id: session_id.to_string(),
+        Ok(ScopedTurnLease {
+            key,
             runtime: Arc::clone(&self.runtime),
         })
     }
@@ -1004,12 +1286,66 @@ impl AgentThreadManager {
             .map(|_| ())
             .map_err(AgentThreadManagerError::Persistence)
     }
+
+    fn archive_scoped_thread(
+        &self,
+        thread: &mut CadAgentThread,
+        status: CadAgentThreadStatus,
+    ) -> Result<(), AgentThreadManagerError> {
+        let now = timestamp();
+        thread.status = status;
+        thread.updated_at = now.clone();
+        thread.archived_at = Some(now);
+        self.service
+            .upsert_agent_thread(thread.clone())
+            .map(|_| ())
+            .map_err(AgentThreadManagerError::Persistence)
+    }
 }
 
 fn orphan_thread_error(external_thread_id: &str, error: String) -> AgentThreadManagerError {
     AgentThreadManagerError::Persistence(format!(
         "Codex thread/start created external thread {external_thread_id}, but its session mapping was not committed; the external thread is orphaned: {error}"
     ))
+}
+
+fn modeling_scope(session_id: &str) -> ThreadScope {
+    ThreadScope {
+        session_id: session_id.to_string(),
+        plane: CadAgentPlane::Modeling,
+        owner_id: session_id.to_string(),
+    }
+}
+
+fn validate_scope(scope: &ThreadScope) -> Result<(), AgentThreadManagerError> {
+    if scope.session_id.trim().is_empty() || scope.owner_id.trim().is_empty() {
+        return Err(AgentThreadManagerError::InvalidInput(
+            "Thread scope session and owner ids must not be empty.".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_scoped_start_input(input: &StartScopedTurn) -> Result<(), AgentThreadManagerError> {
+    validate_scope(&input.scope)?;
+    if input.scope.plane != CadAgentPlane::Validation {
+        return Err(AgentThreadManagerError::InvalidInput(
+            "start_scoped_turn is reserved for validation scope; modeling must use start_turn."
+                .to_string(),
+        ));
+    }
+    if !input.thread_start_params.is_object() || !input.turn_start_params.is_object() {
+        return Err(AgentThreadManagerError::InvalidInput(
+            "Thread and turn parameters must be JSON objects.".to_string(),
+        ));
+    }
+    if input.turn_start_params.get("threadId").is_some() {
+        return Err(AgentThreadManagerError::InvalidInput(
+            "turn_start_params must not contain threadId; the manager binds it exactly."
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_start_input(input: &StartManagedTurn) -> Result<(), AgentThreadManagerError> {
@@ -1252,7 +1588,12 @@ fn parse_turn_history(
 mod tests {
     use super::*;
     use crate::notification_router::NotificationRouterConfig;
-    use crate::protocol::CreateCadSessionInput;
+    use crate::protocol::{
+        CadArtifactKind, CadDiagnostics, CadSourceLanguage, CadValidationEvaluation,
+        CadValidationEvaluationKind, CadValidationEvaluationStatus, CreateCadSessionInput,
+        PersistRuntimeArtifactInput, UpdateModelSourceInput,
+    };
+    use base64::Engine;
     use std::collections::VecDeque;
 
     #[derive(Clone)]
@@ -1358,12 +1699,79 @@ mod tests {
         StartManagedTurn {
             session_id: session_id.to_string(),
             run_id: run_id.to_string(),
-            thread_start_params: json!({"cwd": "/tmp"}),
+            thread_start_params: json!({
+                "cwd": "/tmp",
+                "developerInstructions": "thread-only modeling instructions"
+            }),
             turn_start_params: json!({
                 "input": [{"type": "text", "text": "prompt", "text_elements": []}]
             }),
             replacement_context: Some("Recovered CAD state".to_string()),
         }
+    }
+
+    fn create_validation_evaluation(
+        manager: &AgentThreadManager,
+        session_id: &str,
+        run_id: &str,
+        evaluation_id: &str,
+    ) -> CadValidationEvaluation {
+        let revision_id = manager
+            .service
+            .update_model_source(UpdateModelSourceInput {
+                session_id: session_id.to_string(),
+                source_language: CadSourceLanguage::Openscad,
+                source: "cube([1,1,1]);".to_string(),
+                parent_revision_id: None,
+                parameters: None,
+            })
+            .unwrap()
+            .revision_id;
+        manager
+            .service
+            .link_agent_run_output_revision(session_id, run_id, revision_id.clone())
+            .unwrap();
+        let artifact = manager
+            .service
+            .persist_runtime_artifact(PersistRuntimeArtifactInput {
+                session_id: session_id.to_string(),
+                revision_id: revision_id.clone(),
+                kind: CadArtifactKind::RenderImage,
+                format: "png".to_string(),
+                contents_base64: base64::engine::general_purpose::STANDARD.encode(b"png"),
+                diagnostics: CadDiagnostics {
+                    ok: true,
+                    elapsed_ms: 1,
+                    items: Vec::new(),
+                },
+                metadata: Metadata::new(),
+            })
+            .unwrap()
+            .artifact;
+        manager
+            .service
+            .create_validation_evaluation(CadValidationEvaluation {
+                id: evaluation_id.to_string(),
+                session_id: session_id.to_string(),
+                run_id: run_id.to_string(),
+                revision_id,
+                artifact_id: artifact.id,
+                kind: CadValidationEvaluationKind::Vlm,
+                attempt: 1,
+                status: CadValidationEvaluationStatus::Queued,
+                evaluator_thread_id: None,
+                external_turn_id: None,
+                input_contract: json!({}),
+                report: None,
+                passed: None,
+                score: None,
+                pass_threshold: 0.8,
+                error: None,
+                created_at: timestamp(),
+                started_at: None,
+                completed_at: None,
+            })
+            .unwrap()
     }
 
     fn bind_scripted_run(manager: &AgentThreadManager, session_id: &str, run_id: &str) {
@@ -1373,6 +1781,8 @@ mod tests {
             .upsert_agent_thread(CadAgentThread {
                 id: Uuid::new_v4().to_string(),
                 session_id: session_id.to_string(),
+                plane: CadAgentPlane::Modeling,
+                owner_id: session_id.to_string(),
                 external_agent: EXTERNAL_AGENT.to_string(),
                 external_thread_id: "thread-1".to_string(),
                 status: CadAgentThreadStatus::Active,
@@ -1650,6 +2060,13 @@ mod tests {
             transport.methods(),
             vec!["thread/start", "turn/start", "turn/start"]
         );
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(
+            requests[0].1["developerInstructions"],
+            "thread-only modeling instructions"
+        );
+        assert!(requests[1].1.get("developerInstructions").is_none());
+        assert!(requests[2].1.get("developerInstructions").is_none());
     }
 
     #[tokio::test]
@@ -1898,5 +2315,93 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("unknown status"));
+    }
+
+    #[test]
+    fn modeling_and_validation_leases_are_concurrent_but_validation_plane_is_serial() {
+        let (manager, _transport, session_id, _run_id) = setup(Vec::new());
+        let modeling = modeling_scope(&session_id);
+        let validation_one = ThreadScope {
+            session_id: session_id.clone(),
+            plane: CadAgentPlane::Validation,
+            owner_id: "evaluation-1".to_string(),
+        };
+        let validation_two = ThreadScope {
+            session_id,
+            plane: CadAgentPlane::Validation,
+            owner_id: "evaluation-2".to_string(),
+        };
+
+        let modeling_lease = manager.acquire_scope_lease(&modeling).unwrap();
+        let validation_lease = manager.acquire_scope_lease(&validation_one).unwrap();
+        assert!(manager.acquire_scope_lease(&validation_two).is_err());
+
+        drop(validation_lease);
+        assert!(manager.acquire_scope_lease(&validation_two).is_ok());
+        drop(modeling_lease);
+    }
+
+    #[test]
+    fn scoped_start_rejects_modeling_plane() {
+        let bind: ScopedTurnBindCallback = Arc::new(|_| Ok(()));
+        let error = validate_scoped_start_input(&StartScopedTurn {
+            scope: ThreadScope {
+                session_id: "session-1".to_string(),
+                plane: CadAgentPlane::Modeling,
+                owner_id: "session-1".to_string(),
+            },
+            thread_start_params: json!({}),
+            turn_start_params: json!({}),
+            bind,
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("reserved for validation"));
+    }
+
+    #[tokio::test]
+    async fn scoped_validation_turn_is_fresh_and_archived_on_finish() {
+        let (manager, transport, session_id, run_id) = setup(vec![
+            Ok(json!({"thread":{"id":"validation-thread-1"}})),
+            Ok(json!({"turn":{"id":"validation-turn-1"}})),
+        ]);
+        let evaluation =
+            create_validation_evaluation(&manager, &session_id, &run_id, "evaluation-1");
+        let service = Arc::clone(&manager.service);
+        let bind_session = session_id.clone();
+        let mut turn = manager
+            .start_scoped_turn(StartScopedTurn {
+                scope: ThreadScope {
+                    session_id: session_id.clone(),
+                    plane: CadAgentPlane::Validation,
+                    owner_id: evaluation.id.clone(),
+                },
+                thread_start_params: json!({"cwd":"/tmp"}),
+                turn_start_params: json!({"input":[]}),
+                bind: Arc::new(move |binding| {
+                    service
+                        .bind_validation_evaluation(
+                            &bind_session,
+                            "evaluation-1",
+                            &binding.agent_thread_id,
+                            &binding.external_turn_id,
+                        )
+                        .map(|_| ())
+                }),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(transport.methods(), vec!["thread/start", "turn/start"]);
+        assert_eq!(turn.activation, ManagedThreadActivation::Started);
+        manager.finish_turn(&mut turn).unwrap();
+        let thread = manager
+            .service
+            .list_agent_threads(&session_id)
+            .unwrap()
+            .into_iter()
+            .find(|thread| thread.id == turn.agent_thread_id)
+            .unwrap();
+        assert_eq!(thread.status, CadAgentThreadStatus::Archived);
+        assert!(thread.archived_at.is_some());
     }
 }

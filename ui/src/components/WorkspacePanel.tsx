@@ -22,7 +22,13 @@ import type { OpenscadRuntimeState } from "../runtime/openscadRuntime";
 import type { CadAgentStreamingItem } from "../runtime/agentStream";
 import { MeshPreview } from "../MeshPreview";
 import { AgentWorkspace } from "./AgentWorkspace";
-import { workflowRunView } from "./AgentWorkflow";
+import {
+  latestValidationBatch,
+  latestValidationEvaluation,
+  validationBatchPassed,
+  validationChecksForBatch,
+  workflowRunView
+} from "./AgentWorkflow";
 import { Parameters, Timeline } from "./RevisionPanels";
 
 type WorkspacePanelProps = {
@@ -189,6 +195,9 @@ export function WorkspacePanel({
               threads={state.agentThreads}
               events={state.agentRunEvents}
               workflow={state.workflow}
+              validationEvaluations={state.validationEvaluations}
+              validationBatches={state.validationBatches}
+              validationChecks={state.validationChecks}
               prompt={agentPrompt}
               busy={busy}
               readOnly={sessionArchived}
@@ -466,7 +475,16 @@ function WorkflowProgressStrip({
       : [],
     [latestRun?.id, state.agentRunEvents]
   );
-  const latestWorkflow = latestRun ? workflowRunView(latestRun, events, state.workflow) : undefined;
+  const latestWorkflow = latestRun
+    ? workflowRunView(
+        latestRun,
+        events,
+        state.workflow,
+        state.validationEvaluations,
+        state.validationBatches,
+        state.validationChecks
+      )
+    : undefined;
   const steps = workflowSteps(state, latestWorkflow?.latestFailure, Boolean(activeRun), runtimeState);
 
   return (
@@ -500,28 +518,88 @@ function workflowSteps(
     Boolean(state.activeRevision?.artifacts.some((artifact) => artifact.kind === "preview-mesh")) ||
     hasCanonicalPreviewRuntime;
   const latestIteration = state.workflow.outerIterations.at(-1);
+  const latestRun = state.agentRuns.at(-1);
+  const validationBatch = latestRun
+    ? latestValidationBatch(state.validationBatches, latestRun.id, latestRun.outputRevisionId)
+    : undefined;
+  const batchChecks = validationBatch
+    ? validationChecksForBatch(state.validationChecks, validationBatch.id)
+    : [];
+  const validationEvaluation = latestRun && !validationBatch
+    ? latestValidationEvaluation(
+        state.validationEvaluations,
+        latestRun.id,
+        latestRun.outputRevisionId
+      )
+    : undefined;
+  const planStep = { label: "Plan", state: hasPlan ? "pass" : hasActiveRun ? "active" : "pending" } as const;
+  const previewStep = {
+    label: "Preview",
+    state: hasCanonicalPreviewFailure
+      ? "fail"
+      : hasPreview
+        ? "pass"
+        : hasPlan
+          ? "active"
+          : "pending"
+  } as const;
+  if (validationBatch) {
+    const checkStepState = (kind: "structural" | "dfm" | "vlm") => {
+      const check = batchChecks.find((item) => item.kind === kind);
+      if (!check) throw new Error(`Validation batch ${validationBatch.id} is missing ${kind} check.`);
+      if (check.status === "queued" || check.status === "running") return "active" as const;
+      if (check.status === "failed") return "fail" as const;
+      return check.passed === true ? "pass" as const : "fail" as const;
+    };
+    const completeState = validationBatch.status === "queued" || validationBatch.status === "running"
+      ? "pending"
+      : validationBatch.status === "failed"
+        ? "fail"
+        : validationBatchPassed(validationBatch) ? "pass" : "fail";
+    return [
+      planStep,
+      previewStep,
+      { label: "Structural", state: checkStepState("structural") },
+      { label: "DFM", state: checkStepState("dfm") },
+      { label: "VLM", state: checkStepState("vlm") },
+      { label: "Complete", state: completeState }
+    ];
+  }
+  const legacyPendingVlm = validationEvaluation
+    ? undefined
+    : latestRun
+      ? state.workflow.pendingVlm.find((pending) => pending.runId === latestRun.id)
+      : state.workflow.pendingVlm.at(-1);
   const failureReason = latestFailure ? stringField(latestFailure, "reason") ?? stringField(latestFailure, "code") ?? "" : "";
   const normalizedFailureReason = failureReason.toLowerCase();
-  const dfmFailed = Boolean(latestFailure && (normalizedFailureReason.includes("dfm") || normalizedFailureReason.includes("slic") || normalizedFailureReason.includes("prusa")));
-  const vlmFailed = Boolean(latestFailure && normalizedFailureReason.includes("vlm"));
-  const structuralFailed = Boolean(latestFailure && !vlmFailed && !dfmFailed);
-  const structuralPassed = Boolean(latestIteration && !structuralFailed) || state.workflow.pendingVlm.length > 0;
-  const dfmReport = latestIteration?.dfmReport ?? state.workflow.pendingVlm.at(-1)?.dfmReport;
-  const dfmPassed = Boolean(dfmReport?.passed) || state.workflow.pendingVlm.length > 0;
-  const vlmPassed = state.workflow.outerIterations.some((iteration) => iteration.passed);
+  const dfmFailed = validationEvaluation
+    ? false
+    : Boolean(latestFailure && (normalizedFailureReason.includes("dfm") || normalizedFailureReason.includes("slic") || normalizedFailureReason.includes("prusa")));
+  const evaluationFailed = validationEvaluation
+    ? validationEvaluation.status === "failed"
+      || (validationEvaluation.status === "succeeded" && validationEvaluation.passed !== true)
+    : false;
+  const evaluationPassed = validationEvaluation?.status === "succeeded"
+    && validationEvaluation.passed === true;
+  const evaluationActive = validationEvaluation?.status === "queued"
+    || validationEvaluation?.status === "running";
+  const vlmFailed = validationEvaluation
+    ? evaluationFailed
+    : Boolean(latestFailure && normalizedFailureReason.includes("vlm"));
+  const structuralFailed = validationEvaluation
+    ? false
+    : Boolean(latestFailure && !vlmFailed && !dfmFailed);
+  const hasReachedValidation = Boolean(validationEvaluation || legacyPendingVlm);
+  const structuralPassed = Boolean(latestIteration && !structuralFailed) || hasReachedValidation;
+  const dfmReport = latestIteration?.dfmReport ?? legacyPendingVlm?.dfmReport;
+  const dfmPassed = Boolean(dfmReport?.passed) || hasReachedValidation;
+  const vlmPassed = validationEvaluation
+    ? evaluationPassed
+    : state.workflow.outerIterations.some((iteration) => iteration.passed);
 
   return [
-    { label: "Plan", state: hasPlan ? "pass" : hasActiveRun ? "active" : "pending" },
-    {
-      label: "Preview",
-      state: hasCanonicalPreviewFailure
-        ? "fail"
-        : hasPreview
-          ? "pass"
-          : hasPlan
-            ? "active"
-            : "pending"
-    },
+    planStep,
+    previewStep,
     {
       label: "Structural",
       state: structuralFailed ? "fail" : structuralPassed ? "pass" : hasPreview ? "active" : "pending"
@@ -532,7 +610,13 @@ function workflowSteps(
     },
     {
       label: "VLM",
-      state: vlmFailed ? "fail" : vlmPassed ? "pass" : state.workflow.pendingVlm.length ? "active" : "pending"
+      state: vlmFailed
+        ? "fail"
+        : vlmPassed
+          ? "pass"
+          : evaluationActive || legacyPendingVlm
+            ? "active"
+            : "pending"
     },
     { label: "Complete", state: vlmPassed ? "pass" : vlmFailed || dfmFailed || structuralFailed ? "fail" : "pending" }
   ];

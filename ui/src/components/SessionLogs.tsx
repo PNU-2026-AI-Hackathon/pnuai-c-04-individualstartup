@@ -2,6 +2,9 @@ import type {
   CadAgentRun,
   CadAgentRunEvent,
   CadConversationMessage,
+  CadValidationBatch,
+  CadValidationCheck,
+  CadValidationEvaluation,
   CadWorkflowState
 } from "../protocol";
 import {
@@ -17,12 +20,18 @@ export function SessionLogs({
   conversation,
   runs,
   events,
-  workflow
+  workflow,
+  validationEvaluations,
+  validationBatches,
+  validationChecks
 }: {
   conversation: CadConversationMessage[];
   runs: CadAgentRun[];
   events: CadAgentRunEvent[];
   workflow: CadWorkflowState;
+  validationEvaluations: CadValidationEvaluation[];
+  validationBatches: CadValidationBatch[];
+  validationChecks: CadValidationCheck[];
 }) {
   return (
     <section className="management-view log-browser" data-testid="log-browser">
@@ -38,7 +47,15 @@ export function SessionLogs({
           ))}
         </ol>
       </div>
-      <RunLogViewer runs={runs} events={events} conversation={conversation} workflow={workflow} />
+      <RunLogViewer
+        runs={runs}
+        events={events}
+        conversation={conversation}
+        workflow={workflow}
+        validationEvaluations={validationEvaluations}
+        validationBatches={validationBatches}
+        validationChecks={validationChecks}
+      />
     </section>
   );
 }
@@ -47,12 +64,18 @@ function RunLogViewer({
   runs,
   events,
   conversation,
-  workflow
+  workflow,
+  validationEvaluations,
+  validationBatches,
+  validationChecks
 }: {
   runs: CadAgentRun[];
   events: CadAgentRunEvent[];
   conversation: CadConversationMessage[];
   workflow: CadWorkflowState;
+  validationEvaluations: CadValidationEvaluation[];
+  validationBatches: CadValidationBatch[];
+  validationChecks: CadValidationCheck[];
 }) {
   const eventsByRun = new Map<string, CadAgentRunEvent[]>();
   for (const event of events) {
@@ -76,7 +99,14 @@ function RunLogViewer({
         const runMessages = [...(messagesByRun.get(run.id) ?? [])].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
         const failureEvents = runEvents.filter((event) => event.type === "agent.run.failed" || event.type === "agent.run.cancelled");
         const retryEvents = runEvents.filter((event) => event.payload.retryOfRunId);
-        const workflowView = workflowRunView(run, runEvents, workflow);
+        const workflowView = workflowRunView(
+          run,
+          runEvents,
+          workflow,
+          validationEvaluations,
+          validationBatches,
+          validationChecks
+        );
         return (
           <details key={run.id} open={isActiveRunStatus(run.status) || run.status === "failed"}>
             <summary>

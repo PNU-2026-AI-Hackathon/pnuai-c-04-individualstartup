@@ -17,6 +17,19 @@ impl SessionService {
                         | CadAgentRunStatus::WaitingForUser
                 )
             })
+            .filter(|run| {
+                !state
+                    .validation_batches
+                    .get(&run.session_id)
+                    .into_iter()
+                    .flatten()
+                    .any(|batch| {
+                        batch.run_id == run.id
+                            && run.output_revision_id.as_deref() == Some(batch.revision_id.as_str())
+                            && batch.effects_applied_at.is_none()
+                            && run.external_turn_id.is_none()
+                    })
+            })
             .map(|run| {
                 let action = if run.external_turn_id.is_some() {
                     CadAgentRunRecoveryAction::QueryHistory

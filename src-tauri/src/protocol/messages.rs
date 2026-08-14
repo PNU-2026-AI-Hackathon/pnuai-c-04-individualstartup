@@ -57,6 +57,8 @@ pub struct CadConversationMessage {
 pub struct CadAgentThread {
     pub id: String,
     pub session_id: String,
+    pub plane: CadAgentPlane,
+    pub owner_id: String,
     pub external_agent: String,
     pub external_thread_id: String,
     pub status: CadAgentThreadStatus,

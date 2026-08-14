@@ -5,12 +5,12 @@ use crate::session_service::SessionService;
 use serde_json::{json, Value};
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-pub(super) fn render_vlm_images_for_artifact(
+pub(crate) fn render_vlm_images_for_artifact(
     service: &SessionService,
-    app_data_dir: &PathBuf,
+    app_data_dir: &Path,
     session_id: &str,
     run_id: &str,
     revision_id: &str,
@@ -31,7 +31,8 @@ pub(super) fn render_vlm_images_for_artifact(
         .join("vlm-renders")
         .join(session_id)
         .join(revision_id)
-        .join(run_id);
+        .join(run_id)
+        .join(&artifact.id);
     fs::create_dir_all(&output_dir).map_err(|error| CliError::storage(error.to_string()))?;
     let source_artifact_sha256 = artifact
         .metadata
@@ -246,7 +247,7 @@ fn is_positive_json_number(value: Option<&Value>) -> bool {
         .is_some_and(|value| value.is_finite() && value > 0.0)
 }
 
-pub(super) fn build_vlm_contract(rendered_image: &CadArtifact) -> CliResult<Value> {
+pub(crate) fn build_vlm_contract(rendered_image: &CadArtifact) -> CliResult<Value> {
     let image_metadata = rendered_image.metadata.as_ref();
     let image_path = image_metadata
         .and_then(|metadata| metadata.get("path"))
@@ -262,43 +263,4 @@ pub(super) fn build_vlm_contract(rendered_image: &CadArtifact) -> CliResult<Valu
             "path": image_path
         },
     }))
-}
-
-pub(super) fn validate_vlm_contract(contract: &Value) -> CliResult<()> {
-    validate_vlm_contract_value(contract)?;
-    Ok(())
-}
-
-pub(super) fn validate_vlm_contract_value(contract: &Value) -> CliResult<()> {
-    require_contract_type(contract, "cadastrophe.vlm_judge.v1", "VLM judge contract")?;
-    if contract
-        .get("handoff")
-        .and_then(Value::as_str)
-        .is_none_or(str::is_empty)
-    {
-        return Err(CliError::invalid_input(
-            "VLM judge contract missing non-empty handoff.",
-        ));
-    }
-    let rendered_images = contract
-        .get("renderedImages")
-        .and_then(Value::as_object)
-        .ok_or_else(|| {
-            CliError::invalid_input("VLM judge contract missing renderedImages object.")
-        })?;
-    if rendered_images.get("available").and_then(Value::as_bool) != Some(true) {
-        return Err(CliError::invalid_input(
-            "VLM judge contract renderedImages.available must be true.",
-        ));
-    }
-    if rendered_images
-        .get("path")
-        .and_then(Value::as_str)
-        .is_none_or(str::is_empty)
-    {
-        return Err(CliError::invalid_input(
-            "VLM judge contract renderedImages missing non-empty path.",
-        ));
-    }
-    Ok(())
 }

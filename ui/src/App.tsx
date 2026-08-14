@@ -14,7 +14,11 @@ import type {
 import { createCadBackendClient, type ConnectionStatus } from "./backendClient";
 import { ArtifactBrowser } from "./components/ArtifactBrowser";
 import { DfmSettings } from "./components/DfmSettings";
-import { isActiveRunStatus } from "./components/AgentWorkflow";
+import {
+  isActiveRunStatus,
+  latestValidationBatch,
+  validationBatchPassed
+} from "./components/AgentWorkflow";
 import { SessionLogs } from "./components/SessionLogs";
 import { SessionBrowser } from "./components/SessionBrowser";
 import { SessionRail } from "./components/SessionRail";
@@ -1140,6 +1144,9 @@ export function App() {
             runs={state.agentRuns}
             events={state.agentRunEvents}
             workflow={state.workflow}
+            validationEvaluations={state.validationEvaluations}
+            validationBatches={state.validationBatches}
+            validationChecks={state.validationChecks}
           />
         ) : null}
 
@@ -1219,8 +1226,16 @@ export function filterSessionsByDeletedIds(
 
 function topbarStatusLabel(state: CadSessionState, hasActiveRun: boolean, archived: boolean): string | null {
   if (archived) return "Archived";
+  const run = state.agentRuns.at(-1);
+  const batch = run
+    ? latestValidationBatch(state.validationBatches, run.id, run.outputRevisionId)
+    : undefined;
   if (hasActiveRun) return "Agent running";
   if (state.activeRevision?.diagnostics.ok === false) return "Needs source fix";
+  if (batch?.status === "failed") return "Validation failed";
+  if (batch?.status === "succeeded") {
+    return validationBatchPassed(batch) ? "Finalized" : "Needs refinement";
+  }
   if (state.workflow.outerIterations.some((iteration) => iteration.passed)) return "Finalized";
   if (state.session.status === "rendering") return "Rendering";
   if (state.session.status === "failed") return "Session failed";
@@ -1229,6 +1244,12 @@ function topbarStatusLabel(state: CadSessionState, hasActiveRun: boolean, archiv
 
 function topbarStatusTone(state: CadSessionState, hasActiveRun: boolean, archived: boolean): string {
   if (archived) return "archived";
+  const run = state.agentRuns.at(-1);
+  const batch = run
+    ? latestValidationBatch(state.validationBatches, run.id, run.outputRevisionId)
+    : undefined;
+  if (batch?.status === "failed"
+    || (batch?.status === "succeeded" && !validationBatchPassed(batch))) return "failed";
   if (state.activeRevision?.diagnostics.ok === false || state.session.status === "failed") return "failed";
   if (hasActiveRun || state.session.status === "rendering") return "rendering";
   return "finalized";

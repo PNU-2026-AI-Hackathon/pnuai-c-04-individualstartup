@@ -1,16 +1,15 @@
-mod artifacts;
+pub(crate) mod artifacts;
 mod model_commands;
 mod session_commands;
-mod structural;
+pub(crate) mod structural;
 mod support;
-mod vlm;
+pub(crate) mod vlm;
 mod workflow_commands;
 mod workflow_support;
 
 use crate::protocol::{
     CadAgentRunEventType, CadArtifact, CadArtifactKind, CadExportResult, CadSourceLanguage,
-    CadWorkflowOuterIteration, CadWorkflowPendingVlm, CadWorkflowPlan, ExportArtifactInput,
-    RenderPreviewInput, UpdateModelSourceInput,
+    CadWorkflowPlan, ExportArtifactInput, RenderPreviewInput, UpdateModelSourceInput,
 };
 use crate::session_repository::SqliteSessionRepository;
 use crate::session_service::SessionService;
@@ -20,12 +19,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use structural::{
-    evaluate_structural_for_revision, structural_failure_report, validate_structural_report,
-    StructuralEvaluation,
-};
 use support::*;
-use vlm::{build_vlm_contract, render_vlm_images_for_artifact, validate_vlm_contract};
 
 pub fn session_current_main() -> i32 {
     run(

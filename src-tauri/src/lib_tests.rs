@@ -1,6 +1,5 @@
 use super::*;
 use crate::agent_adapter::{AgentAdapterEvent, AgentAdapterRunInput};
-use base64::Engine;
 use std::sync::Mutex;
 use tokio::sync::Notify;
 
@@ -95,6 +94,8 @@ fn completed_stream_event_follows_durable_agent_message_snapshot() {
     let thread = CadAgentThread {
         id: uuid::Uuid::new_v4().to_string(),
         session_id: created.session_id.clone(),
+        plane: CadAgentPlane::Modeling,
+        owner_id: created.session_id.clone(),
         external_agent: "codex".to_string(),
         external_thread_id: "thread-order".to_string(),
         status: CadAgentThreadStatus::Active,
@@ -638,66 +639,6 @@ async fn gateway_refreshes_workflow_state_after_cadastrophe_cli_completion() {
 }
 
 #[tokio::test]
-async fn gateway_consumes_inline_vlm_judge_report_without_showing_raw_json() {
-    let service = Arc::new(SessionService::new(
-        std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
-    ));
-    let gateway = AgentGateway::new(
-        Arc::clone(&service),
-        Arc::new(InlineVlmReportAdapter {
-            service: Arc::clone(&service),
-        }),
-    );
-    let created = service
-        .create_session(CreateCadSessionInput::default())
-        .unwrap();
-    let revision_id = service
-        .update_model_source(UpdateModelSourceInput {
-            session_id: created.session_id.clone(),
-            source_language: CadSourceLanguage::Openscad,
-            source: "cube([2, 2, 2]);".to_string(),
-            parent_revision_id: None,
-            parameters: None,
-        })
-        .unwrap()
-        .revision_id;
-
-    let started = gateway
-        .start_run(CreateAgentRunInput {
-            session_id: created.session_id.clone(),
-            prompt: "return inline vlm report".to_string(),
-            revision_id: Some(revision_id),
-            retry_of_run_id: None,
-        })
-        .unwrap();
-
-    let state = wait_for_run_status_async(
-        &service,
-        &created.session_id,
-        &started.run.id,
-        CadAgentRunStatus::Completed,
-    )
-    .await;
-    assert!(state.workflow.pending_vlm.is_empty());
-    assert_eq!(state.workflow.outer_iterations.len(), 1);
-    assert!(state.workflow.outer_iterations[0].passed);
-    assert!(state.workflow.outer_iterations[0].vlm_report.is_some());
-    assert!(state
-        .conversation
-        .iter()
-        .all(|message| { !message.content.contains("cadastrophe.vlm_judge_report.v1") }));
-    assert!(state.conversation.iter().any(|message| {
-        message.role == CadConversationRole::Assistant
-            && message.content.contains("VLM accepted final artifact")
-    }));
-    assert!(state.agent_run_events.iter().any(|event| {
-        event.run_id == started.run.id
-            && event.event_type == CadAgentRunEventType::AgentToolCompleted
-            && event.payload.get("phase").and_then(Value::as_str) == Some("vlm-judge-callback")
-    }));
-}
-
-#[tokio::test]
 async fn gateway_rejects_duplicate_active_run_in_same_session() {
     let service = Arc::new(SessionService::new(
         std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
@@ -1002,74 +943,6 @@ impl AgentAdapter for CapturingFailureAdapter {
         Ok(vec![AgentAdapterEvent::MessageCreated {
             role: CadConversationRole::Assistant,
             content: "Captured retry failure context.".to_string(),
-            metadata: None,
-        }])
-    }
-}
-
-struct InlineVlmReportAdapter {
-    service: Arc<SessionService>,
-}
-
-#[async_trait::async_trait]
-impl AgentAdapter for InlineVlmReportAdapter {
-    async fn run(&self, input: AgentAdapterRunInput) -> Result<Vec<AgentAdapterEvent>, String> {
-        let revision_id = input
-            .revision_id
-            .clone()
-            .ok_or_else(|| "test requires active revision".to_string())?;
-        let artifact = self
-            .service
-            .persist_runtime_artifact(PersistRuntimeArtifactInput {
-                session_id: input.session_id.clone(),
-                revision_id: revision_id.clone(),
-                kind: CadArtifactKind::Stl,
-                format: "stl".to_string(),
-                contents_base64: base64::engine::general_purpose::STANDARD
-                    .encode(b"solid inline_vlm\nendsolid inline_vlm\n"),
-                diagnostics: CadDiagnostics {
-                    ok: true,
-                    elapsed_ms: 1,
-                    items: Vec::new(),
-                },
-                metadata: serde_json::Map::new(),
-            })?
-            .artifact;
-        self.service.save_workflow_pending_vlm(
-            &input.session_id,
-            CadWorkflowPendingVlm {
-                run_id: input.run_id.clone(),
-                artifact_id: artifact.id.clone(),
-                revision_id: Some(revision_id.clone()),
-                contract: serde_json::json!({
-                    "contractType": "cadastrophe.vlm_judge.v1",
-                    "handoff": "VLM Judge Handoff needed.",
-                    "renderedImages": {
-                        "available": true,
-                        "path": "/tmp/fixture-render.png"
-                    }
-                }),
-                pass_threshold: 0.8,
-                structural_report: Some(serde_json::json!({
-                    "contractType": "cadastrophe.structural_report.v1",
-                    "runId": input.run_id,
-                    "artifactId": artifact.id,
-                    "passed": true
-                })),
-                dfm_report: None,
-                created_at: "2026-07-30T00:00:00.000Z".to_string(),
-            },
-        )?;
-        let report = serde_json::json!({
-            "contractType": "cadastrophe.vlm_judge_report.v1",
-            "score": 0.91,
-            "passed": true,
-            "findings": [],
-            "diagnostic": "fixture accepted"
-        });
-        Ok(vec![AgentAdapterEvent::MessageCreated {
-            role: CadConversationRole::Assistant,
-            content: serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?,
             metadata: None,
         }])
     }

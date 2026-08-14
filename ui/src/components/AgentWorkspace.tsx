@@ -4,6 +4,9 @@ import type {
   CadAgentRunEvent,
   CadAgentThread,
   CadConversationMessage,
+  CadValidationBatch,
+  CadValidationCheck,
+  CadValidationEvaluation,
   CadWorkflowState
 } from "../protocol";
 import type { CadAgentStreamingItem } from "../runtime/agentStream";
@@ -22,6 +25,9 @@ export function AgentWorkspace(props: {
   threads: CadAgentThread[];
   events: CadAgentRunEvent[];
   workflow: CadWorkflowState;
+  validationEvaluations: CadValidationEvaluation[];
+  validationBatches: CadValidationBatch[];
+  validationChecks: CadValidationCheck[];
   prompt: string;
   busy: boolean;
   readOnly: boolean;
@@ -44,7 +50,14 @@ export function AgentWorkspace(props: {
         .sort((left, right) => left.sequence - right.sequence)
     : [];
   const latestWorkflow = latestRun
-    ? workflowRunView(latestRun, latestRunEvents, props.workflow)
+    ? workflowRunView(
+        latestRun,
+        latestRunEvents,
+        props.workflow,
+        props.validationEvaluations,
+        props.validationBatches,
+        props.validationChecks
+      )
     : undefined;
   return (
     <section className="panel agent-workspace">
