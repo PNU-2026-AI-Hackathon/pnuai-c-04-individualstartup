@@ -396,6 +396,75 @@ fn sqlite_repository_assigns_agent_event_sequence_from_database() {
 }
 
 #[test]
+fn stale_runtime_update_preserves_externally_linked_output_revision() {
+    let app_data_dir = std::env::temp_dir().join(format!(
+        "cadastrophe-run-output-revision-race-test-{}",
+        uuid()
+    ));
+    let layout = StorageLayout::from_app_data_dir(app_data_dir);
+    storage::initialize_storage(&layout).unwrap();
+
+    let app_service = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout.clone())),
+    )
+    .unwrap();
+    let created = app_service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let (run, _) = app_service
+        .create_agent_run(
+            &created.session_id,
+            "Preserve an externally linked output revision.".to_string(),
+            created.state.session.active_revision_id.clone(),
+            Some("codex".to_string()),
+            None,
+        )
+        .unwrap();
+
+    let cli_service = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout.clone())),
+    )
+    .unwrap();
+    let output_revision_id =
+        create_test_revision(&cli_service, &created.session_id, "cube([4, 4, 4]);");
+    cli_service
+        .link_agent_run_output_revision(&created.session_id, &run.id, output_revision_id.clone())
+        .unwrap();
+
+    app_service
+        .update_agent_run(
+            &created.session_id,
+            &run.id,
+            None,
+            Some(Some("turn diff updated".to_string())),
+            None,
+            Some(CadBridgeEventType::AgentRunUpdated),
+            Some(json!({"progressLabel": "turn diff updated"})),
+        )
+        .unwrap();
+
+    let reloaded = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout)),
+    )
+    .unwrap();
+    let persisted_run = reloaded
+        .get_agent_run(&created.session_id, &run.id)
+        .unwrap()
+        .expect("persisted agent run");
+    assert_eq!(
+        persisted_run.output_revision_id.as_deref(),
+        Some(output_revision_id.as_str())
+    );
+    assert_eq!(
+        persisted_run.active_step.as_deref(),
+        Some("turn diff updated")
+    );
+}
+
+#[test]
 fn refresh_session_from_repository_merges_external_workflow_state() {
     let app_data_dir =
         std::env::temp_dir().join(format!("cadastrophe-workflow-refresh-test-{}", uuid()));

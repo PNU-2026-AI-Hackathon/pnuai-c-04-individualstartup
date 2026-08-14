@@ -300,7 +300,7 @@ pub(super) fn save_agent_run(
     connection: &Connection,
     run: &CadAgentRun,
 ) -> SessionRepositoryResult<()> {
-    connection
+    let changed_rows = connection
         .execute(
             r#"
             INSERT INTO agent_runs (
@@ -310,12 +310,9 @@ pub(super) fn save_agent_run(
               agent_thread_id, connection_generation, recovery_status
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, NULL, ?16, ?17, ?18)
             ON CONFLICT(id) DO UPDATE SET
-              session_id = excluded.session_id,
-              input_revision_id = excluded.input_revision_id,
-              output_revision_id = excluded.output_revision_id,
+              -- Revision links are owned by their dedicated graph mutation and
+              -- must not be overwritten by a stale app-process run snapshot.
               status = excluded.status,
-              prompt = excluded.prompt,
-              created_at = excluded.created_at,
               updated_at = excluded.updated_at,
               started_at = excluded.started_at,
               completed_at = excluded.completed_at,
@@ -327,6 +324,7 @@ pub(super) fn save_agent_run(
               agent_thread_id = excluded.agent_thread_id,
               connection_generation = excluded.connection_generation,
               recovery_status = excluded.recovery_status
+            WHERE agent_runs.session_id = excluded.session_id
             "#,
             params![
                 run.id,
@@ -350,6 +348,37 @@ pub(super) fn save_agent_run(
             ],
         )
         .map_err(|error| error.to_string())?;
+    if changed_rows != 1 {
+        return Err(format!(
+            "Agent run save expected one row in session {}, changed {changed_rows}: {}",
+            run.session_id, run.id
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn link_agent_run_output_revision(
+    connection: &Connection,
+    session_id: &str,
+    run_id: &str,
+    output_revision_id: &str,
+    updated_at: &str,
+) -> SessionRepositoryResult<()> {
+    let changed_rows = connection
+        .execute(
+            r#"
+            UPDATE agent_runs
+            SET output_revision_id = ?1, updated_at = ?2
+            WHERE id = ?3 AND session_id = ?4
+            "#,
+            params![output_revision_id, updated_at, run_id, session_id],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed_rows != 1 {
+        return Err(format!(
+            "Agent run output revision link expected one row in session {session_id}, changed {changed_rows}: {run_id}"
+        ));
+    }
     Ok(())
 }
 

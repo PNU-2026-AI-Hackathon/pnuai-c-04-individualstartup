@@ -297,7 +297,12 @@ impl SessionService {
             run.output_revision_id = Some(output_revision_id.clone());
             run.updated_at = timestamp();
             let run = run.clone();
-            self.repository.save_agent_run(&run)?;
+            self.repository.link_agent_run_output_revision(
+                session_id,
+                run_id,
+                &output_revision_id,
+                &run.updated_at,
+            )?;
             let event = append_agent_run_event(
                 &mut state,
                 session_id,

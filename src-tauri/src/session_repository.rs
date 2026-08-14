@@ -73,6 +73,13 @@ pub(crate) trait SessionRepository: Send + Sync {
         replacement: &CadAgentThread,
     ) -> SessionRepositoryResult<()>;
     fn save_agent_run(&self, run: &CadAgentRun) -> SessionRepositoryResult<()>;
+    fn link_agent_run_output_revision(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        output_revision_id: &str,
+        updated_at: &str,
+    ) -> SessionRepositoryResult<()>;
     fn save_agent_run_event(
         &self,
         event: &CadAgentRunEvent,
@@ -269,6 +276,16 @@ impl SessionRepository for InMemorySessionRepository {
     }
 
     fn save_agent_run(&self, _run: &CadAgentRun) -> SessionRepositoryResult<()> {
+        Ok(())
+    }
+
+    fn link_agent_run_output_revision(
+        &self,
+        _session_id: &str,
+        _run_id: &str,
+        _output_revision_id: &str,
+        _updated_at: &str,
+    ) -> SessionRepositoryResult<()> {
         Ok(())
     }
 
@@ -1065,6 +1082,23 @@ impl SessionRepository for SqliteSessionRepository {
     fn save_agent_run(&self, run: &CadAgentRun) -> SessionRepositoryResult<()> {
         let connection = self.connection()?;
         save_agent_run(&connection, run)
+    }
+
+    fn link_agent_run_output_revision(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        output_revision_id: &str,
+        updated_at: &str,
+    ) -> SessionRepositoryResult<()> {
+        let connection = self.connection()?;
+        link_agent_run_output_revision(
+            &connection,
+            session_id,
+            run_id,
+            output_revision_id,
+            updated_at,
+        )
     }
 
     fn save_agent_run_event(
