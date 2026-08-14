@@ -1,22 +1,21 @@
 use crate::cli::artifacts::{artifact_filesystem_path, latest_stl_artifact};
 use crate::cli::support::{require_contract_type, CliError, CliResult};
-use crate::protocol::{CadArtifact, CadArtifactKind, CadModelPlan};
+use crate::protocol::{CadArtifactKind, CadModelPlan};
 use crate::session_service::SessionService;
 use serde_json::{json, Value};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 #[derive(Debug)]
-pub(super) struct StructuralEvaluation {
-    pub(super) artifact: Option<CadArtifact>,
-    pub(super) report: Value,
-    pub(super) passed: bool,
+pub(crate) struct StructuralEvaluation {
+    pub(crate) report: Value,
+    pub(crate) passed: bool,
 }
 
-pub(super) fn evaluate_structural_for_revision(
+pub(crate) fn evaluate_structural_for_revision(
     service: &SessionService,
-    app_data_dir: &PathBuf,
+    app_data_dir: &Path,
     session_id: &str,
     run_id: Option<&str>,
     revision_id: &str,
@@ -43,18 +42,9 @@ pub(super) fn evaluate_structural_for_revision(
         .transpose()?
         .or_else(|| latest_stl_artifact(&revision.artifacts));
     let Some(artifact) = artifact else {
-        let report = structural_error_report(
-            run_id,
-            revision_id,
-            None,
-            "artifact_missing",
+        return Err(CliError::runtime(
             "No STL artifact is available for structural evaluation.",
-        );
-        return Ok(StructuralEvaluation {
-            artifact: None,
-            report,
-            passed: false,
-        });
+        ));
     };
     if artifact.kind != CadArtifactKind::Stl || artifact.format != "stl" {
         return Err(CliError::invalid_input(format!(
@@ -63,18 +53,9 @@ pub(super) fn evaluate_structural_for_revision(
         )));
     }
     let Some(stl_path) = artifact_filesystem_path(app_data_dir, &artifact) else {
-        let report = structural_error_report(
-            run_id,
-            revision_id,
-            Some(&artifact.id),
-            "artifact_path_missing",
+        return Err(CliError::runtime(
             "STL artifact manifest does not contain path or relativePath metadata.",
-        );
-        return Ok(StructuralEvaluation {
-            artifact: Some(artifact),
-            report,
-            passed: false,
-        });
+        ));
     };
     let input = json!({
         "runId": run_id.unwrap_or(""),
@@ -86,39 +67,19 @@ pub(super) fn evaluate_structural_for_revision(
         "runtimeDiagnostics": revision.diagnostics,
         "sourceText": revision.source
     });
-    let report = invoke_structural_sidecar(
-        &input,
-        run_id,
-        revision_id,
-        Some(&artifact.id),
-        sidecar_override,
-    )?;
+    let report = invoke_structural_sidecar(&input, sidecar_override)?;
     let passed = report
         .get("passed")
         .and_then(Value::as_bool)
-        .unwrap_or(false);
-    Ok(StructuralEvaluation {
-        artifact: Some(artifact),
-        report,
-        passed,
-    })
+        .ok_or_else(|| CliError::invalid_input("Structural report is missing boolean passed."))?;
+    Ok(StructuralEvaluation { report, passed })
 }
 
-fn invoke_structural_sidecar(
-    input: &Value,
-    run_id: Option<&str>,
-    revision_id: &str,
-    artifact_id: Option<&str>,
-    sidecar_override: Option<&str>,
-) -> CliResult<Value> {
+fn invoke_structural_sidecar(input: &Value, sidecar_override: Option<&str>) -> CliResult<Value> {
     let sidecar = resolve_structural_sidecar(sidecar_override);
     if let Some(path) = sidecar_override.map(PathBuf::from) {
         if !path.exists() {
-            return Ok(structural_error_report(
-                run_id,
-                revision_id,
-                artifact_id,
-                "structural_anchor_unavailable",
+            return Err(CliError::runtime(
                 "cadastrophe-structural-anchor sidecar is not available.",
             ));
         }
@@ -131,22 +92,14 @@ fn invoke_structural_sidecar(
     {
         Ok(child) => child,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(structural_error_report(
-                run_id,
-                revision_id,
-                artifact_id,
-                "structural_anchor_unavailable",
+            return Err(CliError::runtime(
                 "cadastrophe-structural-anchor sidecar is not available.",
             ));
         }
         Err(error) => {
-            return Ok(structural_error_report(
-                run_id,
-                revision_id,
-                artifact_id,
-                "structural_anchor_spawn_failed",
-                &format!("Failed to start cadastrophe-structural-anchor: {error}"),
-            ));
+            return Err(CliError::runtime(format!(
+                "Failed to start cadastrophe-structural-anchor: {error}"
+            )));
         }
     };
     {
@@ -166,17 +119,11 @@ fn invoke_structural_sidecar(
         .map_err(|error| CliError::storage(error.to_string()))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Ok(structural_error_report(
-            run_id,
-            revision_id,
-            artifact_id,
-            "structural_anchor_failed",
-            &format!(
-                "cadastrophe-structural-anchor exited with status {}: {}",
-                output.status,
-                stderr.trim()
-            ),
-        ));
+        return Err(CliError::runtime(format!(
+            "cadastrophe-structural-anchor exited with status {}: {}",
+            output.status,
+            stderr.trim()
+        )));
     }
     serde_json::from_slice(&output.stdout).map_err(|error| {
         CliError::invalid_input(format!(
@@ -208,36 +155,7 @@ fn resolve_structural_sidecar(sidecar_override: Option<&str>) -> PathBuf {
     PathBuf::from(executable)
 }
 
-fn structural_error_report(
-    run_id: Option<&str>,
-    revision_id: &str,
-    artifact_id: Option<&str>,
-    reason: &str,
-    message: &str,
-) -> Value {
-    json!({
-        "contractType": "cadastrophe.structural_report.v1",
-        "runId": run_id.unwrap_or(""),
-        "revisionId": revision_id,
-        "artifactId": artifact_id,
-        "passed": false,
-        "checks": [
-            {
-                "name": reason,
-                "passed": false,
-                "severity": "error",
-                "message": message
-            }
-        ],
-        "failureReport": {
-            "contractType": "cadastrophe.failure_report.v1",
-            "reason": reason,
-            "nextAction": "refine_plan_or_source"
-        }
-    })
-}
-
-pub(super) fn validate_structural_report(
+pub(crate) fn validate_structural_report(
     report: &Value,
     run_id: &str,
     revision_id: &str,

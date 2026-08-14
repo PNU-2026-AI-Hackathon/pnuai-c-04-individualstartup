@@ -1,6 +1,6 @@
 use crate::protocol::{CadArtifact, CadArtifactKind, CadDiagnostics};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::Path;
 
 pub(super) fn latest_stl_artifact(artifacts: &[CadArtifact]) -> Option<CadArtifact> {
     artifacts
@@ -15,8 +15,8 @@ pub(super) fn latest_stl_artifact(artifacts: &[CadArtifact]) -> Option<CadArtifa
         .cloned()
 }
 
-pub(super) fn artifact_filesystem_path(
-    app_data_dir: &PathBuf,
+pub(crate) fn artifact_filesystem_path(
+    app_data_dir: &Path,
     artifact: &CadArtifact,
 ) -> Option<String> {
     let metadata = artifact.metadata.as_ref()?;

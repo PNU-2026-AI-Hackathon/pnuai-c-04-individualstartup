@@ -48,7 +48,7 @@ pub struct ExecutableValidation {
     pub version: String,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileValidation {
     pub hash: String,
@@ -91,13 +91,20 @@ struct StoredSettings {
     executable_validation: Option<ExecutableValidation>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PreparedDfmInputs {
+    pub executable: ExecutableValidation,
+    pub executable_sha256: String,
+    pub profile_contents: String,
+    pub profile_source: String,
+    pub profile: ProfileValidation,
+}
+
 #[derive(Debug)]
 pub(crate) struct DfmEvaluation {
     pub report: Value,
     pub passed: bool,
-    pub gcode_artifact: CadArtifact,
-    pub report_artifact: CadArtifact,
-    pub stl_artifact: CadArtifact,
 }
 
 pub fn get_settings(app_data_dir: &Path) -> Result<DfmSettings, String> {
@@ -293,16 +300,14 @@ pub fn export_profile(path: &str, contents: &str) -> Result<ExportedProfile, Str
     })
 }
 
-pub(crate) fn evaluate(
-    service: &SessionService,
+/// Resolves and validates every mutable DFM option before a validation batch is queued.
+/// The returned value is persisted with the check so retries use the exact same executable
+/// and profile bytes rather than whatever happens to be configured at execution time.
+pub(crate) fn prepare_evaluation_inputs(
     app_data_dir: &Path,
-    session_id: &str,
-    run_id: &str,
-    revision_id: &str,
-    stl_artifact: &CadArtifact,
     executable_override: Option<&str>,
     profile_override: Option<&str>,
-) -> Result<DfmEvaluation, String> {
+) -> Result<PreparedDfmInputs, String> {
     let (executable, profile_contents, profile_source) =
         if executable_override.is_some() || profile_override.is_some() {
             let settings = get_settings(app_data_dir)?;
@@ -333,6 +338,46 @@ pub(crate) fn evaluate(
         };
     let executable = validate_executable(&executable)?;
     let profile = validate_profile(&profile_contents)?;
+    let executable_sha256 = storage::sha256_hex(&fs::read(&executable.path).map_err(|error| {
+        format!(
+            "Failed to fingerprint PrusaSlicer executable {}: {error}",
+            executable.path
+        )
+    })?);
+    Ok(PreparedDfmInputs {
+        executable,
+        executable_sha256,
+        profile_contents,
+        profile_source,
+        profile,
+    })
+}
+
+pub(crate) fn evaluate_prepared(
+    service: &SessionService,
+    app_data_dir: &Path,
+    session_id: &str,
+    run_id: &str,
+    revision_id: &str,
+    stl_artifact: &CadArtifact,
+    prepared: &PreparedDfmInputs,
+) -> Result<DfmEvaluation, String> {
+    let executable = &prepared.executable;
+    let profile_contents = &prepared.profile_contents;
+    let profile_source = &prepared.profile_source;
+    let profile = &prepared.profile;
+    let executable_sha256 = storage::sha256_hex(&fs::read(&executable.path).map_err(|error| {
+        format!(
+            "Failed to verify PrusaSlicer executable {}: {error}",
+            executable.path
+        )
+    })?);
+    if executable_sha256 != prepared.executable_sha256 {
+        return Err(format!(
+            "PrusaSlicer executable changed after the validation batch was queued: {}.",
+            executable.path
+        ));
+    }
     let stl_path = stl_artifact
         .metadata
         .as_ref()
@@ -356,7 +401,7 @@ pub(crate) fn evaluate(
     let work_profile = work_dir.join(PROFILE_FILE);
     fs::copy(&stl_path, &work_stl)
         .map_err(|error| format!("Failed to stage STL for PrusaSlicer: {error}"))?;
-    fs::write(&work_profile, &profile_contents)
+    fs::write(&work_profile, profile_contents)
         .map_err(|error| format!("Failed to stage DFM profile for PrusaSlicer: {error}"))?;
 
     let output = Command::new(&executable.path)
@@ -417,9 +462,9 @@ pub(crate) fn evaluate(
         })
         .map_err(|error| format!("Failed to persist generated G-code: {error}"))?
         .artifact;
-    let stl_artifact = service
-        .update_artifact_profile_hash(session_id, &stl_artifact.id, &profile.hash)
-        .map_err(|error| format!("Failed to link STL to DFM profile: {error}"))?;
+    // Do not mutate the STL manifest here. Structural/DFM/render consume the same immutable
+    // snapshot concurrently; the coordinator applies profileHash only while settling the batch.
+    let stl_artifact = stl_artifact.clone();
 
     let checks = vec![
         json!({"name":"prusaslicer_execution","passed":true,"severity":"info","message":"PrusaSlicer exited successfully."}),
@@ -443,7 +488,7 @@ pub(crate) fn evaluate(
     validate_report(&report, run_id, revision_id)?;
     let report_bytes = serde_json::to_vec_pretty(&report)
         .map_err(|error| format!("Failed to serialize DFM report: {error}"))?;
-    let report_artifact = service
+    let _ = service
         .persist_runtime_artifact(PersistRuntimeArtifactInput {
             session_id: session_id.to_string(),
             revision_id: revision_id.to_string(),
@@ -465,13 +510,7 @@ pub(crate) fn evaluate(
         })
         .map_err(|error| format!("Failed to persist DFM report: {error}"))?
         .artifact;
-    Ok(DfmEvaluation {
-        report,
-        passed,
-        gcode_artifact,
-        report_artifact,
-        stl_artifact,
-    })
+    Ok(DfmEvaluation { report, passed })
 }
 
 pub(crate) fn validate_report(
@@ -502,18 +541,6 @@ pub(crate) fn validate_report(
         return Err("DFM report is missing required fields.".to_string());
     }
     Ok(())
-}
-
-pub(crate) fn failure_report(structural_report: &Value, dfm_report: &Value) -> Value {
-    json!({
-        "contractType": "cadastrophe.failure_report.v1",
-        "reason": "validation_failed",
-        "structuralPassed": structural_report.get("passed").and_then(Value::as_bool).unwrap_or(false),
-        "dfmPassed": dfm_report.get("passed").and_then(Value::as_bool).unwrap_or(false),
-        "structuralReport": structural_report,
-        "dfmReport": dfm_report,
-        "nextAction": "outer_loop_refine_source"
-    })
 }
 
 fn parse_diagnostics(stdout: &str, stderr: &str) -> Vec<Value> {

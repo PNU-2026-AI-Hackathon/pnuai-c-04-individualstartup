@@ -2,7 +2,7 @@ use super::model_commands::{plan_commit, source_apply};
 use super::session_commands::session_state;
 use super::workflow_commands::finalize;
 use super::*;
-use crate::protocol::{CadModelPlan, CreateCadSessionInput};
+use crate::protocol::{CadModelPlan, CadValidationBatchStatus, CreateCadSessionInput};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
@@ -136,12 +136,18 @@ fn finalize_structural_fail_returns_report_without_prusaslicer() {
         "structural-fail",
         &structural_report_json(&setup.run_id, &setup.revision_id, false),
     );
+    let renderer_sidecar = fixture_renderer_sidecar(&app_data_dir, "renderer-structural-fail");
+    let prusaslicer = fixture_prusaslicer(&app_data_dir, "prusaslicer-structural-fail", None);
+    let profile = fixture_dfm_profile(&app_data_dir);
     let output = finalize(
         &args([
             ("session", &setup.session_id),
             ("run", &setup.run_id),
             ("revision", &setup.revision_id),
             ("sidecar", sidecar.to_str().unwrap()),
+            ("renderer-sidecar", renderer_sidecar.to_str().unwrap()),
+            ("prusaslicer-path", prusaslicer.to_str().unwrap()),
+            ("dfm-profile", profile.to_str().unwrap()),
         ]),
         &service,
         &app_data_dir,
@@ -150,23 +156,13 @@ fn finalize_structural_fail_returns_report_without_prusaslicer() {
 
     assert_eq!(
         output.data["next_action"].as_str(),
-        Some("outer_loop_refine_source")
-    );
-    assert_eq!(
-        output.data["failure_report"]["contractType"].as_str(),
-        Some("cadastrophe.failure_report.v1")
+        Some("validation_queued")
     );
     let state = service.get_session_state(&setup.session_id).unwrap();
     assert_eq!(state.workflow.pending_vlm.len(), 0);
-    assert_eq!(state.workflow.outer_iterations.len(), 1);
-    assert!(!state.workflow.outer_iterations[0].passed);
-    assert!(state.workflow.outer_iterations[0].vlm_report.is_none());
-    assert!(output.data.get("dfmReport").is_none());
-    assert!(state.workflow.outer_iterations[0].dfm_report.is_none());
-    assert_eq!(
-        output.data["failureReport"]["structuralReport"]["passed"].as_bool(),
-        Some(false)
-    );
+    assert!(state.workflow.outer_iterations.is_empty());
+    assert_eq!(state.validation_batches.len(), 1);
+    assert_eq!(state.validation_checks.len(), 3);
     let completed = state
         .agent_run_events
         .iter()
@@ -177,20 +173,14 @@ fn finalize_structural_fail_returns_report_without_prusaslicer() {
         })
         .expect("finalize completion event");
     assert_eq!(
-        completed.payload["failureReport"]["contractType"].as_str(),
-        Some("cadastrophe.failure_report.v1")
+        completed.payload["nextAction"].as_str(),
+        Some("validation_queued")
     );
     let reloaded_state = sqlite_service(&app_data_dir)
         .get_session_state(&setup.session_id)
         .unwrap();
-    assert_eq!(
-        reloaded_state.workflow.outer_iterations[0]
-            .failure_report
-            .as_ref()
-            .unwrap()["structuralReport"]["passed"]
-            .as_bool(),
-        Some(false)
-    );
+    assert_eq!(reloaded_state.validation_batches.len(), 1);
+    assert_eq!(reloaded_state.validation_checks.len(), 3);
 }
 
 #[cfg(unix)]
@@ -227,33 +217,24 @@ fn finalize_structural_pass_queues_validation_evaluation() {
         output.data["next_action"].as_str(),
         Some("validation_queued")
     );
-    let evaluation_id = output.data["evaluationId"].as_str().unwrap();
+    let batch_id = output.data["validationBatch"]["id"].as_str().unwrap();
     let state = service.get_session_state(&setup.session_id).unwrap();
     let queued = state
-        .validation_evaluations
+        .validation_batches
         .iter()
-        .find(|evaluation| evaluation.id == evaluation_id)
+        .find(|batch| batch.id == batch_id)
         .unwrap();
-    assert_eq!(
-        queued.input_contract["contractType"].as_str(),
-        Some("cadastrophe.vlm_evaluation_input.v1")
-    );
-    assert_eq!(
-        queued.input_contract["evaluationId"].as_str(),
-        Some(evaluation_id)
-    );
-    assert_eq!(queued.input_contract["attempt"].as_u64(), Some(1));
+    assert_eq!(queued.status, CadValidationBatchStatus::Queued);
     assert_eq!(queued.run_id, setup.run_id);
     assert_eq!(queued.revision_id, setup.revision_id);
     assert!(state.workflow.pending_vlm.is_empty());
     assert_eq!(state.workflow.outer_iterations.len(), 0);
-    assert!(state
-        .active_revision
-        .as_ref()
-        .unwrap()
-        .artifacts
-        .iter()
-        .any(|artifact| artifact.kind == CadArtifactKind::RenderImage));
+    assert_eq!(state.validation_checks.len(), 3);
+    assert!(state.validation_checks.iter().all(|check| {
+        check.input_contract["batchId"] == batch_id
+            && check.input_contract["checkId"] == check.id
+            && check.input_contract["evaluationId"] == check.id
+    }));
 }
 
 #[cfg(unix)]
@@ -273,6 +254,7 @@ fn finalize_dfm_fail_returns_both_reports_without_pending_vlm() {
         Some("ERROR: model has an unprintable feature"),
     );
     let profile = fixture_dfm_profile(&app_data_dir);
+    let renderer_sidecar = fixture_renderer_sidecar(&app_data_dir, "renderer-dfm-fail");
 
     let output = finalize(
         &args([
@@ -282,19 +264,18 @@ fn finalize_dfm_fail_returns_both_reports_without_pending_vlm() {
             ("sidecar", sidecar.to_str().unwrap()),
             ("prusaslicer-path", prusaslicer.to_str().unwrap()),
             ("dfm-profile", profile.to_str().unwrap()),
+            ("renderer-sidecar", renderer_sidecar.to_str().unwrap()),
         ]),
         &service,
         &app_data_dir,
     )
     .unwrap();
 
-    assert_eq!(output.data["structuralReport"]["passed"], true);
-    assert_eq!(output.data["dfmReport"]["passed"], false);
-    assert_eq!(output.data["nextAction"], "outer_loop_refine_source");
-    assert_eq!(output.data["failureReport"]["dfmPassed"], false);
+    assert_eq!(output.data["nextAction"], "validation_queued");
     let state = service.get_session_state(&setup.session_id).unwrap();
     assert!(state.workflow.pending_vlm.is_empty());
-    assert!(state.workflow.outer_iterations[0].dfm_report.is_some());
+    assert!(state.workflow.outer_iterations.is_empty());
+    assert_eq!(state.validation_checks.len(), 3);
 }
 
 #[cfg(unix)]
@@ -310,8 +291,9 @@ fn finalize_fails_fast_when_prusaslicer_produces_no_gcode() {
     );
     let prusaslicer = fixture_prusaslicer_without_gcode(&app_data_dir, "prusaslicer-no-gcode");
     let profile = fixture_dfm_profile(&app_data_dir);
+    let renderer_sidecar = fixture_renderer_sidecar(&app_data_dir, "renderer-no-gcode");
 
-    let error = finalize(
+    let output = finalize(
         &args([
             ("session", &setup.session_id),
             ("run", &setup.run_id),
@@ -319,14 +301,14 @@ fn finalize_fails_fast_when_prusaslicer_produces_no_gcode() {
             ("sidecar", sidecar.to_str().unwrap()),
             ("prusaslicer-path", prusaslicer.to_str().unwrap()),
             ("dfm-profile", profile.to_str().unwrap()),
+            ("renderer-sidecar", renderer_sidecar.to_str().unwrap()),
         ]),
         &service,
         &app_data_dir,
     )
-    .unwrap_err();
+    .unwrap();
 
-    assert_eq!(error.code, "runtime_error");
-    assert!(error.message.contains("without producing G-code"));
+    assert_eq!(output.data["nextAction"], "validation_queued");
     assert!(service
         .get_session_state(&setup.session_id)
         .unwrap()
@@ -359,8 +341,8 @@ fn finalize_fails_fast_when_prusaslicer_is_not_configured() {
     )
     .unwrap_err();
 
-    assert_eq!(error.code, "runtime_error");
-    assert_eq!(error.message, "PrusaSlicer executable is not configured.");
+    assert_eq!(error.code, "invalid_input");
+    assert!(error.message.contains("renderer sidecar"));
 }
 
 #[cfg(unix)]
@@ -517,13 +499,9 @@ fn cli_workflow_persists_required_tool_event_order() {
             "cadastrophe-finalize",
         ]
     );
-    assert!(state.agent_run_events.iter().any(|event| {
-        event.run_id == run.id
-            && event.event_type == CadAgentRunEventType::AgentToolCompleted
-            && event.payload.get("phase").and_then(Value::as_str) == Some("structural-anchor")
-    }));
     assert_eq!(state.workflow.plans.len(), 1);
-    assert_eq!(state.validation_evaluations.len(), 1);
+    assert_eq!(state.validation_batches.len(), 1);
+    assert_eq!(state.validation_checks.len(), 3);
     assert!(state.workflow.pending_vlm.is_empty());
 }
 
