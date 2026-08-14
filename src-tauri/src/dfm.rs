@@ -71,6 +71,13 @@ pub struct DfmSettings {
     pub profile: DfmProfileSettings,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DfmDesignContext {
+    pub(crate) printer_technology: String,
+    pub(crate) nozzle_diameter_mm: f64,
+    pub(crate) support_material_enabled: bool,
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportedProfile {
@@ -122,6 +129,13 @@ pub fn get_settings(app_data_dir: &Path) -> Result<DfmSettings, String> {
             key_settings: validation.key_settings,
         },
     })
+}
+
+pub(crate) fn load_design_context(app_data_dir: &Path) -> Result<DfmDesignContext, String> {
+    ensure_profile_exists(app_data_dir)?;
+    let contents = fs::read_to_string(profile_path(app_data_dir))
+        .map_err(|error| format!("Failed to read the saved DFM profile: {error}"))?;
+    design_context_from_profile(&contents)
 }
 
 pub fn validate_executable(path: &str) -> Result<ExecutableValidation, String> {
@@ -197,6 +211,11 @@ pub fn save_executable(app_data_dir: &Path, path: &str) -> Result<ExecutableVali
 }
 
 pub fn validate_profile(contents: &str) -> Result<ProfileValidation, String> {
+    let entries = parse_profile_entries(contents)?;
+    validate_profile_entries(contents, &entries)
+}
+
+fn parse_profile_entries(contents: &str) -> Result<BTreeMap<String, String>, String> {
     if contents.trim().is_empty() {
         return Err("DFM profile must not be empty.".to_string());
     }
@@ -230,6 +249,13 @@ pub fn validate_profile(contents: &str) -> Result<ProfileValidation, String> {
             return Err(format!("DFM profile contains duplicate key {key:?}."));
         }
     }
+    Ok(entries)
+}
+
+fn validate_profile_entries(
+    contents: &str,
+    entries: &BTreeMap<String, String>,
+) -> Result<ProfileValidation, String> {
     let mut key_settings = BTreeMap::new();
     for key in REQUIRED_PROFILE_KEYS {
         let value = entries
@@ -252,6 +278,30 @@ pub fn validate_profile(contents: &str) -> Result<ProfileValidation, String> {
     Ok(ProfileValidation {
         hash: storage::sha256_hex(contents.as_bytes()),
         key_settings,
+    })
+}
+
+fn design_context_from_profile(contents: &str) -> Result<DfmDesignContext, String> {
+    let entries = parse_profile_entries(contents)?;
+    validate_profile_entries(contents, &entries)?;
+    let printer_technology = entries["printer_technology"].clone();
+    let nozzle_diameter_mm = entries["nozzle_diameter"]
+        .parse::<f64>()
+        .map_err(|error| format!("DFM profile nozzle_diameter must be numeric: {error}"))?;
+    let support_material_enabled = match entries
+        .get("support_material")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "DFM profile is missing design setting support_material.".to_string())?
+        .as_str()
+    {
+        "0" => false,
+        "1" => true,
+        _ => return Err("DFM profile support_material must be 0 or 1.".to_string()),
+    };
+    Ok(DfmDesignContext {
+        printer_technology,
+        nozzle_diameter_mm,
+        support_material_enabled,
     })
 }
 
@@ -659,5 +709,30 @@ mod tests {
     fn profile_validation_rejects_malformed_line() {
         let error = validate_profile("not-an-assignment\n").unwrap_err();
         assert!(error.contains("line 1"));
+    }
+
+    #[test]
+    fn design_context_extracts_only_modeling_constraints() {
+        let context = design_context_from_profile(DEFAULT_PROFILE).unwrap();
+        assert_eq!(context.printer_technology, "FFF");
+        assert_eq!(context.nozzle_diameter_mm, 0.4);
+        assert!(!context.support_material_enabled);
+    }
+
+    #[test]
+    fn design_context_requires_valid_support_material_setting() {
+        let missing = DEFAULT_PROFILE
+            .lines()
+            .filter(|line| !line.starts_with("support_material ="))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(design_context_from_profile(&missing)
+            .unwrap_err()
+            .contains("support_material"));
+
+        let invalid = DEFAULT_PROFILE.replace("support_material = 0", "support_material = auto");
+        assert!(design_context_from_profile(&invalid)
+            .unwrap_err()
+            .contains("must be 0 or 1"));
     }
 }

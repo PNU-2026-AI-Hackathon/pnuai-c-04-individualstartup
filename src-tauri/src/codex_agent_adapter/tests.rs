@@ -4,6 +4,7 @@ use super::prompt::{
 };
 use super::terminal_result;
 use crate::agent_adapter::{AgentAdapterEvent, AgentAdapterRunInput};
+use crate::dfm::DfmDesignContext;
 use crate::notification_router::{NotificationIdentifiers, RoutedNotification};
 use crate::protocol::CadSourceLanguage;
 use serde_json::json;
@@ -66,7 +67,15 @@ fn codex_turn_uses_workspace_write_with_app_data_writable_root() {
     let cwd = PathBuf::from("/Users/example/cadastrophe");
     let app_data_dir = PathBuf::from("/Users/example/Library/Application Support/Cadastrophe");
 
-    let thread = build_thread_start_params(&cwd).unwrap();
+    let thread = build_thread_start_params(
+        &cwd,
+        &DfmDesignContext {
+            printer_technology: "FFF".into(),
+            nozzle_diameter_mm: 0.4,
+            support_material_enabled: false,
+        },
+    )
+    .unwrap();
     assert_eq!(thread["cwd"], "/Users/example/cadastrophe");
     assert_eq!(thread["sandbox"], "workspace-write");
     assert_eq!(thread["approvalPolicy"], "never");
@@ -78,6 +87,22 @@ fn codex_turn_uses_workspace_write_with_app_data_writable_root() {
         .as_str()
         .unwrap()
         .contains("Do not call `cadastrophe-preview-render`"));
+    assert!(thread["developerInstructions"]
+        .as_str()
+        .unwrap()
+        .contains("Manufacturing process: FFF additive manufacturing"));
+    assert!(thread["developerInstructions"]
+        .as_str()
+        .unwrap()
+        .contains("Nozzle diameter: 0.4 mm"));
+    assert!(thread["developerInstructions"]
+        .as_str()
+        .unwrap()
+        .contains("Slicer-generated support: disabled"));
+    assert!(thread["developerInstructions"]
+        .as_str()
+        .unwrap()
+        .contains("never add sacrificial or disposable support geometry"));
 
     let turn = build_turn_start_params("prompt", &cwd, &app_data_dir);
     assert!(turn.get("threadId").is_none());

@@ -1,15 +1,19 @@
 use crate::agent_adapter::AgentAdapterRunInput;
+use crate::dfm::DfmDesignContext;
 use crate::modeling_plane::prompt::{
     render_modeling_developer_instructions, render_modeling_turn_input,
 };
 use serde_json::{json, Value};
 use std::path::Path;
 
-pub(super) fn build_thread_start_params(cwd: &Path) -> Result<Value, String> {
+pub(super) fn build_thread_start_params(
+    cwd: &Path,
+    dfm_context: &DfmDesignContext,
+) -> Result<Value, String> {
     Ok(json!({
         "approvalPolicy": "never",
         "cwd": cwd,
-        "developerInstructions": render_modeling_developer_instructions()?,
+        "developerInstructions": render_modeling_developer_instructions(dfm_context)?,
         "personality": "pragmatic",
         "sandbox": "workspace-write",
         "serviceName": "cadastrophe-tauri-backend",

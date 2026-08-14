@@ -22,6 +22,7 @@ use prompt::{build_modeling_turn_input, build_thread_start_params, build_turn_st
 pub struct CodexAgentAdapter {
     threads: AgentThreadManager,
     process_client: CodexProcessClient,
+    app_data_dir: PathBuf,
     turn_timeout: Duration,
 }
 
@@ -31,6 +32,7 @@ impl CodexAgentAdapter {
     }
 
     pub fn new(service: Arc<SessionService>, client: CodexProcessClient) -> Result<Self, String> {
+        let app_data_dir = service.app_data_dir().to_path_buf();
         Ok(Self {
             threads: AgentThreadManager::new(
                 service,
@@ -39,6 +41,7 @@ impl CodexAgentAdapter {
             )
             .map_err(|error| error.to_string())?,
             process_client: client,
+            app_data_dir,
             turn_timeout: duration_from_env("CADASTROPHE_CODEX_TURN_TIMEOUT_SECS", 900),
         })
     }
@@ -55,7 +58,8 @@ impl CodexAgentAdapter {
         session_id: &str,
     ) -> Result<crate::protocol::StartNewAgentConversationResult, String> {
         let cwd = codex_cwd()?;
-        let thread_start_params = build_thread_start_params(&cwd)?;
+        let dfm_context = crate::dfm::load_design_context(&self.app_data_dir)?;
+        let thread_start_params = build_thread_start_params(&cwd, &dfm_context)?;
         self.threads
             .start_new_conversation(session_id, thread_start_params)
             .await
@@ -76,7 +80,8 @@ impl AgentAdapter for CodexAgentAdapter {
     async fn run(&self, input: AgentAdapterRunInput) -> Result<Vec<AgentAdapterEvent>, String> {
         let cwd = codex_cwd()?;
         let turn_input = build_modeling_turn_input(&input)?;
-        let thread_start_params = build_thread_start_params(&cwd)?;
+        let dfm_context = crate::dfm::load_design_context(&input.app_data_dir)?;
+        let thread_start_params = build_thread_start_params(&cwd, &dfm_context)?;
         let replacement_context = format!(
             "The previous Codex thread could not be loaded. Continue this Cadastrophe session using the immutable scope --session '{}' --run '{}'. Re-read the persisted session/revision/workflow state before making changes.",
             input.session_id, input.run_id
