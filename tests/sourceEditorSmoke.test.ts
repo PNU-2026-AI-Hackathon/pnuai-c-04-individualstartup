@@ -4,7 +4,10 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { Window } from "happy-dom";
 import { WorkspacePanel } from "../ui/src/components/WorkspacePanel";
-import { latestValidationEvaluation } from "../ui/src/components/AgentWorkflow";
+import {
+  latestValidationEvaluation,
+  validationChecksForBatch
+} from "../ui/src/components/AgentWorkflow";
 import type { CadRevision, CadSessionState } from "../ui/src/protocol";
 import type { OpenscadRuntimeState } from "../ui/src/runtime/openscadRuntime";
 
@@ -96,7 +99,7 @@ test("finalize command completion does not mark workflow complete before VLM acc
   harness.cleanup();
 });
 
-test("validation evaluations override legacy VLM waiting, pass, and fail state", async () => {
+test("legacy validation evaluations remain compatible when no validation batch exists", async () => {
   const queued = workflowStateWithAcceptedVlm();
   queued.validationEvaluations = [validationEvaluation(queued, "queued")];
   const harness = mountWorkspace({
@@ -158,6 +161,122 @@ test("validation evaluations override legacy VLM waiting, pass, and fail state",
   assert.ok(workflowStep(harness.container, "Complete").classList.contains("workflow-step-fail"));
   assert.match(harness.container.textContent ?? "", /transport failed/);
   harness.cleanup();
+});
+
+test("latest validation batch drives parallel checks, pass, rejection, and operational failure", async () => {
+  const running = workflowStateWithValidationBatch("running", {
+    structural: "running",
+    dfm: "queued",
+    vlm: "running"
+  });
+  const harness = mountWorkspace({
+    sessionId: running.session.id,
+    source: "cube([1, 1, 1]);",
+    runtimeState: "completed",
+    state: running
+  });
+  for (const label of ["Structural", "DFM", "VLM"]) {
+    assert.ok(workflowStep(harness.container, label).classList.contains("workflow-step-active"));
+  }
+  assert.ok(workflowStep(harness.container, "Complete").classList.contains("workflow-step-pending"));
+  assert.match(harness.container.textContent ?? "", /Validation batch running/);
+  assert.match(harness.container.textContent ?? "", /Structural: running/);
+  assert.match(harness.container.textContent ?? "", /DFM: queued/);
+
+  const passed = workflowStateWithValidationBatch("succeeded", {
+    structural: "succeeded",
+    dfm: "succeeded",
+    vlm: "succeeded"
+  }, true);
+  harness.rerender({
+    sessionId: passed.session.id,
+    source: "cube([1, 1, 1]);",
+    runtimeState: "completed",
+    state: passed
+  });
+  for (const label of ["Structural", "DFM", "VLM", "Complete"]) {
+    assert.ok(workflowStep(harness.container, label).classList.contains("workflow-step-pass"));
+  }
+  assert.match(harness.container.textContent ?? "", /Validation batch passed/);
+
+  const rejected = workflowStateWithValidationBatch("succeeded", {
+    structural: "succeeded",
+    dfm: "succeeded",
+    vlm: "succeeded"
+  }, false, "structural");
+  harness.rerender({
+    sessionId: rejected.session.id,
+    source: "cube([1, 1, 1]);",
+    runtimeState: "completed",
+    state: rejected
+  });
+  assert.ok(workflowStep(harness.container, "Structural").classList.contains("workflow-step-fail"));
+  assert.ok(workflowStep(harness.container, "DFM").classList.contains("workflow-step-pass"));
+  assert.ok(workflowStep(harness.container, "Complete").classList.contains("workflow-step-fail"));
+  assert.match(harness.container.textContent ?? "", /Validation batch rejected/);
+  assert.match(harness.container.textContent ?? "", /wall too thin/);
+
+  const failed = workflowStateWithValidationBatch("failed", {
+    structural: "succeeded",
+    dfm: "failed",
+    vlm: "succeeded"
+  });
+  harness.rerender({
+    sessionId: failed.session.id,
+    source: "cube([1, 1, 1]);",
+    runtimeState: "completed",
+    state: failed
+  });
+  assert.ok(workflowStep(harness.container, "Structural").classList.contains("workflow-step-pass"));
+  assert.ok(workflowStep(harness.container, "DFM").classList.contains("workflow-step-fail"));
+  assert.ok(workflowStep(harness.container, "Complete").classList.contains("workflow-step-fail"));
+  assert.match(harness.container.textContent ?? "", /Validation batch operational failure/);
+  assert.match(harness.container.textContent ?? "", /slicer crashed/);
+  harness.cleanup();
+});
+
+test("validation batch selection ignores stale revisions and older attempts", async () => {
+  const state = workflowStateWithValidationBatch("queued", {
+    structural: "queued",
+    dfm: "queued",
+    vlm: "queued"
+  });
+  const current = state.validationBatches[0];
+  if (!current) throw new Error("Batch fixture missing current batch.");
+  const older = { ...current, id: "batch-older", attempt: current.attempt - 1, status: "succeeded" as const,
+    aggregateReport: { passed: true } };
+  const stale = { ...current, id: "batch-stale", revisionId: "revision-stale", attempt: 99,
+    status: "failed" as const, aggregateReport: undefined };
+  state.validationBatches = [older, stale, current];
+  state.validationChecks.push(
+    ...validationChecksForFixture(state, older, {
+      structural: "succeeded", dfm: "succeeded", vlm: "succeeded"
+    }, true),
+    ...validationChecksForFixture(state, stale, {
+      structural: "succeeded", dfm: "failed", vlm: "succeeded"
+    }, true)
+  );
+  const harness = mountWorkspace({
+    sessionId: state.session.id,
+    source: "cube([1, 1, 1]);",
+    runtimeState: "completed",
+    state
+  });
+  assert.match(harness.container.textContent ?? "", /Validation batch queued/);
+  assert.doesNotMatch(harness.container.textContent ?? "", /operational failure/);
+  assert.ok(workflowStep(harness.container, "Structural").classList.contains("workflow-step-active"));
+  assert.ok(workflowStep(harness.container, "Complete").classList.contains("workflow-step-pending"));
+  harness.cleanup();
+});
+
+test("validation batch check graph fails fast instead of inventing missing state", () => {
+  const state = workflowStateWithValidationBatch("queued", {
+    structural: "queued", dfm: "queued", vlm: "queued"
+  });
+  assert.throws(
+    () => validationChecksForBatch(state.validationChecks.slice(0, 2), state.validationBatches[0]!.id),
+    /exactly one structural, DFM, and VLM check/
+  );
 });
 
 test("latest validation evaluation is scoped to the run output revision before ordering attempts", () => {
@@ -410,6 +529,8 @@ function emptyState(sessionId: string): CadSessionState {
     agentRuns: [],
     agentRunEvents: [],
     validationEvaluations: [],
+    validationBatches: [],
+    validationChecks: [],
     workflow: {
       plans: [],
       outerIterations: [],
@@ -518,6 +639,82 @@ function validationEvaluation(
   };
 }
 
+type FixtureCheckStatuses = Record<"structural" | "dfm" | "vlm", "queued" | "running" | "succeeded" | "failed">;
+
+function workflowStateWithValidationBatch(
+  status: "queued" | "running" | "succeeded" | "failed",
+  checkStatuses: FixtureCheckStatuses,
+  passed?: boolean,
+  rejectedKind?: "structural" | "dfm" | "vlm"
+): CadSessionState {
+  const state = workflowStateWithAcceptedVlm();
+  const revisionId = state.activeRevision?.id;
+  const run = state.agentRuns[0];
+  if (!revisionId || !run) throw new Error("Validation batch fixture requires run and revision.");
+  run.outputRevisionId = revisionId;
+  run.status = status === "succeeded" && passed === true ? "completed" : "running";
+  const batch: CadSessionState["validationBatches"][number] = {
+    id: `batch-${status}-${passed ?? "none"}`,
+    sessionId: state.session.id,
+    runId: run.id,
+    revisionId,
+    artifactId: "artifact-1",
+    attempt: 2,
+    status,
+    aggregateReport: status === "succeeded"
+      ? {
+          contractType: "cadastrophe.finalization_report.v2",
+          passed,
+          failureReport: passed === false
+            ? {
+                contractType: "cadastrophe.failure_report.v1",
+                reason: "validation_batch_rejected",
+                summary: "wall too thin",
+                nextAction: "outer_loop_refine_source"
+              }
+            : null
+        }
+      : undefined,
+    createdAt: "2026-07-30T00:00:01.000Z",
+    startedAt: status === "queued" ? undefined : "2026-07-30T00:00:02.000Z",
+    settledAt: status === "succeeded" || status === "failed"
+      ? "2026-07-30T00:00:03.000Z"
+      : undefined
+  };
+  state.validationBatches = [batch];
+  state.validationChecks = validationChecksForFixture(state, batch, checkStatuses, true, rejectedKind);
+  return state;
+}
+
+function validationChecksForFixture(
+  state: CadSessionState,
+  batch: CadSessionState["validationBatches"][number],
+  statuses: FixtureCheckStatuses,
+  passed = true,
+  rejectedKind?: "structural" | "dfm" | "vlm"
+): CadSessionState["validationChecks"] {
+  return (["structural", "dfm", "vlm"] as const).map((kind) => {
+    const status = statuses[kind];
+    const checkPassed = status === "succeeded" ? passed && kind !== rejectedKind : undefined;
+    return {
+      id: `${batch.id}-${kind}`,
+      batchId: batch.id,
+      sessionId: state.session.id,
+      kind,
+      status,
+      inputContract: { contractType: `cadastrophe.${kind}_input.v1` },
+      report: status === "succeeded"
+        ? { contractType: `cadastrophe.${kind}_report.v1`, passed: checkPassed }
+        : undefined,
+      passed: checkPassed,
+      error: status === "failed" ? "slicer crashed" : undefined,
+      createdAt: batch.createdAt,
+      startedAt: status === "queued" ? undefined : batch.startedAt,
+      completedAt: status === "succeeded" || status === "failed" ? batch.settledAt : undefined
+    };
+  });
+}
+
 function workflowPlan(state: CadSessionState, runId: string, now: string): CadSessionState["workflow"]["plans"][number] {
   return {
     runId,
@@ -565,6 +762,8 @@ function sampleState(sessionId: string, source: string): CadSessionState {
     agentRuns: [],
     agentRunEvents: [],
     validationEvaluations: [],
+    validationBatches: [],
+    validationChecks: [],
     workflow: {
       plans: [],
       outerIterations: [],

@@ -22,7 +22,13 @@ import type { OpenscadRuntimeState } from "../runtime/openscadRuntime";
 import type { CadAgentStreamingItem } from "../runtime/agentStream";
 import { MeshPreview } from "../MeshPreview";
 import { AgentWorkspace } from "./AgentWorkspace";
-import { latestValidationEvaluation, workflowRunView } from "./AgentWorkflow";
+import {
+  latestValidationBatch,
+  latestValidationEvaluation,
+  validationBatchPassed,
+  validationChecksForBatch,
+  workflowRunView
+} from "./AgentWorkflow";
 import { Parameters, Timeline } from "./RevisionPanels";
 
 type WorkspacePanelProps = {
@@ -190,6 +196,8 @@ export function WorkspacePanel({
               events={state.agentRunEvents}
               workflow={state.workflow}
               validationEvaluations={state.validationEvaluations}
+              validationBatches={state.validationBatches}
+              validationChecks={state.validationChecks}
               prompt={agentPrompt}
               busy={busy}
               readOnly={sessionArchived}
@@ -468,7 +476,14 @@ function WorkflowProgressStrip({
     [latestRun?.id, state.agentRunEvents]
   );
   const latestWorkflow = latestRun
-    ? workflowRunView(latestRun, events, state.workflow, state.validationEvaluations)
+    ? workflowRunView(
+        latestRun,
+        events,
+        state.workflow,
+        state.validationEvaluations,
+        state.validationBatches,
+        state.validationChecks
+      )
     : undefined;
   const steps = workflowSteps(state, latestWorkflow?.latestFailure, Boolean(activeRun), runtimeState);
 
@@ -504,13 +519,52 @@ function workflowSteps(
     hasCanonicalPreviewRuntime;
   const latestIteration = state.workflow.outerIterations.at(-1);
   const latestRun = state.agentRuns.at(-1);
-  const validationEvaluation = latestRun
+  const validationBatch = latestRun
+    ? latestValidationBatch(state.validationBatches, latestRun.id, latestRun.outputRevisionId)
+    : undefined;
+  const batchChecks = validationBatch
+    ? validationChecksForBatch(state.validationChecks, validationBatch.id)
+    : [];
+  const validationEvaluation = latestRun && !validationBatch
     ? latestValidationEvaluation(
         state.validationEvaluations,
         latestRun.id,
         latestRun.outputRevisionId
       )
     : undefined;
+  const planStep = { label: "Plan", state: hasPlan ? "pass" : hasActiveRun ? "active" : "pending" } as const;
+  const previewStep = {
+    label: "Preview",
+    state: hasCanonicalPreviewFailure
+      ? "fail"
+      : hasPreview
+        ? "pass"
+        : hasPlan
+          ? "active"
+          : "pending"
+  } as const;
+  if (validationBatch) {
+    const checkStepState = (kind: "structural" | "dfm" | "vlm") => {
+      const check = batchChecks.find((item) => item.kind === kind);
+      if (!check) throw new Error(`Validation batch ${validationBatch.id} is missing ${kind} check.`);
+      if (check.status === "queued" || check.status === "running") return "active" as const;
+      if (check.status === "failed") return "fail" as const;
+      return check.passed === true ? "pass" as const : "fail" as const;
+    };
+    const completeState = validationBatch.status === "queued" || validationBatch.status === "running"
+      ? "pending"
+      : validationBatch.status === "failed"
+        ? "fail"
+        : validationBatchPassed(validationBatch) ? "pass" : "fail";
+    return [
+      planStep,
+      previewStep,
+      { label: "Structural", state: checkStepState("structural") },
+      { label: "DFM", state: checkStepState("dfm") },
+      { label: "VLM", state: checkStepState("vlm") },
+      { label: "Complete", state: completeState }
+    ];
+  }
   const legacyPendingVlm = validationEvaluation
     ? undefined
     : latestRun
@@ -544,17 +598,8 @@ function workflowSteps(
     : state.workflow.outerIterations.some((iteration) => iteration.passed);
 
   return [
-    { label: "Plan", state: hasPlan ? "pass" : hasActiveRun ? "active" : "pending" },
-    {
-      label: "Preview",
-      state: hasCanonicalPreviewFailure
-        ? "fail"
-        : hasPreview
-          ? "pass"
-          : hasPlan
-            ? "active"
-            : "pending"
-    },
+    planStep,
+    previewStep,
     {
       label: "Structural",
       state: structuralFailed ? "fail" : structuralPassed ? "pass" : hasPreview ? "active" : "pending"

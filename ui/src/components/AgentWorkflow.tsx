@@ -2,6 +2,8 @@ import type {
   CadAgentRun,
   CadAgentRunEvent,
   CadDfmReport,
+  CadValidationBatch,
+  CadValidationCheck,
   CadValidationEvaluation,
   CadWorkflowOuterIteration,
   CadWorkflowPendingVlm,
@@ -15,6 +17,8 @@ export interface WorkflowRunView {
   iterations: CadWorkflowOuterIteration[];
   pendingVlm?: CadWorkflowPendingVlm;
   validationEvaluation?: CadValidationEvaluation;
+  validationBatch?: CadValidationBatch;
+  validationChecks: CadValidationCheck[];
   latestDfmReport?: CadDfmReport;
   latestFailure?: Record<string, unknown>;
   latestCommand?: string;
@@ -113,6 +117,9 @@ export function WorkflowRunSummary({
       {view.validationEvaluation ? (
         <ValidationEvaluationSummary evaluation={view.validationEvaluation} />
       ) : null}
+      {view.validationBatch ? (
+        <ValidationBatchSummary batch={view.validationBatch} checks={view.validationChecks} />
+      ) : null}
       {view.latestDfmReport ? <DfmReportSummary report={view.latestDfmReport} compact={compact} /> : null}
       {view.latestFailure ? (
         <div className="workflow-callout workflow-failure">
@@ -167,21 +174,32 @@ export function workflowRunView(
   run: CadAgentRun,
   events: CadAgentRunEvent[],
   workflow: CadWorkflowState,
-  validationEvaluations: CadValidationEvaluation[] = []
+  validationEvaluations: CadValidationEvaluation[],
+  validationBatches: CadValidationBatch[],
+  validationChecks: CadValidationCheck[]
 ): WorkflowRunView {
   const plan = workflow.plans.find((item) => item.runId === run.id);
   const iterations = workflow.outerIterations
     .filter((item) => item.runId === run.id)
     .sort((left, right) => left.iteration - right.iteration);
   const pendingVlm = workflow.pendingVlm.find((item) => item.runId === run.id);
-  const validationEvaluation = latestValidationEvaluation(
-    validationEvaluations,
-    run.id,
-    run.outputRevisionId
-  );
-  const latestDfmReport = [...iterations].reverse().find((iteration) => iteration.dfmReport)?.dfmReport
-    ?? pendingVlm?.dfmReport;
-  const latestFailure = [...iterations].reverse().find((iteration) => iteration.failureReport)?.failureReport;
+  const validationBatch = latestValidationBatch(validationBatches, run.id, run.outputRevisionId);
+  const batchChecks = validationBatch
+    ? validationChecksForBatch(validationChecks, validationBatch.id)
+    : [];
+  const validationEvaluation = validationBatch
+    ? undefined
+    : latestValidationEvaluation(validationEvaluations, run.id, run.outputRevisionId);
+  const latestDfmReport = validationBatch
+    ? undefined
+    : [...iterations].reverse().find((iteration) => iteration.dfmReport)?.dfmReport
+      ?? pendingVlm?.dfmReport;
+  const batchFailure = validationBatch?.status === "succeeded"
+    ? recordField(requiredAggregateReport(validationBatch), "failureReport")
+    : undefined;
+  const latestFailure = validationBatch
+    ? batchFailure
+    : [...iterations].reverse().find((iteration) => iteration.failureReport)?.failureReport;
   const latestCompletedCommand = [...events]
     .reverse()
     .find((event) => event.type === "agent.tool.completed" && (event.payload.command || event.payload.tool));
@@ -192,12 +210,14 @@ export function workflowRunView(
     ? stringField(latestCompletedCommand.payload, "nextAction") ?? stringField(latestCompletedCommand.payload, "next_action")
     : undefined;
   return {
-    stage: workflowStage(run, events, Boolean(plan), iterations, validationEvaluation, pendingVlm, latestFailure, latestDfmReport),
-    finalizationStatus: finalizationStatus(run, events, iterations, validationEvaluation, pendingVlm, latestFailure),
+    stage: workflowStage(run, events, Boolean(plan), iterations, validationBatch, validationEvaluation, pendingVlm, latestFailure, latestDfmReport),
+    finalizationStatus: finalizationStatus(run, events, iterations, validationBatch, validationEvaluation, pendingVlm, latestFailure),
     plan,
     iterations,
-    pendingVlm: validationEvaluation ? undefined : pendingVlm,
+    pendingVlm: validationBatch || validationEvaluation ? undefined : pendingVlm,
     validationEvaluation,
+    validationBatch,
+    validationChecks: batchChecks,
     latestDfmReport,
     latestFailure,
     latestCommand,
@@ -214,11 +234,18 @@ function workflowStage(
   events: CadAgentRunEvent[],
   hasPlan: boolean,
   iterations: CadWorkflowOuterIteration[],
+  validationBatch?: CadValidationBatch,
   validationEvaluation?: CadValidationEvaluation,
   pendingVlm?: CadWorkflowPendingVlm,
   latestFailure?: Record<string, unknown>,
   latestDfmReport?: CadDfmReport
 ): string {
+  if (validationBatch) {
+    if (validationBatch.status === "queued") return "Validation queued";
+    if (validationBatch.status === "running") return "Parallel validation running";
+    if (validationBatch.status === "failed") return "Validation operational failure";
+    return validationBatchPassed(validationBatch) ? "Validation accepted" : "Validation repair";
+  }
   if (validationEvaluation) {
     if (validationEvaluation.status === "queued") return "VLM queued";
     if (validationEvaluation.status === "running") return "VLM evaluating";
@@ -264,10 +291,17 @@ function finalizationStatus(
   run: CadAgentRun,
   events: CadAgentRunEvent[],
   iterations: CadWorkflowOuterIteration[],
+  validationBatch?: CadValidationBatch,
   validationEvaluation?: CadValidationEvaluation,
   pendingVlm?: CadWorkflowPendingVlm,
   latestFailure?: Record<string, unknown>
 ): string {
+  if (validationBatch) {
+    if (validationBatch.status === "queued") return "waiting for validation";
+    if (validationBatch.status === "running") return "validation running";
+    if (validationBatch.status === "failed") return "operational failure";
+    return validationBatchPassed(validationBatch) ? "passed" : "rejected";
+  }
   if (validationEvaluation) {
     if (validationEvaluation.status === "queued") return "waiting for VLM";
     if (validationEvaluation.status === "running") return "VLM evaluation running";
@@ -283,6 +317,95 @@ function finalizationStatus(
   if (run.status === "completed") return "completed";
   if (run.status === "failed" || run.status === "cancelled") return run.status;
   return "not finalized";
+}
+
+function ValidationBatchSummary({
+  batch,
+  checks
+}: {
+  batch: CadValidationBatch;
+  checks: CadValidationCheck[];
+}) {
+  const failed = batch.status === "failed"
+    || (batch.status === "succeeded" && !validationBatchPassed(batch));
+  const outcome = batch.status === "succeeded"
+    ? validationBatchPassed(batch) ? "passed" : "rejected"
+    : batch.status === "failed" ? "operational failure" : batch.status;
+  return (
+    <div
+      className={`workflow-callout ${failed ? "workflow-failure" : "workflow-pending"}`}
+      data-testid="validation-batch-summary"
+    >
+      <strong>Validation batch {outcome}</strong>
+      <span>attempt {batch.attempt} · artifact {shortId(batch.artifactId)}</span>
+      <ol>
+        {checks.map((check) => (
+          <li data-testid={`validation-check-${check.kind}`} key={check.id}>
+            <span>{validationCheckLabel(check.kind)}: {validationCheckOutcome(check)}</span>
+            {check.error ? <small>{check.error}</small> : null}
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+export function latestValidationBatch(
+  batches: CadValidationBatch[],
+  runId: string,
+  outputRevisionId?: string
+): CadValidationBatch | undefined {
+  if (!outputRevisionId) return undefined;
+  return batches
+    .filter((batch) => batch.runId === runId && batch.revisionId === outputRevisionId)
+    .sort((left, right) =>
+      left.attempt - right.attempt
+      || left.createdAt.localeCompare(right.createdAt)
+      || left.id.localeCompare(right.id)
+    )
+    .at(-1);
+}
+
+export function validationChecksForBatch(
+  checks: CadValidationCheck[],
+  batchId: string
+): CadValidationCheck[] {
+  const selected = checks.filter((check) => check.batchId === batchId);
+  const kinds = new Set(selected.map((check) => check.kind));
+  if (selected.length !== 3 || kinds.size !== 3
+    || !kinds.has("structural") || !kinds.has("dfm") || !kinds.has("vlm")) {
+    throw new Error(`Validation batch ${batchId} must have exactly one structural, DFM, and VLM check.`);
+  }
+  const order = { structural: 0, dfm: 1, vlm: 2 } as const;
+  return selected.sort((left, right) => order[left.kind] - order[right.kind]);
+}
+
+export function validationBatchPassed(batch: CadValidationBatch): boolean {
+  if (batch.status !== "succeeded") return false;
+  const passed = requiredAggregateReport(batch).passed;
+  if (typeof passed !== "boolean") {
+    throw new Error(`Succeeded validation batch ${batch.id} aggregate report is missing boolean passed.`);
+  }
+  return passed;
+}
+
+function requiredAggregateReport(batch: CadValidationBatch): Record<string, unknown> {
+  if (!batch.aggregateReport) {
+    throw new Error(`Succeeded validation batch ${batch.id} is missing aggregate report.`);
+  }
+  return batch.aggregateReport;
+}
+
+function validationCheckLabel(kind: CadValidationCheck["kind"]): string {
+  if (kind === "dfm") return "DFM";
+  if (kind === "vlm") return "VLM";
+  return "Structural";
+}
+
+function validationCheckOutcome(check: CadValidationCheck): string {
+  if (check.status === "succeeded") return check.passed ? "passed" : "rejected";
+  if (check.status === "failed") return "operational failure";
+  return check.status;
 }
 
 function ValidationEvaluationSummary({ evaluation }: { evaluation: CadValidationEvaluation }) {

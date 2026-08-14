@@ -4,6 +4,8 @@ import type {
   CadAgentRunEvent,
   CadAgentThread,
   CadConversationMessage,
+  CadValidationBatch,
+  CadValidationCheck,
   CadValidationEvaluation,
   CadWorkflowState
 } from "../protocol";
@@ -24,6 +26,8 @@ export function AgentWorkspace(props: {
   events: CadAgentRunEvent[];
   workflow: CadWorkflowState;
   validationEvaluations: CadValidationEvaluation[];
+  validationBatches: CadValidationBatch[];
+  validationChecks: CadValidationCheck[];
   prompt: string;
   busy: boolean;
   readOnly: boolean;
@@ -46,7 +50,14 @@ export function AgentWorkspace(props: {
         .sort((left, right) => left.sequence - right.sequence)
     : [];
   const latestWorkflow = latestRun
-    ? workflowRunView(latestRun, latestRunEvents, props.workflow, props.validationEvaluations)
+    ? workflowRunView(
+        latestRun,
+        latestRunEvents,
+        props.workflow,
+        props.validationEvaluations,
+        props.validationBatches,
+        props.validationChecks
+      )
     : undefined;
   return (
     <section className="panel agent-workspace">

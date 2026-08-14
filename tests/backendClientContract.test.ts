@@ -101,6 +101,9 @@ function assertSessionResultShape(result: CreateCadSessionResult) {
   assert.equal(result.state.workflow.pendingVlm[0]?.contract.contractType, "cadastrophe.vlm_judge.v1");
   assert.equal(result.state.validationEvaluations[0]?.status, "queued");
   assert.equal(result.state.validationEvaluations[0]?.inputContract.contractType, "cadastrophe.vlm_evaluation_input.v1");
+  assert.equal(result.state.validationBatches[0]?.status, "queued");
+  assert.equal(result.state.validationChecks.length, 3);
+  assert.deepEqual(result.state.validationChecks.map((check) => check.kind), ["structural", "dfm", "vlm"]);
 }
 
 function assertCurrentSessionShape(result: CurrentCadSessionResult) {
@@ -528,6 +531,25 @@ function sampleState(title: string): CadSessionState {
         createdAt: now
       }
     ],
+    validationBatches: [{
+      id: "validation-batch-1",
+      sessionId: "session-1",
+      runId: "workflow-run-1",
+      revisionId: "revision-1",
+      artifactId: "artifact-1",
+      attempt: 1,
+      status: "queued",
+      createdAt: now
+    }],
+    validationChecks: (["structural", "dfm", "vlm"] as const).map((kind) => ({
+      id: `validation-check-${kind}`,
+      batchId: "validation-batch-1",
+      sessionId: "session-1",
+      kind,
+      status: "queued",
+      inputContract: { contractType: `cadastrophe.${kind}_input.v1` },
+      createdAt: now
+    })),
     workflow: {
       plans: [
         {

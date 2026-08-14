@@ -64,6 +64,7 @@ test("workflow summary exposes the DFM profile hash, key settings, and G-code ar
     stage: "VLM pending",
     finalizationStatus: "waiting for VLM",
     iterations: [],
+    validationChecks: [],
     latestDfmReport: {
       contractType: "cadastrophe.dfm_report.v1",
       passed: true,

@@ -298,6 +298,8 @@ function sampleState(): CadSessionState {
     agentRuns: [],
     agentRunEvents: [],
     validationEvaluations: [],
+    validationBatches: [],
+    validationChecks: [],
     workflow: { plans: [], outerIterations: [], pendingVlm: [] }
   };
 }

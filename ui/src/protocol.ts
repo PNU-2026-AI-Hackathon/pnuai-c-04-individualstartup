@@ -59,6 +59,10 @@ export type CadValidationEvaluationStatus =
   | "succeeded"
   | "failed";
 
+export type CadValidationCheckKind = "structural" | "dfm" | "vlm";
+export type CadValidationCheckStatus = CadValidationEvaluationStatus;
+export type CadValidationBatchStatus = CadValidationEvaluationStatus;
+
 export type CadAgentRunEventType =
   | "agent.run.created"
   | "agent.run.updated"
@@ -282,6 +286,42 @@ export interface CadValidationEvaluation {
   completedAt?: string;
 }
 
+export interface CadValidationBatch {
+  id: string;
+  sessionId: string;
+  runId: string;
+  revisionId: string;
+  artifactId: string;
+  attempt: number;
+  status: CadValidationBatchStatus;
+  aggregateReport?: Record<string, unknown>;
+  createdAt: string;
+  startedAt?: string;
+  settlementClaimedAt?: string;
+  settledAt?: string;
+  effectsClaimedAt?: string;
+  refinementRequestedAt?: string;
+  refinementBoundAt?: string;
+  effectsAppliedAt?: string;
+}
+
+export interface CadValidationCheck {
+  id: string;
+  batchId: string;
+  sessionId: string;
+  kind: CadValidationCheckKind;
+  status: CadValidationCheckStatus;
+  inputContract: Record<string, unknown>;
+  report?: Record<string, unknown>;
+  passed?: boolean;
+  error?: string;
+  evaluatorThreadId?: string;
+  externalTurnId?: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
 export interface CadAgentRunDiagnostic {
   runId: string;
   status: CadAgentRunStatus;
@@ -478,6 +518,8 @@ export interface CadSessionState {
   agentRuns: CadAgentRun[];
   agentRunEvents: CadAgentRunEvent[];
   validationEvaluations: CadValidationEvaluation[];
+  validationBatches: CadValidationBatch[];
+  validationChecks: CadValidationCheck[];
   workflow: CadWorkflowState;
 }
 
