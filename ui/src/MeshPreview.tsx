@@ -40,7 +40,8 @@ export function MeshPreview({
     const ambient = new THREE.AmbientLight(0xffffff, 1.8);
     const key = new THREE.DirectionalLight(0xffffff, 2.4);
     key.position.set(50, -80, 120);
-    scene.add(ambient, key, new THREE.GridHelper(120, 12, 0x8d99a8, 0xd8dee8));
+    const axisLines = createAxisLines(5000);
+    scene.add(ambient, key, axisLines);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -119,6 +120,7 @@ export function MeshPreview({
       controls.removeEventListener("change", updateCameraDebugState);
       controls.dispose();
       disposeObject(modelObject);
+      disposeObject(axisLines);
       renderer.dispose();
       container.removeChild(renderer.domElement);
     };
@@ -129,6 +131,24 @@ export function MeshPreview({
     <div className="mesh-preview" data-preview-mode={mode} ref={ref}>
       {!hasPreview ? <span>No {mode === "stl" ? "STL" : "G-code"} preview available</span> : null}
     </div>
+  );
+}
+
+function createAxisLines(extent: number): THREE.LineSegments {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute([
+    -extent, 0, 0, extent, 0, 0,
+    0, -extent, 0, 0, extent, 0,
+    0, 0, -extent, 0, 0, extent
+  ], 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute([
+    1, 0, 0, 1, 0, 0,
+    0, 1, 0, 0, 1, 0,
+    0, 0, 1, 0, 0, 1
+  ], 3));
+  return new THREE.LineSegments(
+    geometry,
+    new THREE.LineBasicMaterial({ vertexColors: true, toneMapped: false })
   );
 }
 
