@@ -1406,12 +1406,6 @@ impl SessionRepository for SqliteSessionRepository {
         let transaction = connection
             .transaction()
             .map_err(|error| error.to_string())?;
-        transaction
-            .execute(
-                "DELETE FROM agent_threads WHERE session_id = ?1",
-                params![session_id],
-            )
-            .map_err(|error| error.to_string())?;
         let changed_rows = transaction
             .execute(
                 "UPDATE sessions SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2",

@@ -29,6 +29,135 @@ fn batch_create(
 }
 
 #[test]
+fn soft_delete_preserves_validation_thread_graph() {
+    let app_data_dir =
+        std::env::temp_dir().join(format!("cadastrophe-validation-delete-test-{}", uuid()));
+    let layout = StorageLayout::from_app_data_dir(app_data_dir);
+    storage::initialize_storage(&layout).unwrap();
+    let service = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout.clone())),
+    )
+    .unwrap();
+    let created = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let (run, _) = service
+        .create_agent_run(
+            &created.session_id,
+            "validate before deletion".to_string(),
+            None,
+            Some("codex".to_string()),
+            None,
+        )
+        .unwrap();
+    let revision_id = create_test_revision(&service, &created.session_id, "cube([1,1,1]);");
+    service
+        .link_agent_run_output_revision(&created.session_id, &run.id, revision_id.clone())
+        .unwrap();
+    let artifact = service
+        .write_artifact_bytes(
+            &revision_id,
+            CadArtifactKind::Stl,
+            "stl",
+            b"validation-delete-stl",
+            None,
+        )
+        .unwrap();
+    let (_, checks) = service
+        .create_validation_batch(batch_create(
+            &created.session_id,
+            &run.id,
+            &revision_id,
+            &artifact.id,
+        ))
+        .unwrap();
+    let vlm = checks
+        .iter()
+        .find(|check| check.kind == CadValidationCheckKind::Vlm)
+        .unwrap();
+    let now = timestamp();
+    let thread = service
+        .upsert_agent_thread(CadAgentThread {
+            id: uuid(),
+            session_id: created.session_id.clone(),
+            plane: CadAgentPlane::Validation,
+            owner_id: vlm.id.clone(),
+            external_agent: "codex".to_string(),
+            external_thread_id: "validation-delete-thread".to_string(),
+            status: CadAgentThreadStatus::Active,
+            connection_generation: Some(1),
+            created_at: now.clone(),
+            updated_at: now,
+            last_resumed_at: None,
+            archived_at: None,
+            replaced_by_id: None,
+            metadata: None,
+        })
+        .unwrap();
+    let external_turn_id = "validation-delete-turn";
+    service
+        .bind_validation_check(&created.session_id, &vlm.id, &thread.id, external_turn_id)
+        .unwrap();
+    service
+        .save_validation_check_event(CadValidationCheckEvent {
+            id: uuid(),
+            session_id: created.session_id.clone(),
+            check_id: vlm.id.clone(),
+            evaluator_thread_id: thread.id.clone(),
+            external_turn_id: Some(external_turn_id.to_string()),
+            external_item_id: Some("validation-delete-item".to_string()),
+            method: "item/completed".to_string(),
+            sequence: 1,
+            payload: json!({"ok": true}),
+            created_at: timestamp(),
+        })
+        .unwrap();
+    service
+        .complete_validation_check(&created.session_id, &vlm.id, json!({"ok": true}), true)
+        .unwrap();
+    service
+        .update_agent_run(
+            &created.session_id,
+            &run.id,
+            Some(CadAgentRunStatus::Completed),
+            Some(None),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+    service.delete_session(&created.session_id).unwrap();
+
+    let connection = rusqlite::Connection::open(layout.database_path()).unwrap();
+    let deleted_at: Option<String> = connection
+        .query_row(
+            "SELECT deleted_at FROM sessions WHERE id = ?1",
+            rusqlite::params![created.session_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(deleted_at.is_some());
+    let thread_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM agent_threads WHERE id = ?1",
+            rusqlite::params![thread.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(thread_count, 1);
+    let event_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM validation_check_events WHERE evaluator_thread_id = ?1",
+            rusqlite::params![thread.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(event_count, 1);
+}
+
+#[test]
 fn validation_batch_atomic_cas_restart_and_effect_claim_blocks_racing_attempt() {
     let app_data_dir =
         std::env::temp_dir().join(format!("cadastrophe-validation-batch-test-{}", uuid()));
