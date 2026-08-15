@@ -253,6 +253,9 @@ mod tests {
         assert!(prompt.contains("single rendered image attached to this\nturn"));
         assert!(prompt.contains("Return exactly one strict JSON object"));
         assert!(prompt.contains("Output no Markdown fence"));
+        assert!(prompt.contains("If `passed` is `true`, `inconsistencies` must be an empty array"));
+        assert!(prompt.contains("limitations of the rendered image, and minor concerns as"));
+        assert!(prompt.contains("`warning` findings instead"));
         assert!(!prompt.contains("Codex Skill invocation"));
         assert!(!prompt.contains("{{EVALUATION_CONTRACT_JSON}}"));
     }

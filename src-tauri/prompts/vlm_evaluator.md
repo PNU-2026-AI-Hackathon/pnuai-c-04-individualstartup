@@ -33,6 +33,12 @@ contract exactly. If the artifact fails, return the required non-null
 `cadastrophe.failure_report.v1` with a concrete reason and
 `nextAction: "outer_loop_refine_source"`.
 
+If `passed` is `true`, `inconsistencies` must be an empty array. Reserve
+`inconsistencies` for pass-blocking contradictions or missing required features;
+any non-empty `inconsistencies` array requires `passed` to be `false`. Record
+unverifiable details, limitations of the rendered image, and minor concerns as
+`warning` findings instead, and do not also place them in `inconsistencies`.
+
 The one output object must contain the exact contract type and identity fields
 required by the evaluation contract, numeric `score`, boolean `passed`, arrays
 `findings`, `enumeration`, and `inconsistencies`, integer `scores.structure`,
