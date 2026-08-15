@@ -172,6 +172,103 @@
   color: #667789;
 }
 
+.validation-report-details {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #d8e1e8;
+  border-radius: 6px;
+  padding: 8px;
+  background: #fbfcfd;
+  font-size: 12px;
+}
+
+.validation-report-details > summary,
+.validation-report > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.validation-report-details > summary span,
+.validation-report > summary span {
+  font-weight: 700;
+}
+
+.validation-report-details > summary small,
+.validation-report > summary small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #667789;
+  text-align: right;
+}
+
+.validation-report-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.validation-report {
+  border-top: 1px solid #e3e8ed;
+  padding-top: 6px;
+}
+
+.validation-report-details small,
+.validation-report-empty,
+.validation-report-error,
+.validation-report-meta {
+  overflow-wrap: anywhere;
+}
+
+.validation-report-details small,
+.validation-report-empty,
+.validation-report-meta {
+  color: #667789;
+}
+
+.validation-report-content {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+  margin: 8px 0 2px;
+}
+
+.validation-report-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.validation-report-meta code {
+  color: #216a6b;
+}
+
+.validation-report-content pre {
+  max-height: 280px;
+  margin: 0;
+  border: 1px solid #e3e8ed;
+  border-radius: 5px;
+  padding: 8px;
+  overflow: auto;
+  background: #f4f7f9;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.validation-report-empty,
+.validation-report-error {
+  margin: 8px 0 2px;
+}
+
+.validation-report-error {
+  border-left: 3px solid #a33a38;
+  padding: 6px 8px;
+  background: #fff7f6;
+  color: #a33a38;
+}
+
 .agent-progress-details {
   display: grid;
   gap: 8px;

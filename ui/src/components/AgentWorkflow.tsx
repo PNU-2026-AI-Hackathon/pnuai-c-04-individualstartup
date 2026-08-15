@@ -97,6 +97,169 @@ export function AgentRunProgressDetails({
   );
 }
 
+export function ValidationReportDetails({
+  run,
+  view
+}: {
+  run: CadAgentRun;
+  view: WorkflowRunView;
+}) {
+  const reports = validationReportEntries(view);
+  const aggregateReport = view.validationBatch?.aggregateReport;
+  const availableReportCount = reports.filter((entry) => entry.report).length
+    + (aggregateReport ? 1 : 0);
+  return (
+    <details
+      className="validation-report-details"
+      data-testid="validation-report-details"
+    >
+      <summary>
+        <span>View validation reports</span>
+        <small>{validationReportAvailability(run, reports, availableReportCount)}</small>
+      </summary>
+      <div className="validation-report-list">
+        {aggregateReport ? (
+          <ValidationReportDisclosure
+            label="Combined report"
+            outcome={reportOutcome(aggregateReport)}
+            report={aggregateReport}
+            testId="validation-report-aggregate"
+          />
+        ) : null}
+        {reports.map((entry) => (
+          <ValidationReportDisclosure
+            error={entry.error}
+            key={entry.key}
+            label={entry.label}
+            outcome={entry.outcome}
+            report={entry.report}
+            testId={`validation-report-${entry.key}`}
+          />
+        ))}
+        {!aggregateReport && reports.length === 0 ? (
+          <p className="validation-report-empty">
+            {isActiveRunStatus(run.status)
+              ? "Validation reports will appear after checks finish."
+              : "No validation report was recorded for this run."}
+          </p>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
+interface ValidationReportEntry {
+  key: string;
+  label: string;
+  outcome: string;
+  report?: Record<string, unknown>;
+  error?: string;
+}
+
+function ValidationReportDisclosure({
+  label,
+  outcome,
+  report,
+  error,
+  testId
+}: {
+  label: string;
+  outcome: string;
+  report?: Record<string, unknown>;
+  error?: string;
+  testId: string;
+}) {
+  return (
+    <details className="validation-report" data-testid={testId}>
+      <summary>
+        <span>{label}</span>
+        <small>{outcome}</small>
+      </summary>
+      {report ? (
+        <div className="validation-report-content">
+          <div className="validation-report-meta">
+            {contractType(report) ? <code>{contractType(report)}</code> : null}
+            <span>{failureSummary(report)}</span>
+          </div>
+          <pre><code>{formatPayload(report)}</code></pre>
+        </div>
+      ) : error ? (
+        <p className="validation-report-error">{error}</p>
+      ) : (
+        <p className="validation-report-empty">Report pending.</p>
+      )}
+    </details>
+  );
+}
+
+function validationReportEntries(view: WorkflowRunView): ValidationReportEntry[] {
+  if (view.validationBatch) {
+    return view.validationChecks.map((check) => {
+      if (check.status === "succeeded" && !check.report) {
+        throw new Error(`Succeeded validation check ${check.id} is missing report.`);
+      }
+      return {
+        key: check.kind,
+        label: `${validationCheckLabel(check.kind)} report`,
+        outcome: validationCheckOutcome(check),
+        report: check.report,
+        error: check.error
+      };
+    });
+  }
+  if (view.validationEvaluation) {
+    if (view.validationEvaluation.status === "succeeded" && !view.validationEvaluation.report) {
+      throw new Error(`Succeeded validation evaluation ${view.validationEvaluation.id} is missing report.`);
+    }
+    return [{
+      key: "vlm",
+      label: "VLM report",
+      outcome: validationEvaluationOutcome(view.validationEvaluation),
+      report: view.validationEvaluation.report,
+      error: view.validationEvaluation.error
+    }];
+  }
+  const iteration = view.iterations.at(-1);
+  if (!iteration) return [];
+  return [
+    {
+      key: "structural",
+      label: "Structural report",
+      outcome: reportOutcome(iteration.structuralReport),
+      report: iteration.structuralReport
+    },
+    ...(iteration.dfmReport ? [{
+      key: "dfm",
+      label: "DFM report",
+      outcome: reportOutcome(iteration.dfmReport),
+      report: iteration.dfmReport
+    }] : []),
+    ...(iteration.vlmReport ? [{
+      key: "vlm",
+      label: "VLM report",
+      outcome: reportOutcome(iteration.vlmReport),
+      report: iteration.vlmReport
+    }] : [])
+  ];
+}
+
+function validationReportAvailability(
+  run: CadAgentRun,
+  reports: ValidationReportEntry[],
+  availableReportCount: number
+): string {
+  if (availableReportCount) {
+    return `${availableReportCount} report${availableReportCount === 1 ? "" : "s"}`;
+  }
+  if (reports.length || isActiveRunStatus(run.status)) return "waiting for results";
+  return "no reports";
+}
+
+function reportOutcome(report: Record<string, unknown>): string {
+  if (typeof report.passed === "boolean") return report.passed ? "passed" : "rejected";
+  return "recorded";
+}
+
 export function WorkflowRunSummary({
   run,
   view,
@@ -147,18 +310,20 @@ export function WorkflowRunSummary({
           {!compact ? <code>{formatPayload(view.latestFailure)}</code> : null}
         </div>
       ) : null}
-      {view.latestCommand || view.latestNextAction ? (
-        <div className="workflow-last-command">
-          {view.latestCommand ? <span>{view.latestCommand}</span> : null}
-          {view.latestNextAction ? <small>next {view.latestNextAction.replaceAll("_", " ")}</small> : null}
-        </div>
-      ) : run.status === "queued" ? (
+      {hasValidationReportSection(view) ? (
+        <ValidationReportDetails run={run} view={view} />
+      ) : null}
+      {run.status === "queued" ? (
         <div className="workflow-last-command">
           <span>waiting for plan commit</span>
         </div>
       ) : null}
     </div>
   );
+}
+
+function hasValidationReportSection(view: WorkflowRunView): boolean {
+  return Boolean(view.validationBatch || view.validationEvaluation || view.iterations.length);
 }
 
 export function EventPayloadSummary({ event }: { event: CadAgentRunEvent }) {
@@ -428,12 +593,11 @@ function validationCheckOutcome(check: CadValidationCheck): string {
 }
 
 function ValidationEvaluationSummary({ evaluation }: { evaluation: CadValidationEvaluation }) {
-  const outcome = evaluation.status === "succeeded"
-    ? evaluation.passed === true ? "passed" : "failed"
-    : evaluation.status;
+  const outcome = validationEvaluationOutcome(evaluation);
+  const failed = outcome === "failed" || outcome === "operational failure";
   return (
     <div
-      className={`workflow-callout ${outcome === "failed" ? "workflow-failure" : "workflow-pending"}`}
+      className={`workflow-callout ${failed ? "workflow-failure" : "workflow-pending"}`}
       data-testid="validation-evaluation-summary"
     >
       <strong>VLM evaluation {outcome}</strong>
@@ -442,6 +606,12 @@ function ValidationEvaluationSummary({ evaluation }: { evaluation: CadValidation
       {evaluation.error ? <span>{evaluation.error}</span> : null}
     </div>
   );
+}
+
+function validationEvaluationOutcome(evaluation: CadValidationEvaluation): string {
+  return evaluation.status === "succeeded"
+    ? evaluation.passed === true ? "passed" : "failed"
+    : evaluation.status === "failed" ? "operational failure" : evaluation.status;
 }
 
 export function latestValidationEvaluation(

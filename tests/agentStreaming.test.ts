@@ -169,7 +169,7 @@ test("durable run commentary fails fast when its persistence identity is incompl
   );
 });
 
-test("progress details replace low-level events with expandable live commentary", () => {
+test("progress details retain expandable live commentary while workflow summary omits its last tool command", () => {
   const now = "2026-08-12T00:00:00.000Z";
   const html = renderToStaticMarkup(React.createElement(AgentWorkspace, {
     conversation: [message({
@@ -198,7 +198,7 @@ test("progress details replace low-level events with expandable live commentary"
       type: "agent.tool.completed",
       sequence: 1,
       createdAt: now,
-      payload: { status: "completed" }
+      payload: { command: "cadastrophe-finalize --session session-a", status: "completed" }
     }],
     workflow: { plans: [], outerIterations: [], pendingVlm: [] },
     validationEvaluations: [],
@@ -219,9 +219,99 @@ test("progress details replace low-level events with expandable live commentary"
   assert.match(html, /data-testid="agent-progress-commentary"/);
   assert.match(html, /<summary><span>Live commentary<\/span>/);
   assert.match(html, /I checked the wall thickness\./);
+  assert.match(html, /cadastrophe-finalize --session session-a/);
+  assert.doesNotMatch(workflowSummaryMarkup(html), /cadastrophe-finalize --session session-a/);
+  assert.doesNotMatch(html, /data-testid="validation-report-details"/);
   assert.doesNotMatch(html, /agent\.tool\.completed/);
   assert.doesNotMatch(html, /data-testid="streaming-commentary"/);
 });
+
+test("validation report disclosure exposes the combined report and every batch result", () => {
+  const now = "2026-08-12T00:00:00.000Z";
+  const kinds = ["structural", "dfm", "vlm"] as const;
+  const html = renderToStaticMarkup(React.createElement(AgentWorkspace, {
+    conversation: [],
+    runs: [{
+      id: "run-1",
+      sessionId: "session-a",
+      status: "completed",
+      prompt: "Create a part",
+      outputRevisionId: "revision-1",
+      createdAt: now,
+      updatedAt: now,
+      completedAt: now,
+      recoveryStatus: "none"
+    }],
+    threads: [],
+    events: [],
+    workflow: { plans: [], outerIterations: [], pendingVlm: [] },
+    validationEvaluations: [],
+    validationBatches: [{
+      id: "batch-1",
+      sessionId: "session-a",
+      runId: "run-1",
+      revisionId: "revision-1",
+      artifactId: "artifact-1",
+      attempt: 1,
+      status: "succeeded",
+      aggregateReport: {
+        contractType: "cadastrophe.finalization_report.v2",
+        passed: false,
+        summary: "Combined validation rejected the model."
+      },
+      createdAt: now,
+      settledAt: now
+    }],
+    validationChecks: kinds.map((kind) => ({
+      id: `check-${kind}`,
+      batchId: "batch-1",
+      sessionId: "session-a",
+      kind,
+      status: "succeeded" as const,
+      inputContract: { contractType: `cadastrophe.${kind}_input.v1` },
+      report: {
+        contractType: `cadastrophe.${kind}_report.v1`,
+        passed: kind !== "dfm",
+        summary: `${kind} result`
+      },
+      passed: kind !== "dfm",
+      createdAt: now,
+      completedAt: now
+    })),
+    prompt: "",
+    busy: false,
+    readOnly: false,
+    streams: [],
+    onPromptChange: () => undefined,
+    onStartRun: () => undefined,
+    onStartNewConversation: () => undefined,
+    onRetryRun: () => undefined,
+    onCancelRun: () => undefined,
+    onOpenFullHistory: () => undefined
+  }));
+
+  assert.match(html, /data-testid="validation-report-aggregate"/);
+  assert.match(html, /<span>Combined report<\/span><small>rejected<\/small>/);
+  for (const kind of kinds) {
+    assert.match(html, new RegExp(`data-testid="validation-report-${kind}"`));
+    assert.match(html, new RegExp(`${kind} result`));
+  }
+  assert.match(html, /4 reports/);
+  const workflowIndex = html.indexOf('data-testid="workflow-summary"');
+  const reportIndex = html.indexOf('data-testid="validation-report-details"');
+  const progressIndex = html.indexOf('data-testid="agent-progress-details"');
+  assert.ok(workflowIndex >= 0 && workflowIndex < reportIndex);
+  assert.ok(reportIndex < progressIndex);
+});
+
+function workflowSummaryMarkup(html: string): string {
+  const start = html.indexOf('data-testid="workflow-summary"');
+  const end = html.indexOf('data-testid="agent-progress-details"');
+  if (start < 0 || end < 0 || start >= end) {
+    throw new Error("Expected workflow summary before progress details.");
+  }
+  return html.slice(start, end);
+}
 
 test("stream identity collision fails fast instead of joining unrelated turns", () => {
   const state = reduceAgentStreamEvent(
