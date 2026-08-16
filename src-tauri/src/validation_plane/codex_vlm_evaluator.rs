@@ -525,7 +525,6 @@ impl CodexVlmEvaluator {
 #[derive(Default)]
 struct StrictValidationCollector {
     submission: Option<Value>,
-    final_message_seen: bool,
 }
 
 impl StrictValidationCollector {
@@ -557,34 +556,18 @@ impl StrictValidationCollector {
                 match item_type {
                     "reasoning" | "userMessage" => Ok(None),
                     "commandExecution" => {
-                        if self.submission.is_some() {
-                            return Err(
-                                "Validation turn executed cadastrophe-vlm-submit more than once."
-                                    .to_string(),
-                            );
+                        if has_vlm_submit_envelope(item) {
+                            if self.submission.is_some() {
+                                return Err(
+                                    "Validation turn executed cadastrophe-vlm-submit more than once."
+                                        .to_string(),
+                                );
+                            }
+                            self.submission = Some(parse_vlm_submit_execution(item)?);
                         }
-                        self.submission = Some(parse_vlm_submit_execution(item)?);
                         Ok(None)
                     }
-                    "agentMessage" => {
-                        if item.get("phase").and_then(Value::as_str) != Some("final_answer") {
-                            return Err(
-                                "Validation assistant message must have final_answer phase."
-                                    .to_string(),
-                            );
-                        }
-                        if self.final_message_seen {
-                            return Err(
-                                "Validation turn produced more than one final assistant message."
-                                    .to_string(),
-                            );
-                        }
-                        item.get("text").and_then(Value::as_str).ok_or_else(|| {
-                            "Validation final assistant message omitted text.".to_string()
-                        })?;
-                        self.final_message_seen = true;
-                        Ok(None)
-                    }
+                    "agentMessage" => Ok(None),
                     other => Err(format!(
                         "Validation turn emitted forbidden item type {other:?}."
                     )),
@@ -632,46 +615,25 @@ fn validate_validation_item_started(item: Option<&Value>) -> Result<(), String> 
     let item = item.ok_or_else(|| "Validation item/started omitted item.".to_string())?;
     match required_item_type(item, "item/started")? {
         "reasoning" | "userMessage" => Ok(()),
-        "commandExecution" => validate_vlm_submit_command(item),
-        "agentMessage" => {
-            if item.get("phase").and_then(Value::as_str) == Some("final_answer") {
-                Ok(())
-            } else {
-                Err("Validation assistant message must have final_answer phase.".to_string())
-            }
-        }
+        "commandExecution" => Ok(()),
+        "agentMessage" => Ok(()),
         other => Err(format!(
             "Validation turn emitted forbidden item type {other:?}."
         )),
     }
 }
 
-fn validate_vlm_submit_command(item: &Value) -> Result<(), String> {
-    let executable = match item.get("command") {
-        Some(Value::String(command)) => command
-            .split_whitespace()
-            .next()
-            .map(|value| value.trim_matches(['\'', '"']))
-            .filter(|value| !value.is_empty()),
-        Some(Value::Array(command)) => command.first().and_then(Value::as_str),
-        _ => None,
-    }
-    .ok_or_else(|| "VLM command execution omitted a parseable command.".to_string())?;
-    let name = std::path::Path::new(executable)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or(executable)
-        .trim_end_matches(".exe");
-    if name != "cadastrophe-vlm-submit" {
-        return Err(format!(
-            "Validation turn attempted forbidden command {name:?}; only cadastrophe-vlm-submit is allowed."
-        ));
-    }
-    Ok(())
+fn has_vlm_submit_envelope(item: &Value) -> bool {
+    item.get("aggregatedOutput")
+        .and_then(Value::as_str)
+        .and_then(|output| serde_json::from_str::<Value>(output.trim()).ok())
+        .map(|output| {
+            output.get("command").and_then(Value::as_str) == Some("cadastrophe-vlm-submit")
+        })
+        .unwrap_or(false)
 }
 
 fn parse_vlm_submit_execution(item: &Value) -> Result<Value, String> {
-    validate_vlm_submit_command(item)?;
     if item.get("status").and_then(Value::as_str) != Some("completed") {
         return Err("cadastrophe-vlm-submit did not complete successfully.".to_string());
     }
@@ -752,35 +714,21 @@ fn parse_strict_validation_history(
         .and_then(Value::as_array)
         .ok_or_else(|| "Recovered validation turn omitted items.".to_string())?;
     let mut submission = None;
-    let mut final_message_seen = false;
     for item in items {
         match required_item_type(item, "thread/read history")? {
             "reasoning" | "userMessage" => {}
             "commandExecution" => {
-                if submission.is_some() {
-                    return Err(
-                        "Recovered validation turn contained multiple VLM submissions.".to_string(),
-                    );
+                if has_vlm_submit_envelope(item) {
+                    if submission.is_some() {
+                        return Err(
+                            "Recovered validation turn contained multiple VLM submissions."
+                                .to_string(),
+                        );
+                    }
+                    submission = Some(parse_vlm_submit_execution(item)?);
                 }
-                submission = Some(parse_vlm_submit_execution(item)?);
             }
-            "agentMessage" => {
-                if item.get("phase").and_then(Value::as_str) != Some("final_answer") {
-                    return Err(
-                        "Recovered validation assistant message was not final_answer.".to_string(),
-                    );
-                }
-                if final_message_seen {
-                    return Err(
-                        "Recovered validation turn contained multiple final assistant messages."
-                            .to_string(),
-                    );
-                }
-                item.get("text").and_then(Value::as_str).ok_or_else(|| {
-                    "Recovered validation final assistant message omitted text.".to_string()
-                })?;
-                final_message_seen = true;
-            }
+            "agentMessage" => {}
             other => {
                 return Err(format!(
                     "Recovered validation turn contained forbidden item type {other:?}."
@@ -907,8 +855,10 @@ mod tests {
             "id":"turn-1","status":"completed","items":[
                 {"type":"userMessage","id":"user-1","content":[]},
                 {"type":"reasoning","id":"reasoning-1"},
+                {"type":"agentMessage","id":"message-1","phase":"commentary","text":"Inspecting the image."},
+                {"type":"commandExecution","id":"tool-1","command":"git status","status":"completed","exitCode":0,"aggregatedOutput":"working tree clean"},
                 submit_item(),
-                {"type":"agentMessage","id":"message-1","phase":"final_answer","text":"VLM evaluation submitted."}
+                {"type":"agentMessage","id":"message-2","phase":"final_answer","text":"VLM evaluation submitted."}
             ]
         }]}});
         assert_eq!(
@@ -1021,9 +971,34 @@ mod tests {
     }
 
     #[test]
-    fn failed_turn_and_non_submit_commands_are_rejected() {
+    fn auxiliary_commands_are_allowed_but_a_successful_submission_is_still_required() {
         let mut collector = StrictValidationCollector::default();
-        assert!(collector
+        collector
+            .ingest(
+                "thread-1",
+                "turn-1",
+                &notification(
+                    "item/started",
+                    json!({"item":{
+                        "id":"message-1","type":"agentMessage","phase":"commentary"
+                    }}),
+                ),
+            )
+            .unwrap();
+        collector
+            .ingest(
+                "thread-1",
+                "turn-1",
+                &notification(
+                    "item/completed",
+                    json!({"item":{
+                        "id":"message-1","type":"agentMessage","phase":"commentary",
+                        "text":"Inspecting the image."
+                    }}),
+                ),
+            )
+            .unwrap();
+        collector
             .ingest(
                 "thread-1",
                 "turn-1",
@@ -1035,7 +1010,30 @@ mod tests {
                     }}),
                 ),
             )
-            .is_err());
+            .unwrap();
+
+        let mut shell_wrapped_submit = submit_item();
+        shell_wrapped_submit["command"] =
+            json!("zsh -lc 'cadastrophe-vlm-submit --components 2 --proportions 3 --structure 3'");
+        collector
+            .ingest(
+                "thread-1",
+                "turn-1",
+                &notification("item/completed", json!({"item": shell_wrapped_submit})),
+            )
+            .unwrap();
+        assert_eq!(
+            collector
+                .ingest(
+                    "thread-1",
+                    "turn-1",
+                    &notification("turn/completed", json!({"turn":{"status":"completed"}}),),
+                )
+                .unwrap()
+                .unwrap(),
+            submission()
+        );
+
         assert!(StrictValidationCollector::default()
             .ingest(
                 "thread-1",
@@ -1066,10 +1064,7 @@ mod tests {
             .ingest(
                 "thread-1",
                 "turn-1",
-                &notification(
-                    "turn/completed",
-                    json!({"turn":{"status":"completed"}}),
-                ),
+                &notification("turn/completed", json!({"turn":{"status":"completed"}}),),
             )
             .unwrap_err()
             .contains("without a successful cadastrophe-vlm-submit"));
