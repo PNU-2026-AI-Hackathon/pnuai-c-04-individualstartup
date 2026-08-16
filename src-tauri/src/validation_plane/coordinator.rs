@@ -825,7 +825,7 @@ fn vlm_evaluation_snapshot(
 fn validate_vlm_check_report(
     batch: &CadValidationBatch,
     check: &CadValidationCheck,
-    report: Value,
+    submission: Value,
 ) -> Result<super::contract::ValidatedReport, String> {
     let evaluation = CadValidationEvaluation {
         id: check.id.clone(),
@@ -852,6 +852,7 @@ fn validate_vlm_check_report(
         started_at: check.started_at.clone(),
         completed_at: None,
     };
+    let report = super::contract::build_report_from_submission(&evaluation, submission)?;
     super::contract::validate_report(&evaluation, report)
 }
 
@@ -1185,7 +1186,7 @@ mod tests {
                     },
                     CadValidationCheckCreate {
                         kind: CadValidationCheckKind::Vlm,
-                        input_contract: json!({"passThreshold":0.8}),
+                        input_contract: json!({"passThreshold":crate::validation_plane::contract::VLM_PASS_THRESHOLD}),
                     },
                 ],
             })
@@ -1380,6 +1381,55 @@ mod tests {
         assert_eq!(failed.status, CadValidationCheckStatus::Failed);
         assert!(failed.report.is_none());
         assert!(failed.error.unwrap().contains("not actionable"));
+    }
+
+    #[test]
+    fn receiving_system_adds_vlm_passed_before_database_persistence() {
+        let f = fixture();
+        let (batch, checks) = create_batch(&f);
+        start_all(&f, &checks);
+        let check = f
+            .service
+            .get_validation_check(
+                &f.session,
+                &required_check(&checks, CadValidationCheckKind::Vlm)
+                    .unwrap()
+                    .id,
+            )
+            .unwrap()
+            .unwrap();
+        let submission = json!({
+            "contractType": crate::validation_plane::contract::SUBMISSION_CONTRACT_TYPE,
+            "scores": {"structure": 3, "components": 2, "proportions": 2},
+            "inconsistencies": ["A minor view-to-view mismatch remains."]
+        });
+        let validated = validate_vlm_check_report(&batch, &check, submission).unwrap();
+        assert!(validated.passed);
+        assert_eq!(validated.report["passed"], true);
+        f.service
+            .complete_validation_check(
+                &check.session_id,
+                &check.id,
+                validated.report,
+                validated.passed,
+            )
+            .unwrap();
+
+        let persisted = f
+            .service
+            .get_validation_check(&check.session_id, &check.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.passed, Some(true));
+        assert_eq!(persisted.report.as_ref().unwrap()["passed"], true);
+        assert_eq!(persisted.report.as_ref().unwrap()["composite"], 7);
+        assert_eq!(
+            persisted.report.as_ref().unwrap()["inconsistencies"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]

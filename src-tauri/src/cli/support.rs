@@ -54,6 +54,19 @@ impl ParsedArgs {
     pub(super) fn optional(&self, name: &str) -> Option<&str> {
         self.values.get(name).map(String::as_str)
     }
+
+    pub(super) fn require_only(&self, allowed: &[&str]) -> CliResult<()> {
+        if let Some(name) = self
+            .values
+            .keys()
+            .find(|name| !allowed.contains(&name.as_str()))
+        {
+            return Err(CliError::invalid_input(format!(
+                "Unsupported --{name} option."
+            )));
+        }
+        Ok(())
+    }
 }
 
 pub(super) fn resolve_session_id(args: &ParsedArgs, service: &SessionService) -> CliResult<String> {
@@ -173,7 +186,11 @@ pub(super) fn parse_args(args: impl Iterator<Item = String>) -> CliResult<Parsed
                     "Missing value for --{key}."
                 )));
             }
-            values.insert(key, arg);
+            if values.insert(key.clone(), arg).is_some() {
+                return Err(CliError::invalid_input(format!(
+                    "Duplicate --{key} option."
+                )));
+            }
             continue;
         }
         if arg == "--pretty" {
@@ -185,7 +202,11 @@ pub(super) fn parse_args(args: impl Iterator<Item = String>) -> CliResult<Parsed
                 if key.is_empty() || value.is_empty() {
                     return Err(CliError::invalid_input(format!("Invalid option {arg:?}.")));
                 }
-                values.insert(key.to_string(), value.to_string());
+                if values.insert(key.to_string(), value.to_string()).is_some() {
+                    return Err(CliError::invalid_input(format!(
+                        "Duplicate --{key} option."
+                    )));
+                }
             } else if rest.is_empty() {
                 return Err(CliError::invalid_input("Invalid empty option --."));
             } else {
@@ -371,20 +392,6 @@ pub(super) fn require_contract_type(
         )));
     }
     Ok(())
-}
-
-pub(super) fn parse_optional_f64(
-    value: Option<&str>,
-    default_value: f64,
-    name: &str,
-) -> CliResult<f64> {
-    value
-        .map(|value| {
-            value.parse::<f64>().map_err(|error| {
-                CliError::invalid_input(format!("--{name} must be a number: {error}"))
-            })
-        })
-        .unwrap_or(Ok(default_value))
 }
 
 pub(super) fn validate_plan(plan: &CadModelPlan) -> CliResult<()> {

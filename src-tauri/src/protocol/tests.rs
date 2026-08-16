@@ -74,6 +74,10 @@ fn report_contract_fixtures_keep_expected_discriminators() {
             "cadastrophe.vlm_judge.v1",
         ),
         (
+            include_str!("../../../fixtures/contracts/vlm_submission.v1.json"),
+            "cadastrophe.vlm_submission.v1",
+        ),
+        (
             include_str!("../../../fixtures/contracts/vlm_judge_report.v1.json"),
             "cadastrophe.vlm_judge_report.v1",
         ),

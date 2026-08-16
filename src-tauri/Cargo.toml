@@ -43,3 +43,7 @@ path = "src/bin/cadastrophe_source_apply.rs"
 [[bin]]
 name = "cadastrophe-finalize"
 path = "src/bin/cadastrophe_finalize.rs"
+
+[[bin]]
+name = "cadastrophe-vlm-submit"
+path = "src/bin/cadastrophe_vlm_submit.rs"

@@ -7,8 +7,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const INPUT_CONTRACT_TYPE: &str = "cadastrophe.vlm_evaluation_input.v1";
+pub const SUBMISSION_CONTRACT_TYPE: &str = "cadastrophe.vlm_submission.v1";
 pub const REPORT_CONTRACT_TYPE: &str = "cadastrophe.vlm_judge_report.v1";
 pub const FAILURE_REPORT_CONTRACT_TYPE: &str = "cadastrophe.failure_report.v1";
+pub const VLM_PASS_COMPOSITE: u64 = 7;
+pub const VLM_MIN_SUBSCORE: u64 = 2;
+pub const VLM_PASS_THRESHOLD: f64 = VLM_PASS_COMPOSITE as f64 / 9.0;
 
 #[derive(Clone, Debug)]
 pub struct EvaluationContractInput<'a> {
@@ -38,8 +42,10 @@ pub fn build_input_contract(input: EvaluationContractInput<'_>) -> Result<Value,
     if input.user_request.trim().is_empty() {
         return Err("VLM evaluation userRequest cannot be empty.".to_string());
     }
-    if !input.pass_threshold.is_finite() || !(0.0..=1.0).contains(&input.pass_threshold) {
-        return Err("VLM evaluation passThreshold must be finite and between 0 and 1.".to_string());
+    if input.pass_threshold != VLM_PASS_THRESHOLD {
+        return Err(format!(
+            "VLM evaluation passThreshold must be the system-owned threshold {VLM_PASS_THRESHOLD}."
+        ));
     }
     validate_artifact_lineage(
         input.final_artifact,
@@ -95,16 +101,15 @@ pub fn build_input_contract(input: EvaluationContractInput<'_>) -> Result<Value,
             "subscoreRange": { "minimum": 0, "maximum": 3 },
             "composite": "scores.structure + scores.components + scores.proportions",
             "score": "composite / 9",
-            "majorMissingFeatureFails": true,
-            "passRequiresThreshold": true
+            "systemPassRule": "composite >= 7 and every subscore >= 2",
+            "passComputedBy": "receiving_system"
         },
-        "outputContract": {
-            "contractType": REPORT_CONTRACT_TYPE,
-            "identityFields": ["evaluationId", "sessionId", "runId", "revisionId", "artifactId", "kind", "attempt"],
-            "requiredArrays": ["findings", "enumeration", "inconsistencies"],
-            "failureReportContractType": FAILURE_REPORT_CONTRACT_TYPE,
-            "failureReportRequiredFields": ["contractType", "reason", "summary", "nextAction"],
-            "failureNextAction": "outer_loop_refine_source"
+        "submissionContract": {
+            "contractType": SUBMISSION_CONTRACT_TYPE,
+            "command": "cadastrophe-vlm-submit",
+            "requiredOptions": ["structure", "components", "proportions"],
+            "optionalOptions": ["inconsistency", "diagnostic"],
+            "applicationOwnedReportFields": ["evaluationId", "sessionId", "runId", "revisionId", "artifactId", "kind", "attempt", "composite", "score", "passed", "failureReport"]
         }
     }))
 }
@@ -144,11 +149,19 @@ pub fn validate_report(
             evaluation.attempt
         ));
     }
+    for field in ["composite", "score", "passed", "failureReport"] {
+        if object.contains_key(field) {
+            return Err(format!(
+                "VLM evaluator must not set application-owned field {field}."
+            ));
+        }
+    }
     for field in ["findings", "enumeration", "inconsistencies"] {
-        object
-            .get(field)
-            .and_then(Value::as_array)
-            .ok_or_else(|| format!("VLM report {field} must be an array."))?;
+        if object.get(field).is_some_and(|value| !value.is_array()) {
+            return Err(format!(
+                "VLM report {field} must be an array when provided."
+            ));
+        }
     }
     validate_findings(object)?;
     validate_enumeration(object)?;
@@ -156,76 +169,126 @@ pub fn validate_report(
         .get("scores")
         .and_then(Value::as_object)
         .ok_or_else(|| "VLM report scores must be an object.".to_string())?;
+    validate_exact_scores(scores, "VLM report")?;
     let structure = subscore(scores, "structure")?;
     let components = subscore(scores, "components")?;
     let proportions = subscore(scores, "proportions")?;
-    let expected_composite = structure + components + proportions;
-    let composite = object
-        .get("composite")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| "VLM report composite must be an unsigned integer.".to_string())?;
-    if composite != expected_composite {
+    if let Some(diagnostic) = object.get("diagnostic") {
+        let diagnostic = diagnostic
+            .as_str()
+            .ok_or_else(|| "VLM report diagnostic must be a string when provided.".to_string())?;
+        if diagnostic.trim().is_empty() {
+            return Err("VLM report diagnostic cannot be empty when provided.".to_string());
+        }
+    }
+    let composite = structure + components + proportions;
+    let score = composite as f64 / 9.0;
+    let passed = composite >= VLM_PASS_COMPOSITE
+        && [structure, components, proportions]
+            .into_iter()
+            .all(|subscore| subscore >= VLM_MIN_SUBSCORE);
+    let failure_report = (!passed).then(|| {
+        json!({
+            "contractType": FAILURE_REPORT_CONTRACT_TYPE,
+            "reason": "vlm_score_gate_failed",
+            "summary": format!(
+                "VLM score gate requires a composite of at least {VLM_PASS_COMPOSITE}/9 and every subscore at least {VLM_MIN_SUBSCORE}; received structure={structure}, components={components}, proportions={proportions}, composite={composite}/9."
+            ),
+            "nextAction": "outer_loop_refine_source"
+        })
+    });
+    let mut annotated = object.clone();
+    annotated.insert("composite".to_string(), json!(composite));
+    annotated.insert("score".to_string(), json!(score));
+    annotated.insert("passed".to_string(), json!(passed));
+    annotated.insert(
+        "failureReport".to_string(),
+        failure_report.clone().unwrap_or(Value::Null),
+    );
+    Ok(ValidatedReport {
+        report: Value::Object(annotated),
+        score,
+        passed,
+        failure_report,
+    })
+}
+
+pub fn build_report_from_submission(
+    evaluation: &CadValidationEvaluation,
+    submission: Value,
+) -> Result<Value, String> {
+    let object = submission
+        .as_object()
+        .ok_or_else(|| "VLM CLI submission must be a JSON object.".to_string())?;
+    if object.get("contractType").and_then(Value::as_str) != Some(SUBMISSION_CONTRACT_TYPE) {
         return Err(format!(
-            "VLM report composite must equal the exact subscore sum {expected_composite}."
+            "VLM CLI submission contractType must be {SUBMISSION_CONTRACT_TYPE}."
         ));
     }
-    let score = object
-        .get("score")
-        .and_then(Value::as_f64)
-        .filter(|score| score.is_finite() && (0.0..=1.0).contains(score))
-        .ok_or_else(|| "VLM report score must be finite and between 0 and 1.".to_string())?;
-    // JSON numbers are parsed to IEEE-754. Requiring equality with the same
-    // rational computation accepts only that canonical nearest representation;
-    // no arbitrary epsilon can change a score decision.
-    let expected_score = expected_composite as f64 / 9.0;
-    if score != expected_score {
+    if let Some(field) = object.keys().find(|field| {
+        !matches!(
+            field.as_str(),
+            "contractType" | "scores" | "inconsistencies" | "diagnostic"
+        )
+    }) {
         return Err(format!(
-            "VLM report score must equal composite/9 ({expected_score})."
+            "VLM CLI submission contains unsupported field {field}."
         ));
     }
-    let passed = object
-        .get("passed")
-        .and_then(Value::as_bool)
-        .ok_or_else(|| "VLM report passed must be boolean.".to_string())?;
-    let diagnostic = object
-        .get("diagnostic")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "VLM report diagnostic must be a string.".to_string())?;
-    if diagnostic.trim().is_empty() {
-        return Err("VLM report diagnostic cannot be empty.".to_string());
+    let scores = object
+        .get("scores")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "VLM CLI submission scores must be an object.".to_string())?;
+    validate_exact_scores(scores, "VLM CLI submission")?;
+    let inconsistencies = match object.get("inconsistencies") {
+        None => None,
+        Some(value) => {
+            let values = value.as_array().ok_or_else(|| {
+                "VLM CLI submission inconsistencies must be an array.".to_string()
+            })?;
+            if values.len() != 1
+                || values[0]
+                    .as_str()
+                    .is_none_or(|value| value.trim().is_empty())
+            {
+                return Err(
+                    "VLM CLI submission inconsistencies must contain one non-empty string."
+                        .to_string(),
+                );
+            }
+            Some(value.clone())
+        }
+    };
+    let diagnostic = match object.get("diagnostic") {
+        None => None,
+        Some(value) => {
+            if value
+                .as_str()
+                .is_none_or(|diagnostic| diagnostic.trim().is_empty())
+            {
+                return Err("VLM CLI submission diagnostic must be a non-empty string.".to_string());
+            }
+            Some(value.clone())
+        }
+    };
+    let mut report = Map::from_iter([
+        ("contractType".to_string(), json!(REPORT_CONTRACT_TYPE)),
+        ("evaluationId".to_string(), json!(evaluation.id)),
+        ("sessionId".to_string(), json!(evaluation.session_id)),
+        ("runId".to_string(), json!(evaluation.run_id)),
+        ("revisionId".to_string(), json!(evaluation.revision_id)),
+        ("artifactId".to_string(), json!(evaluation.artifact_id)),
+        ("kind".to_string(), json!("vlm")),
+        ("attempt".to_string(), json!(evaluation.attempt)),
+        ("scores".to_string(), Value::Object(scores.clone())),
+    ]);
+    if let Some(inconsistencies) = inconsistencies {
+        report.insert("inconsistencies".to_string(), inconsistencies);
     }
-    let failure_report = object.get("failureReport").cloned().unwrap_or(Value::Null);
-    if passed {
-        if score < evaluation.pass_threshold {
-            return Err("A passing VLM report score is below the persisted threshold.".to_string());
-        }
-        if failure_report != Value::Null {
-            return Err("A passing VLM report must have null failureReport.".to_string());
-        }
-        if has_major_problem(object) {
-            return Err(
-                "A passing VLM report cannot contain a major missing feature or inconsistency."
-                    .to_string(),
-            );
-        }
-        if object["enumeration"].as_array().is_none_or(Vec::is_empty) {
-            return Err("A passing VLM report must enumerate requested components.".to_string());
-        }
-        Ok(ValidatedReport {
-            report,
-            score,
-            passed,
-            failure_report: None,
-        })
-    } else {
-        let failure = validate_failure_report(&failure_report)?;
-        Ok(ValidatedReport {
-            report,
-            score,
-            passed,
-            failure_report: Some(failure),
-        })
+    if let Some(diagnostic) = diagnostic {
+        report.insert("diagnostic".to_string(), diagnostic);
     }
+    Ok(Value::Object(report))
 }
 
 struct VerifiedFile {
@@ -370,15 +433,41 @@ fn subscore(scores: &Map<String, Value>, field: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("VLM report scores.{field} must be an integer from 0 through 3."))
 }
 
+fn validate_exact_scores(scores: &Map<String, Value>, label: &str) -> Result<(), String> {
+    if scores.len() != 3
+        || scores
+            .keys()
+            .any(|field| !matches!(field.as_str(), "structure" | "components" | "proportions"))
+    {
+        return Err(format!(
+            "{label} scores must contain exactly structure, components, and proportions."
+        ));
+    }
+    for field in ["structure", "components", "proportions"] {
+        subscore(scores, field)?;
+    }
+    Ok(())
+}
+
 fn validate_findings(object: &Map<String, Value>) -> Result<(), String> {
-    for finding in object["findings"].as_array().expect("array checked") {
+    for finding in object
+        .get("findings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let finding = finding
             .as_object()
             .ok_or_else(|| "Each VLM finding must be an object.".to_string())?;
         required_string(finding, "severity", "VLM finding")?;
         required_string(finding, "message", "VLM finding")?;
     }
-    for inconsistency in object["inconsistencies"].as_array().expect("array checked") {
+    for inconsistency in object
+        .get("inconsistencies")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         if !inconsistency.is_object() && !inconsistency.is_string() {
             return Err("Each VLM inconsistency must be a string or object.".to_string());
         }
@@ -387,7 +476,12 @@ fn validate_findings(object: &Map<String, Value>) -> Result<(), String> {
 }
 
 fn validate_enumeration(object: &Map<String, Value>) -> Result<(), String> {
-    for entry in object["enumeration"].as_array().expect("array checked") {
+    for entry in object
+        .get("enumeration")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let entry = entry
             .as_object()
             .ok_or_else(|| "Each VLM enumeration entry must be an object.".to_string())?;
@@ -395,52 +489,6 @@ fn validate_enumeration(object: &Map<String, Value>) -> Result<(), String> {
         required_string(entry, "observed", "VLM enumeration entry")?;
     }
     Ok(())
-}
-
-fn has_major_problem(object: &Map<String, Value>) -> bool {
-    !object["inconsistencies"]
-        .as_array()
-        .expect("array checked")
-        .is_empty()
-        || object["findings"]
-            .as_array()
-            .expect("array checked")
-            .iter()
-            .any(|finding| {
-                finding
-                    .get("severity")
-                    .and_then(Value::as_str)
-                    .is_some_and(|severity| {
-                        matches!(
-                            severity.to_ascii_lowercase().as_str(),
-                            "major" | "error" | "critical"
-                        )
-                    })
-            })
-        || object["enumeration"]
-            .as_array()
-            .expect("array checked")
-            .iter()
-            .any(|entry| {
-                entry
-                    .get("observed")
-                    .and_then(Value::as_str)
-                    .is_some_and(|observed| {
-                        let normalized = observed.to_ascii_lowercase();
-                        normalized.contains("missing") || normalized.contains("absent")
-                    })
-            })
-}
-
-fn validate_failure_report(value: &Value) -> Result<Value, String> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| "A failing VLM report requires failureReport object.".to_string())?;
-    require_exact_string(object, "contractType", FAILURE_REPORT_CONTRACT_TYPE)?;
-    required_string(object, "reason", "failureReport")?;
-    required_string(object, "summary", "failureReport")?;
-    require_exact_string(object, "nextAction", "outer_loop_refine_source")?;
-    Ok(value.clone())
 }
 
 pub fn validate_evaluation_kind(evaluation: &CadValidationEvaluation) -> Result<(), String> {
@@ -474,7 +522,7 @@ mod tests {
             report: None,
             passed: None,
             score: None,
-            pass_threshold: 0.8,
+            pass_threshold: VLM_PASS_THRESHOLD,
             error: None,
             created_at: "2026-08-13T00:00:00Z".to_string(),
             started_at: Some("2026-08-13T00:00:01Z".to_string()),
@@ -482,7 +530,7 @@ mod tests {
         }
     }
 
-    fn pass_report() -> Value {
+    fn evaluator_report(scores: [u64; 3]) -> Value {
         json!({
             "contractType": REPORT_CONTRACT_TYPE,
             "evaluationId": "evaluation-1",
@@ -492,56 +540,73 @@ mod tests {
             "artifactId": "artifact-1",
             "kind": "vlm",
             "attempt": 2,
-            "score": 1.0,
-            "passed": true,
-            "scores": { "structure": 3, "components": 3, "proportions": 3 },
-            "composite": 9,
-            "findings": [],
-            "enumeration": [{ "planName": "body", "observed": "present" }],
-            "inconsistencies": [],
-            "diagnostic": "All requested components are visible.",
-            "failureReport": null
+            "scores": {
+                "structure": scores[0],
+                "components": scores[1],
+                "proportions": scores[2]
+            }
         })
     }
 
     #[test]
-    fn strict_report_accepts_exact_rational_score_and_identity() {
-        let validated = validate_report(&evaluation(), pass_report()).unwrap();
+    fn receiver_derives_score_and_passed_from_evaluator_subscores() {
+        let validated = validate_report(&evaluation(), evaluator_report([2, 2, 3])).unwrap();
         assert!(validated.passed);
-        assert_eq!(validated.score, 1.0);
+        assert_eq!(validated.score, 7.0 / 9.0);
         assert!(validated.failure_report.is_none());
+        assert_eq!(validated.report["composite"], 7);
+        assert_eq!(validated.report["score"], 7.0 / 9.0);
+        assert_eq!(validated.report["passed"], true);
+        assert_eq!(validated.report["failureReport"], Value::Null);
     }
 
     #[test]
-    fn strict_report_rejects_identity_and_score_contract_drift() {
-        let mut identity = pass_report();
+    fn strict_report_rejects_identity_drift_and_evaluator_owned_passed() {
+        let mut identity = evaluator_report([3, 3, 3]);
         identity["runId"] = json!("other-run");
         assert!(validate_report(&evaluation(), identity)
             .unwrap_err()
             .contains("runId mismatch"));
 
-        let mut score = pass_report();
-        score["score"] = json!(0.99);
-        assert!(validate_report(&evaluation(), score)
+        let mut passed = evaluator_report([3, 3, 3]);
+        passed["passed"] = json!(true);
+        assert!(validate_report(&evaluation(), passed)
             .unwrap_err()
-            .contains("composite/9"));
+            .contains("application-owned field passed"));
     }
 
     #[test]
-    fn strict_report_rejects_synthetic_pass_and_requires_failure_contract() {
-        let mut missing = pass_report();
-        missing["enumeration"][0]["observed"] = json!("major component missing");
-        assert!(validate_report(&evaluation(), missing)
-            .unwrap_err()
-            .contains("major missing"));
+    fn receiver_requires_both_composite_and_per_item_score_gates() {
+        let below_composite = validate_report(&evaluation(), evaluator_report([2, 2, 2])).unwrap();
+        assert!(!below_composite.passed);
+        assert_eq!(below_composite.report["composite"], 6);
+        assert_eq!(below_composite.report["passed"], false);
+        assert_eq!(
+            below_composite.report["failureReport"]["reason"],
+            "vlm_score_gate_failed"
+        );
 
-        let mut failed = pass_report();
-        failed["passed"] = json!(false);
-        failed["score"] = json!(2.0 / 3.0);
-        failed["scores"] = json!({ "structure": 2, "components": 2, "proportions": 2 });
-        failed["composite"] = json!(6);
-        assert!(validate_report(&evaluation(), failed)
-            .unwrap_err()
-            .contains("failureReport object"));
+        let low_item = validate_report(&evaluation(), evaluator_report([1, 3, 3])).unwrap();
+        assert_eq!(low_item.report["composite"], 7);
+        assert!(!low_item.passed);
+    }
+
+    #[test]
+    fn inconsistencies_are_optional_and_do_not_override_numeric_pass() {
+        let mut report = evaluator_report([3, 2, 2]);
+        report["inconsistencies"] = json!(["The rear view appears slightly asymmetric."]);
+        report["findings"] = json!([{
+            "severity": "error",
+            "message": "A visible mismatch remains, recorded independently of scoring."
+        }]);
+        let validated = validate_report(&evaluation(), report).unwrap();
+        assert!(validated.passed);
+        assert_eq!(
+            validated.report["inconsistencies"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

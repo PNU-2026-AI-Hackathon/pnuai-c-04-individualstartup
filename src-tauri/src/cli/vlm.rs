@@ -1,5 +1,5 @@
 use crate::cli::artifacts::{artifact_filesystem_path, base64_encode, ok_cli_diagnostics};
-use crate::cli::support::{require_contract_type, CliError, CliResult};
+use crate::cli::support::{require_contract_type, CliError, CliResult, ParsedArgs};
 use crate::protocol::{CadArtifact, CadArtifactKind, CadModelPlan, PersistRuntimeArtifactInput};
 use crate::session_service::SessionService;
 use serde_json::{json, Value};
@@ -7,6 +7,59 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+pub(super) fn build_vlm_submission(args: &ParsedArgs) -> CliResult<Value> {
+    args.require_only(&[
+        "structure",
+        "components",
+        "proportions",
+        "inconsistency",
+        "diagnostic",
+    ])?;
+    let structure = parse_subscore(args, "structure")?;
+    let components = parse_subscore(args, "components")?;
+    let proportions = parse_subscore(args, "proportions")?;
+    let mut submission = serde_json::Map::from_iter([
+        (
+            "contractType".to_string(),
+            json!(crate::validation_plane::contract::SUBMISSION_CONTRACT_TYPE),
+        ),
+        (
+            "scores".to_string(),
+            json!({
+                "structure": structure,
+                "components": components,
+                "proportions": proportions,
+            }),
+        ),
+    ]);
+    if let Some(inconsistency) = optional_non_empty(args, "inconsistency")? {
+        submission.insert("inconsistencies".to_string(), json!([inconsistency]));
+    }
+    if let Some(diagnostic) = optional_non_empty(args, "diagnostic")? {
+        submission.insert("diagnostic".to_string(), json!(diagnostic));
+    }
+    Ok(Value::Object(submission))
+}
+
+fn parse_subscore(args: &ParsedArgs, name: &str) -> CliResult<u64> {
+    let raw = args.required(name)?;
+    raw.parse::<u64>()
+        .ok()
+        .filter(|score| *score <= 3)
+        .ok_or_else(|| {
+            CliError::invalid_input(format!("--{name} must be an integer from 0 through 3."))
+        })
+}
+
+fn optional_non_empty<'a>(args: &'a ParsedArgs, name: &str) -> CliResult<Option<&'a str>> {
+    match args.optional(name) {
+        Some(value) if value.trim().is_empty() => Err(CliError::invalid_input(format!(
+            "--{name} cannot be empty."
+        ))),
+        value => Ok(value),
+    }
+}
 
 pub(crate) fn render_vlm_images_for_artifact(
     service: &SessionService,

@@ -44,6 +44,18 @@ pub fn finalize_main() -> i32 {
     run("cadastrophe-finalize", workflow_commands::finalize)
 }
 
+pub fn vlm_submit_main() -> i32 {
+    const COMMAND: &str = "cadastrophe-vlm-submit";
+    let parsed = match parse_args(std::env::args().skip(1)) {
+        Ok(parsed) => parsed,
+        Err(error) => return emit_error(COMMAND, false, error),
+    };
+    match vlm::build_vlm_submission(&parsed) {
+        Ok(output) => emit_success(COMMAND, parsed.pretty, output),
+        Err(error) => emit_error(COMMAND, parsed.pretty, error),
+    }
+}
+
 fn run(
     command: &'static str,
     handler: fn(&ParsedArgs, &SessionService, &PathBuf) -> CliResult<CommandOutput>,

@@ -971,6 +971,56 @@ fn write_json_file(app_data_dir: &PathBuf, name: &str, value: &Value) -> PathBuf
     path
 }
 
+#[test]
+fn vlm_submit_builds_only_validated_score_submission_data() {
+    let submission = vlm::build_vlm_submission(&args([
+        ("components", "3"),
+        ("proportions", "2"),
+        ("structure", "3"),
+        ("inconsistency", "rear view differs slightly"),
+        ("diagnostic", "all requested components are visible"),
+    ]))
+    .unwrap();
+    assert_eq!(
+        submission,
+        json!({
+            "contractType": "cadastrophe.vlm_submission.v1",
+            "scores": {"structure": 3, "components": 3, "proportions": 2},
+            "inconsistencies": ["rear view differs slightly"],
+            "diagnostic": "all requested components are visible"
+        })
+    );
+
+    assert!(vlm::build_vlm_submission(&args([
+        ("components", "4"),
+        ("proportions", "2"),
+        ("structure", "3"),
+    ]))
+    .unwrap_err()
+    .message
+    .contains("0 through 3"));
+    assert!(vlm::build_vlm_submission(&args([
+        ("components", "3"),
+        ("proportions", "2"),
+        ("structure", "3"),
+        ("passed", "true"),
+    ]))
+    .unwrap_err()
+    .message
+    .contains("Unsupported --passed"));
+}
+
+#[test]
+fn cli_argument_parser_rejects_duplicate_options() {
+    let error = parse_args(
+        ["--structure", "3", "--structure", "2"]
+            .into_iter()
+            .map(str::to_string),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("Duplicate --structure"));
+}
+
 fn draft_plan_value() -> Value {
     json!({
         "summary": "Parametric wall bracket with a back plate, two screw holes, and a forward support tab.",

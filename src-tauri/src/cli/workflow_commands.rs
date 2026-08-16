@@ -4,6 +4,7 @@ use super::workflow_support::{
 };
 use super::*;
 use crate::protocol::{CadValidationBatchCreate, CadValidationCheckCreate, CadValidationCheckKind};
+use crate::validation_plane::contract::VLM_PASS_THRESHOLD;
 use std::path::Path;
 
 pub(super) fn finalize(
@@ -15,13 +16,12 @@ pub(super) fn finalize(
     let run_id = resolve_active_run_id(args, service, &session_id)?;
     ensure_run_belongs_to_session(service, &session_id, &run_id)?;
     let revision_id = resolve_active_revision_id(args, service, &session_id)?;
-    let pass_threshold =
-        parse_optional_f64(args.optional("pass-threshold"), 0.8, "pass-threshold")?;
-    if !pass_threshold.is_finite() || !(0.0..=1.0).contains(&pass_threshold) {
+    if args.optional("pass-threshold").is_some() {
         return Err(CliError::invalid_input(
-            "--pass-threshold must be finite and between 0.0 and 1.0.",
+            "--pass-threshold is no longer configurable; VLM passing requires at least 7/9 total and 2/3 in every subscore.",
         ));
     }
+    let pass_threshold = VLM_PASS_THRESHOLD;
     require_revision_in_session(service, &session_id, &revision_id)?;
 
     with_tool_events(

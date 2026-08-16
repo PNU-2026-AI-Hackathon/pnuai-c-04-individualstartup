@@ -223,12 +223,12 @@ mod tests {
             "revisionId": "revision-1",
             "artifactId": "artifact-1",
             "userRequest": "Create a wall bracket.",
-            "passThreshold": 0.8,
+            "passThreshold": 7.0 / 9.0,
             "renderedImage": {
                 "artifactId": "render-artifact-1",
                 "mediaType": "image/png"
             },
-            "outputContract": "cadastrophe.vlm_judge_report.v1"
+            "submissionContract": "cadastrophe.vlm_submission.v1"
         })
     }
 
@@ -251,11 +251,11 @@ mod tests {
         assert!(prompt.contains("\"evaluationId\": \"evaluation-1\""));
         assert!(prompt.contains("\"userRequest\": \"Create a wall bracket.\""));
         assert!(prompt.contains("single rendered image attached to this\nturn"));
-        assert!(prompt.contains("Return exactly one strict JSON object"));
-        assert!(prompt.contains("Output no Markdown fence"));
-        assert!(prompt.contains("If `passed` is `true`, `inconsistencies` must be an empty array"));
-        assert!(prompt.contains("limitations of the rendered image, and minor concerns as"));
-        assert!(prompt.contains("`warning` findings instead"));
+        assert!(prompt.contains("cadastrophe-vlm-submit --components <0-3>"));
+        assert!(prompt.contains("The CLI call is the only submission"));
+        assert!(prompt.contains("Do not place scores or report JSON in your"));
+        assert!(prompt
+            .contains("inconsistency may be submitted even when the numeric score later passes"));
         assert!(!prompt.contains("Codex Skill invocation"));
         assert!(!prompt.contains("{{EVALUATION_CONTRACT_JSON}}"));
     }
