@@ -4,8 +4,7 @@ import path from "node:path";
 const obsoleteCommands = [
   "cadastrophe-preview-render",
   "cadastrophe-artifact-export",
-  "cadastrophe-evaluate-structural",
-  "cadastrophe-vlm-submit"
+  "cadastrophe-evaluate-structural"
 ];
 
 for (const profile of ["debug", "release"]) {

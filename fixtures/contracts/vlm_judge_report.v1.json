@@ -1,6 +1,12 @@
 {
   "contractType": "cadastrophe.vlm_judge_report.v1",
-  "score": 0.72,
+  "scores": {
+    "structure": 1,
+    "components": 3,
+    "proportions": 3
+  },
+  "composite": 7,
+  "score": 0.7777777777777778,
   "passed": false,
   "findings": [
     {
@@ -10,7 +16,8 @@
   ],
   "failureReport": {
     "contractType": "cadastrophe.failure_report.v1",
-    "reason": "missing_support_tab",
+    "reason": "vlm_score_gate_failed",
+    "summary": "VLM score gate requires every subscore to be at least 2; structure received 1.",
     "nextAction": "outer_loop_refine_source"
   }
 }

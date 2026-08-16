@@ -51,7 +51,13 @@
       },
       "vlmReport": {
         "contractType": "cadastrophe.vlm_judge_report.v1",
-        "score": 0.72,
+        "scores": {
+          "structure": 1,
+          "components": 3,
+          "proportions": 3
+        },
+        "composite": 7,
+        "score": 0.7777777777777778,
         "passed": false
       },
       "failureReport": {
@@ -83,7 +89,7 @@
         "profileHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "gcodeArtifactId": "artifact-fixture-gcode"
       },
-      "passThreshold": 0.8,
+      "passThreshold": 0.7777777777777778,
       "createdAt": "2026-07-29T00:00:02.000Z"
     }
   ]
