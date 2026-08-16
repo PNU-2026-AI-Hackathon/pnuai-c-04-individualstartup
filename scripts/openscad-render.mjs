@@ -22,7 +22,7 @@ try {
   const inputPath = "/cadastrophe-input.scad";
   const outputPath = "/cadastrophe-output.stl";
   openscad.FS.writeFile(inputPath, source);
-  const exitCode = openscad.callMain([inputPath, "--enable=manifold", "-o", outputPath]);
+  const exitCode = openscad.callMain([inputPath, "--backend=manifold", "-o", outputPath]);
   if (exitCode !== 0) {
     writeResult({
       diagnostics: diagnostics(false, [
