@@ -40,6 +40,15 @@ struct TriangleIndexHash {
     }
 };
 
+constexpr std::size_t kNoIndex = std::numeric_limits<std::size_t>::max();
+
+struct KdNode {
+    std::size_t vertex_index = 0;
+    std::size_t left = kNoIndex;
+    std::size_t right = kNoIndex;
+    int axis = 0;
+};
+
 Vec3 operator+(const Vec3& a, const Vec3& b) {
     return {a.x + b.x, a.y + b.y, a.z + b.z};
 }
@@ -68,6 +77,63 @@ double component(const Vec3& v, int axis) {
     if (axis == 0) return v.x;
     if (axis == 1) return v.y;
     return v.z;
+}
+
+std::size_t build_kd_tree(std::vector<std::size_t>& indices,
+                          std::size_t begin,
+                          std::size_t end,
+                          int depth,
+                          const std::vector<Vec3>& vertices,
+                          std::vector<KdNode>& nodes) {
+    if (begin == end) return kNoIndex;
+
+    const int axis = depth % 3;
+    const std::size_t middle = begin + (end - begin) / 2;
+    std::nth_element(
+        indices.begin() + static_cast<std::ptrdiff_t>(begin),
+        indices.begin() + static_cast<std::ptrdiff_t>(middle),
+        indices.begin() + static_cast<std::ptrdiff_t>(end),
+        [&](std::size_t left, std::size_t right) {
+            const double left_value = component(vertices[left], axis);
+            const double right_value = component(vertices[right], axis);
+            return left_value != right_value ? left_value < right_value : left < right;
+        });
+
+    const std::size_t node_index = nodes.size();
+    nodes.push_back({indices[middle], kNoIndex, kNoIndex, axis});
+    const std::size_t left =
+        build_kd_tree(indices, begin, middle, depth + 1, vertices, nodes);
+    const std::size_t right =
+        build_kd_tree(indices, middle + 1, end, depth + 1, vertices, nodes);
+    nodes[node_index].left = left;
+    nodes[node_index].right = right;
+    return node_index;
+}
+
+void radius_search(const std::vector<KdNode>& nodes,
+                   std::size_t node_index,
+                   const std::vector<Vec3>& vertices,
+                   const Vec3& target,
+                   double radius_squared,
+                   std::vector<std::size_t>& neighbors) {
+    if (node_index == kNoIndex) return;
+
+    const KdNode& node = nodes[node_index];
+    const Vec3& candidate = vertices[node.vertex_index];
+    const double dx = candidate.x - target.x;
+    const double dy = candidate.y - target.y;
+    const double dz = candidate.z - target.z;
+    if (dx * dx + dy * dy + dz * dz < radius_squared) {
+        neighbors.push_back(node.vertex_index);
+    }
+
+    const double delta = component(target, node.axis) - component(candidate, node.axis);
+    const std::size_t near_child = delta < 0.0 ? node.left : node.right;
+    const std::size_t far_child = delta < 0.0 ? node.right : node.left;
+    radius_search(nodes, near_child, vertices, target, radius_squared, neighbors);
+    if (delta * delta < radius_squared) {
+        radius_search(nodes, far_child, vertices, target, radius_squared, neighbors);
+    }
 }
 
 Edge ordered_edge(std::size_t a, std::size_t b) {
@@ -460,6 +526,122 @@ bool TriangleMeshValidator::HasDegenerateTriangles() const {
         }
     }
     return false;
+}
+
+TriangleMeshValidator& TriangleMeshValidator::MergeCloseVertices(double eps) {
+    if (!std::isfinite(eps) || eps <= 0.0) {
+        throw std::invalid_argument("merge distance must be finite and positive");
+    }
+    if (vertices_.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        throw std::invalid_argument("vertex count exceeds Open3D's int range");
+    }
+    for (const Vec3& vertex : vertices_) {
+        if (!std::isfinite(vertex.x) || !std::isfinite(vertex.y) ||
+            !std::isfinite(vertex.z)) {
+            throw std::invalid_argument("mesh contains a non-finite vertex coordinate");
+        }
+    }
+
+    std::vector<std::size_t> kd_indices(vertices_.size());
+    for (std::size_t index = 0; index < kd_indices.size(); ++index) {
+        kd_indices[index] = index;
+    }
+    std::vector<KdNode> kd_nodes;
+    kd_nodes.reserve(vertices_.size());
+    const std::size_t kd_root =
+        build_kd_tree(kd_indices, 0, kd_indices.size(), 0, vertices_, kd_nodes);
+
+    std::vector<std::size_t> old_to_new(vertices_.size(), kNoIndex);
+    std::vector<Vec3> merged_vertices;
+    merged_vertices.reserve(vertices_.size());
+    std::vector<std::size_t> neighbors;
+    const double eps_squared = eps * eps;
+    for (std::size_t vertex_index = 0; vertex_index < vertices_.size();
+         ++vertex_index) {
+        if (old_to_new[vertex_index] != kNoIndex) continue;
+
+        const std::size_t merged_index = merged_vertices.size();
+        old_to_new[vertex_index] = merged_index;
+        Vec3 merged = vertices_[vertex_index];
+        std::size_t merged_count = 1;
+
+        neighbors.clear();
+        radius_search(kd_nodes, kd_root, vertices_, vertices_[vertex_index],
+                      eps_squared, neighbors);
+        std::sort(neighbors.begin(), neighbors.end(), [&](std::size_t left,
+                                                          std::size_t right) {
+            const Vec3& origin = vertices_[vertex_index];
+            const Vec3& left_vertex = vertices_[left];
+            const Vec3& right_vertex = vertices_[right];
+            const double left_dx = left_vertex.x - origin.x;
+            const double left_dy = left_vertex.y - origin.y;
+            const double left_dz = left_vertex.z - origin.z;
+            const double right_dx = right_vertex.x - origin.x;
+            const double right_dy = right_vertex.y - origin.y;
+            const double right_dz = right_vertex.z - origin.z;
+            const double left_distance =
+                left_dx * left_dx + left_dy * left_dy + left_dz * left_dz;
+            const double right_distance =
+                right_dx * right_dx + right_dy * right_dy + right_dz * right_dz;
+            return left_distance != right_distance ? left_distance < right_distance
+                                                   : left < right;
+        });
+        for (std::size_t neighbor : neighbors) {
+            if (neighbor == vertex_index || old_to_new[neighbor] != kNoIndex) {
+                continue;
+            }
+            merged = merged + vertices_[neighbor];
+            old_to_new[neighbor] = merged_index;
+            ++merged_count;
+        }
+        merged_vertices.push_back(merged / static_cast<double>(merged_count));
+    }
+
+    vertices_.swap(merged_vertices);
+    for (Triangle& triangle : triangles_) {
+        triangle[0] = old_to_new[triangle[0]];
+        triangle[1] = old_to_new[triangle[1]];
+        triangle[2] = old_to_new[triangle[2]];
+    }
+    return *this;
+}
+
+TriangleMeshValidator& TriangleMeshValidator::RemoveDegenerateTriangles() {
+    std::size_t next = 0;
+    for (std::size_t index = 0; index < triangles_.size(); ++index) {
+        const Triangle& triangle = triangles_[index];
+        if (triangle[0] != triangle[1] && triangle[1] != triangle[2] &&
+            triangle[2] != triangle[0]) {
+            triangles_[next++] = triangle;
+        }
+    }
+    triangles_.resize(next);
+    return *this;
+}
+
+TriangleMeshValidator& TriangleMeshValidator::RemoveUnreferencedVertices() {
+    std::vector<bool> referenced(vertices_.size(), false);
+    for (const Triangle& triangle : triangles_) {
+        referenced[triangle[0]] = true;
+        referenced[triangle[1]] = true;
+        referenced[triangle[2]] = true;
+    }
+
+    std::vector<std::size_t> old_to_new(vertices_.size(), kNoIndex);
+    std::size_t next = 0;
+    for (std::size_t index = 0; index < vertices_.size(); ++index) {
+        if (!referenced[index]) continue;
+        vertices_[next] = vertices_[index];
+        old_to_new[index] = next++;
+    }
+    vertices_.resize(next);
+
+    for (Triangle& triangle : triangles_) {
+        triangle[0] = old_to_new[triangle[0]];
+        triangle[1] = old_to_new[triangle[1]];
+        triangle[2] = old_to_new[triangle[2]];
+    }
+    return *this;
 }
 
 double TriangleMeshValidator::GetVolume() const {

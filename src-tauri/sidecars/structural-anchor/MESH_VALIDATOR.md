@@ -19,5 +19,12 @@ The traced behavior is:
   non-self-intersecting conjunction. Orientability is intentionally separate.
 - `HasDegenerateTriangles()` uses the same repeated-index predicate as
   `RemoveDegenerateTriangles()` but never mutates the mesh.
+- `MergeCloseVertices(eps)` follows Open3D's input-order grouping, averages
+  each representative and its still-unmapped radius neighbors, and remaps all
+  triangle indices. Mesh loading uses an epsilon of `1e-6`.
+- `RemoveDegenerateTriangles()` compacts the triangle array using Open3D's
+  repeated-index predicate.
+- `RemoveUnreferencedVertices()` preserves referenced vertex order while
+  compacting the vertex array and remapping triangle indices.
 - `GetVolume()` enforces watertightness and orientability, then returns the
   absolute sum of signed origin-tetrahedron volumes.

@@ -28,6 +28,16 @@ public:
     bool IsWatertight() const;
     bool HasDegenerateTriangles() const;
 
+    /// Merges vertices within eps of the first unmerged vertex in input order,
+    /// averages their positions, and remaps triangle indices.
+    TriangleMeshValidator& MergeCloseVertices(double eps = 1e-6);
+
+    /// Removes triangles containing the same vertex index more than once.
+    TriangleMeshValidator& RemoveDegenerateTriangles();
+
+    /// Removes vertices not referenced by any triangle and compacts indices.
+    TriangleMeshValidator& RemoveUnreferencedVertices();
+
     /// Returns the absolute signed-tetrahedra volume. As in Open3D, volume is
     /// only defined for watertight, orientable meshes.
     double GetVolume() const;
