@@ -13,23 +13,13 @@ struct MeshStats {
     std::string error;
     std::uint64_t bytes = 0;
     std::string sha256;
-    std::size_t raw_triangles = 0;
-    std::size_t degenerate_triangles = 0;
-    bool has_degenerate_triangles = false;
-    std::size_t validated_triangles = 0;
-    std::size_t raw_vertices = 0;
-    std::size_t unique_vertices = 0;
     std::array<double, 3> bbox = {0.0, 0.0, 0.0};
-    double bbox_volume = 0.0;
-    double solid_volume = 0.0;
     bool has_volume = false;
     bool edge_manifold_closed = false;
-    bool edge_manifold_with_boundary = false;
     bool vertex_manifold = false;
     bool orientable = false;
     bool self_intersecting = false;
     bool watertight = false;
-    bool topology_approximate = false;
 };
 
 void update_bbox(const Vec3& v, Vec3& min_v, Vec3& max_v, bool& initialized) {
@@ -83,10 +73,10 @@ TriangleMeshValidator index_triangle_soup(const std::vector<TriangleFacet>& face
 
 void finalize_mesh_stats(MeshStats& stats, const std::vector<TriangleFacet>& facets) {
     TriangleMeshValidator mesh = index_triangle_soup(facets);
-    stats.raw_triangles = facets.size();
-    stats.validated_triangles = facets.size();
-    stats.raw_vertices = facets.size() * 3;
-    stats.unique_vertices = mesh.vertices().size();
+
+    mesh.MergeCloseVertices(1e-6);
+    mesh.RemoveDegenerateTriangles();
+    mesh.RemoveUnreferencedVertices();
 
     Vec3 min_v;
     Vec3 max_v;
@@ -96,25 +86,17 @@ void finalize_mesh_stats(MeshStats& stats, const std::vector<TriangleFacet>& fac
     }
     if (has_bbox) {
         stats.bbox = {max_v.x - min_v.x, max_v.y - min_v.y, max_v.z - min_v.z};
-        stats.bbox_volume = stats.bbox[0] * stats.bbox[1] * stats.bbox[2];
     }
 
-    for (const cadastrophe::mesh::Triangle& triangle : mesh.triangles()) {
-        if (triangle[0] == triangle[1] || triangle[1] == triangle[2] ||
-            triangle[2] == triangle[0]) {
-            ++stats.degenerate_triangles;
-        }
-    }
-    stats.has_degenerate_triangles = mesh.HasDegenerateTriangles();
     stats.edge_manifold_closed = mesh.IsEdgeManifold(false);
-    stats.edge_manifold_with_boundary = mesh.IsEdgeManifold(true);
     stats.vertex_manifold = mesh.IsVertexManifold();
     stats.orientable = mesh.IsOrientable();
     stats.self_intersecting = mesh.IsSelfIntersecting();
-    stats.watertight = mesh.IsWatertight();
+    stats.watertight = stats.edge_manifold_closed
+        && stats.vertex_manifold
+        && !stats.self_intersecting;
     if (stats.watertight && stats.orientable) {
-        stats.solid_volume = mesh.GetVolume();
-        stats.has_volume = stats.solid_volume > 0.0;
+        stats.has_volume = mesh.GetVolume() > 0.0;
     }
     stats.loaded = true;
 }

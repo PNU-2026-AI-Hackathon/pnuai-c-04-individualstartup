@@ -37,39 +37,12 @@
       "severity": "info"
     },
     {
-      "bbox": [1, 1, 1],
-      "bboxVolume": 1,
-      "message": "Mesh has positive vertices, triangles, and bounding box volume.",
-      "name": "mesh_non_empty",
-      "passed": true,
-      "severity": "info",
-      "triangles": 12,
-      "vertices": 8
-    },
-    {
-      "degenerateTriangles": 0,
-      "hasDegenerateTriangles": false,
-      "message": "Mesh has no index-degenerate triangles.",
-      "name": "mesh_cleanup",
-      "passed": true,
-      "rawTriangles": 12,
-      "severity": "info",
-      "uniqueVertices": 8,
-      "validatedTriangles": 12
-    },
-    {
-      "edgeManifoldClosed": true,
-      "edgeManifoldWithBoundary": true,
       "hasVolume": true,
-      "isSelfIntersecting": false,
-      "isVertexManifold": true,
       "message": "Solid/topology checks passed.",
       "name": "topology",
       "orientable": true,
       "passed": true,
       "severity": "info",
-      "topologyApproximate": false,
-      "volume": 1,
       "watertight": true
     },
     {

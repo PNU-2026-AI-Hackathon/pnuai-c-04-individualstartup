@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -59,12 +60,44 @@ test("structural anchor sidecar accepts stdin input contract", () => {
       "runtime_diagnostics",
       "artifact_manifest",
       "stl_load",
-      "mesh_non_empty",
-      "mesh_cleanup",
       "topology",
       "aspect_ratio"
     ]
   );
+});
+
+test("structural anchor reports topology diagnostics only for a non-watertight mesh", () => {
+  const executable = buildSidecar();
+  const outputDir = mkdtempSync(join(tmpdir(), "cadastrophe-open-mesh-"));
+  const stlPath = join(outputDir, "open-cube.stl");
+  const cube = readFileSync(join(fixtureRoot, "cube.stl"), "utf8");
+  const stl = cube.replace(/  facet normal[\s\S]*?  endfacet\n/, "");
+  writeFileSync(stlPath, stl);
+
+  const input = JSON.parse(readFileSync(join(fixtureRoot, "cube_input.v1.json"), "utf8"));
+  input.planPath = join(fixtureRoot, "cube_plan.v1.json");
+  input.stlPath = stlPath;
+  input.artifactManifest.bytes = Buffer.byteLength(stl);
+  input.artifactManifest.sha256 = createHash("sha256").update(stl).digest("hex");
+
+  const result = spawnSync(executable, [], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    input: JSON.stringify(input)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  const topology = report.checks.find((check: { name: string }) => check.name === "topology");
+  assert.deepEqual(
+    Object.keys(topology).sort(),
+    ["hasVolume", "message", "name", "orientable", "passed", "severity", "watertight"]
+  );
+  assert.equal(topology.watertight, false);
+  assert.equal(report.passed, false);
+  assert.equal(report.failureReport.edgeManifoldClosed, false);
+  assert.equal(report.failureReport.selfIntersecting, false);
+  assert.equal(report.failureReport.vertexManifold, true);
 });
 
 test("VLM renderer sidecar emits non-empty 9-view PNG manifest for fixture STL", () => {
