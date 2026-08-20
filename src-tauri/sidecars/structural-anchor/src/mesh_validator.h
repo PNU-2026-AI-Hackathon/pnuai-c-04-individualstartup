@@ -14,8 +14,9 @@ struct Vec3 {
 
 using Triangle = std::array<std::size_t, 3>;
 
-/// A minimal, dependency-free triangle-mesh validator whose topology and
-/// intersection semantics mirror Open3D's legacy geometry::TriangleMesh.
+/// A minimal, dependency-free triangle-mesh validator whose topology semantics
+/// mirror Open3D's legacy geometry::TriangleMesh. Self-intersection uses the
+/// tolerance-consistent predicate in mesh_intersection_fixed.h.
 class TriangleMeshValidator {
 public:
     TriangleMeshValidator(std::vector<Vec3> vertices,

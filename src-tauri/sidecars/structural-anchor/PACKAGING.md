@@ -56,6 +56,17 @@ Minimum input:
 Relative `*Path` values are resolved from the input file directory when
 `--input` is used, otherwise from the current working directory.
 
+For direct development-time mesh debugging without an input JSON document:
+
+```sh
+src-tauri/target/debug/cadastrophe-structural-anchor \
+  --input-stl path/to/model.stl \
+  --pretty
+```
+
+This shortcut prints only `watertight`, `orientable`, and `hasVolume`. A
+non-watertight mesh also includes its topology details in `failureReport`.
+
 ## Platform Checklist
 
 macOS:

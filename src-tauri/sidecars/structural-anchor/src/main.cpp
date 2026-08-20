@@ -35,6 +35,7 @@ namespace {
 int main(int argc, char** argv) {
     try {
         std::string input_path;
+        std::string input_stl_path;
         bool pretty = false;
         for (int i = 1; i < argc; ++i) {
             std::string arg = argv[i];
@@ -53,7 +54,29 @@ int main(int argc, char** argv) {
                 input_path = argv[++i];
                 continue;
             }
+            if (arg == "--input-stl") {
+                if (i + 1 >= argc) {
+                    throw std::runtime_error("--input-stl requires a path");
+                }
+                input_stl_path = argv[++i];
+                continue;
+            }
             throw std::runtime_error("unknown argument: " + arg);
+        }
+
+        if (!input_path.empty() && !input_stl_path.empty()) {
+            throw std::runtime_error("--input and --input-stl cannot be used together");
+        }
+
+        Json report;
+        if (!input_stl_path.empty()) {
+            fs::path stl_path(input_stl_path);
+            if (!stl_path.is_absolute()) {
+                stl_path = fs::weakly_canonical(fs::current_path() / stl_path);
+            }
+            report = evaluate_stl(stl_path);
+            std::cout << dump_json(report, pretty ? 2 : -1) << "\n";
+            return 0;
         }
 
         fs::path base_dir = fs::current_path();
@@ -69,7 +92,7 @@ int main(int argc, char** argv) {
             input_text = read_stdin();
         }
         Json input = JsonParser(input_text).parse();
-        Json report = evaluate(input, base_dir);
+        report = evaluate(input, base_dir);
         std::cout << dump_json(report, pretty ? 2 : -1) << "\n";
         return 0;
     } catch (const std::exception& error) {

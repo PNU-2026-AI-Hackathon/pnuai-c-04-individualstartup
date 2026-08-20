@@ -29,6 +29,16 @@ Json check_json(
     return Json::object(std::move(object));
 }
 
+void add_watertight_failure_details(std::map<std::string, Json>& failure_report,
+                                    const MeshStats& mesh) {
+    failure_report.emplace(
+        "edgeManifoldClosed", Json::boolean(mesh.edge_manifold_closed));
+    failure_report.emplace(
+        "selfIntersecting", Json::boolean(mesh.self_intersecting));
+    failure_report.emplace(
+        "vertexManifold", Json::boolean(mesh.vertex_manifold));
+}
+
 std::string reason_for_failed_check(const std::vector<Json>& checks) {
     for (const Json& check : checks) {
         if (!get_bool(check, "passed", false)) {
@@ -272,12 +282,7 @@ Json evaluate(const Json& input, const fs::path& base_dir) {
             {"reason", Json::string(reason.empty() ? "structural_anchor_failed" : reason)},
         };
         if (mesh.loaded && !mesh.watertight) {
-            failure_report.emplace(
-                "edgeManifoldClosed", Json::boolean(mesh.edge_manifold_closed));
-            failure_report.emplace(
-                "selfIntersecting", Json::boolean(mesh.self_intersecting));
-            failure_report.emplace(
-                "vertexManifold", Json::boolean(mesh.vertex_manifold));
+            add_watertight_failure_details(failure_report, mesh);
         }
         report.emplace(
             "failureReport",
@@ -285,4 +290,28 @@ Json evaluate(const Json& input, const fs::path& base_dir) {
         );
     }
     return Json::object(std::move(report));
+}
+
+Json evaluate_stl(const fs::path& stl_path) {
+    if (!fs::exists(stl_path)) {
+        throw std::runtime_error("STL file does not exist: " + stl_path.string());
+    }
+
+    const MeshStats mesh = load_mesh(stl_path);
+    if (!mesh.loaded) {
+        throw std::runtime_error(
+            mesh.error.empty() ? "STL mesh validation failed" : mesh.error);
+    }
+
+    std::map<std::string, Json> result{
+        {"hasVolume", Json::boolean(mesh.has_volume)},
+        {"orientable", Json::boolean(mesh.orientable)},
+        {"watertight", Json::boolean(mesh.watertight)},
+    };
+    if (!mesh.watertight) {
+        std::map<std::string, Json> failure_report;
+        add_watertight_failure_details(failure_report, mesh);
+        result.emplace("failureReport", Json::object(std::move(failure_report)));
+    }
+    return Json::object(std::move(result));
 }

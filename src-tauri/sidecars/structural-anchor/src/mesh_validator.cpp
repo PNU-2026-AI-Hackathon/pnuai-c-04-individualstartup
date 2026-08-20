@@ -1,8 +1,9 @@
 #include "mesh_validator.h"
+#include "mesh_intersection_fixed.h"
 
 // Topology behavior is independently implemented from Open3D 0.19.0's
-// TriangleMesh validation methods (MIT). Triangle/triangle intersection uses
-// the public-domain Tomas Möller algorithm with Open3D's input normalization.
+// TriangleMesh validation methods (MIT). The active triangle/triangle
+// intersection implementation is in mesh_intersection_fixed.cpp.
 
 #include <algorithm>
 #include <cmath>
@@ -327,6 +328,9 @@ bool triangle_triangle_intersects_normalized(
     return !(p_interval.second < q_interval.first || q_interval.second < p_interval.first);
 }
 
+// DEPRECATED: This is the former Tomas Möller-style predicate. It is retained
+// as an implementation record for the diagnosed near-coplanar false positive,
+// but production self-intersection checks no longer call it.
 bool triangle_triangle_intersects(
         const Vec3& p0, const Vec3& p1, const Vec3& p2,
         const Vec3& q0, const Vec3& q1, const Vec3& q2) {
@@ -354,6 +358,31 @@ bool shares_vertex(const Triangle& a, const Triangle& b) {
     for (std::size_t a_index : a) {
         for (std::size_t b_index : b) {
             if (a_index == b_index) return true;
+        }
+    }
+    return false;
+}
+
+[[maybe_unused, deprecated("use fixed::IsSelfIntersecting")]]
+bool is_self_intersecting_deprecated(
+        const std::vector<Vec3>& vertices,
+        const std::vector<Triangle>& triangles) {
+    for (std::size_t first = 0; first < triangles.size(); ++first) {
+        const Triangle& p = triangles[first];
+        const auto p_bounds = triangle_bounds(
+            vertices[p[0]], vertices[p[1]], vertices[p[2]]);
+        for (std::size_t second = first + 1; second < triangles.size(); ++second) {
+            const Triangle& q = triangles[second];
+            if (shares_vertex(p, q)) continue;
+            const auto q_bounds = triangle_bounds(
+                vertices[q[0]], vertices[q[1]], vertices[q[2]]);
+            if (aabb_intersects(p_bounds.first, p_bounds.second,
+                                q_bounds.first, q_bounds.second) &&
+                triangle_triangle_intersects(
+                    vertices[p[0]], vertices[p[1]], vertices[p[2]],
+                    vertices[q[0]], vertices[q[1]], vertices[q[2]])) {
+                return true;
+            }
         }
     }
     return false;
@@ -433,22 +462,7 @@ bool TriangleMeshValidator::IsVertexManifold() const {
 }
 
 bool TriangleMeshValidator::IsSelfIntersecting() const {
-    for (std::size_t first = 0; first < triangles_.size(); ++first) {
-        const Triangle& p = triangles_[first];
-        const auto p_bounds = triangle_bounds(vertices_[p[0]], vertices_[p[1]], vertices_[p[2]]);
-        for (std::size_t second = first + 1; second < triangles_.size(); ++second) {
-            const Triangle& q = triangles_[second];
-            if (shares_vertex(p, q)) continue;
-            const auto q_bounds = triangle_bounds(vertices_[q[0]], vertices_[q[1]], vertices_[q[2]]);
-            if (aabb_intersects(p_bounds.first, p_bounds.second,
-                                q_bounds.first, q_bounds.second) &&
-                triangle_triangle_intersects(vertices_[p[0]], vertices_[p[1]], vertices_[p[2]],
-                                             vertices_[q[0]], vertices_[q[1]], vertices_[q[2]])) {
-                return true;
-            }
-        }
-    }
-    return false;
+    return fixed::IsSelfIntersecting(vertices_, triangles_);
 }
 
 bool TriangleMeshValidator::IsOrientable() const {

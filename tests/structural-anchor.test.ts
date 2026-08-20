@@ -66,6 +66,24 @@ test("structural anchor sidecar accepts stdin input contract", () => {
   );
 });
 
+test("structural anchor accepts a direct STL development input", () => {
+  const executable = buildSidecar();
+  const output = execFileSync(executable, [
+    "--input-stl",
+    join(fixtureRoot, "cube.stl"),
+    "--pretty"
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.deepEqual(JSON.parse(output), {
+    hasVolume: true,
+    orientable: true,
+    watertight: true
+  });
+});
+
 test("structural anchor reports topology diagnostics only for a non-watertight mesh", () => {
   const executable = buildSidecar();
   const outputDir = mkdtempSync(join(tmpdir(), "cadastrophe-open-mesh-"));
@@ -98,6 +116,22 @@ test("structural anchor reports topology diagnostics only for a non-watertight m
   assert.equal(report.failureReport.edgeManifoldClosed, false);
   assert.equal(report.failureReport.selfIntersecting, false);
   assert.equal(report.failureReport.vertexManifold, true);
+
+  const directResult = spawnSync(executable, ["--input-stl", stlPath], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+  assert.equal(directResult.status, 0, directResult.stderr);
+  assert.deepEqual(JSON.parse(directResult.stdout), {
+    failureReport: {
+      edgeManifoldClosed: false,
+      selfIntersecting: false,
+      vertexManifold: true
+    },
+    hasVolume: false,
+    orientable: true,
+    watertight: false
+  });
 });
 
 test("VLM renderer sidecar emits non-empty 9-view PNG manifest for fixture STL", () => {
