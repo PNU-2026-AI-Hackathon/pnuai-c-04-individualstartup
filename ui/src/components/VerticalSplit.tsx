@@ -30,6 +30,7 @@ export function VerticalSplit({
   children: [ReactNode, ReactNode];
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const activePointerIdRef = useRef<number | null>(null);
   const [ratio, setRatio] = useState(() => readRatio(storageKey, defaultRatio, minRatio, maxRatio));
   const [dragging, setDragging] = useState(false);
 
@@ -45,18 +46,10 @@ export function VerticalSplit({
   useEffect(() => {
     if (!dragging) return;
     document.body.classList.add("split-resizing");
-    const handleMove = (event: globalThis.PointerEvent) => updateFromClientY(event.clientY);
-    const handleEnd = () => setDragging(false);
-    window.addEventListener("pointermove", handleMove);
-    window.addEventListener("pointerup", handleEnd);
-    window.addEventListener("pointercancel", handleEnd);
     return () => {
       document.body.classList.remove("split-resizing");
-      window.removeEventListener("pointermove", handleMove);
-      window.removeEventListener("pointerup", handleEnd);
-      window.removeEventListener("pointercancel", handleEnd);
     };
-  }, [dragging, minRatio, maxRatio]);
+  }, [dragging]);
 
   function updateFromClientY(clientY: number) {
     const bounds = containerRef.current?.getBoundingClientRect();
@@ -67,8 +60,24 @@ export function VerticalSplit({
   function handlePointerDown(event: PointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
     event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    activePointerIdRef.current = event.pointerId;
     setDragging(true);
     updateFromClientY(event.clientY);
+  }
+
+  function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (activePointerIdRef.current !== event.pointerId) return;
+    updateFromClientY(event.clientY);
+  }
+
+  function handleEnd(event: PointerEvent<HTMLDivElement>) {
+    if (activePointerIdRef.current !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    activePointerIdRef.current = null;
+    setDragging(false);
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -104,7 +113,10 @@ export function VerticalSplit({
         aria-valuenow={Math.round(ratio)}
         className="vertical-split-handle"
         onKeyDown={handleKeyDown}
+        onPointerCancel={handleEnd}
         onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handleEnd}
         role="separator"
         tabIndex={0}
         title={`Drag or use arrow keys to resize ${upperLabel} and ${lowerLabel}`}
@@ -120,8 +132,11 @@ function readRatio(storageKey: string, fallback: number, min: number, max: numbe
   const memoryValue = splitRatios.get(storageKey);
   if (memoryValue !== undefined) return clamp(memoryValue, min, max);
   try {
-    const storedValue = Number(window.sessionStorage.getItem(storageKey));
-    if (Number.isFinite(storedValue) && storedValue > 0) return clamp(storedValue, min, max);
+    const storedValue = window.sessionStorage.getItem(storageKey);
+    if (storedValue !== null && storedValue.trim() !== "") {
+      const parsedValue = Number(storedValue);
+      if (Number.isFinite(parsedValue)) return clamp(parsedValue, min, max);
+    }
   } catch {
     // Fall through to the default ratio.
   }
