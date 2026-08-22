@@ -1,0 +1,724 @@
+export type CadRuntimeKind = "openscad-wasm";
+
+export type CadSourceLanguage =
+  | "openscad"
+  | "cadquery"
+  | "freecad-python"
+  | "cadastrophe-ir";
+
+export type CadSessionStatus =
+  | "idle"
+  | "rendering"
+  | "failed";
+
+export type CadSessionTitleSource =
+  | "agent"
+  | "user"
+  | "system";
+
+export type CadArtifactKind = "preview-mesh" | "stl" | "gcode" | "metadata" | "render-image";
+
+export type CadUserMessageChannel = "web-ui";
+
+export type CadConversationRole = "user" | "assistant" | "system" | "tool";
+
+export type CadAgentRunStatus =
+  | "queued"
+  | "running"
+  | "waiting_for_user"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type CadAgentRecoveryStatus =
+  | "none"
+  | "reconciling"
+  | "resumed"
+  | "recovered_from_history"
+  | "orphaned_thread"
+  | "unknown_outcome";
+
+export type CadAgentThreadStatus =
+  | "starting"
+  | "ready"
+  | "active"
+  | "not_loaded"
+  | "failed"
+  | "archived"
+  | "replaced"
+  | "legacy"
+  | "orphaned";
+
+export type CadAgentPlane = "modeling" | "validation";
+
+export type CadValidationEvaluationKind = "vlm";
+
+export type CadValidationEvaluationStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed";
+
+export type CadValidationCheckKind = "structural" | "dfm" | "vlm";
+export type CadValidationCheckStatus = CadValidationEvaluationStatus;
+export type CadValidationBatchStatus = CadValidationEvaluationStatus;
+
+export type CadAgentRunEventType =
+  | "agent.run.created"
+  | "agent.run.updated"
+  | "agent.message.created"
+  | "agent.tool.started"
+  | "agent.tool.completed"
+  | "agent.run.completed"
+  | "agent.run.failed"
+  | "agent.run.cancelled";
+
+export interface CadRuntimeCapabilities {
+  kind: CadRuntimeKind;
+  available: boolean;
+  sourceLanguages: CadSourceLanguage[];
+  previewFormats: string[];
+  exportFormats: string[];
+  limitations: string[];
+}
+
+export interface CadDiagnostic {
+  severity: "info" | "warning" | "error";
+  message: string;
+  line?: number;
+  column?: number;
+}
+
+export interface CadDiagnostics {
+  ok: boolean;
+  elapsedMs: number;
+  items: CadDiagnostic[];
+}
+
+export interface CadParameter {
+  name: string;
+  value: number | string | boolean;
+  type: "number" | "string" | "boolean";
+  min?: number;
+  max?: number;
+  step?: number;
+  label?: string;
+}
+
+export interface CadMesh {
+  vertices: number[];
+  normals: number[];
+  indices: number[];
+}
+
+export interface CadArtifact {
+  id: string;
+  revisionId: string;
+  revisionHash: string;
+  profileHash?: string;
+  kind: CadArtifactKind;
+  format: string;
+  uri: string;
+  bytes?: number;
+  createdAt: string;
+  deletedAt?: string;
+  missingAt?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CadPreviewResult {
+  diagnostics: CadDiagnostics;
+  mesh?: CadMesh;
+  artifacts: CadArtifact[];
+}
+
+export interface CadExportResult {
+  diagnostics: CadDiagnostics;
+  artifact?: CadArtifact;
+}
+
+export interface PersistRuntimeArtifactInput {
+  sessionId: string;
+  revisionId: string;
+  kind: CadArtifactKind;
+  format: string;
+  contentsBase64: string;
+  diagnostics: CadDiagnostics;
+  metadata: Record<string, unknown>;
+}
+
+export interface PersistRuntimeArtifactResult {
+  artifact: CadArtifact;
+  state: CadSessionState;
+}
+
+export interface CadBuildInput {
+  sessionId: string;
+  revisionId: string;
+  sourceLanguage: CadSourceLanguage;
+  source: string;
+  parameters: CadParameter[];
+}
+
+export interface CadExportInput extends CadBuildInput {
+  format: "stl" | "metadata";
+}
+
+export interface CadUserEvent {
+  id: string;
+  revisionId: string;
+  type:
+    | "decision.approved"
+    | "decision.rejected"
+    | "parameter.updated"
+    | "message.created"
+    | "export.requested"
+    | "runtime.selected";
+  createdAt: string;
+  payload: Record<string, unknown>;
+}
+
+export interface CadUserMessage {
+  id: string;
+  sessionId: string;
+  revisionId?: string;
+  eventId?: string;
+  channel: CadUserMessageChannel;
+  message: string;
+  createdAt: string;
+}
+
+export interface CadConversationMessage {
+  id: string;
+  sessionId: string;
+  revisionId?: string;
+  role: CadConversationRole;
+  content: string;
+  createdAt: string;
+  runId?: string;
+  externalThreadId?: string;
+  externalTurnId?: string;
+  externalItemId?: string;
+  phase?: CadAgentMessagePhase;
+  sequence?: number;
+  isFinal?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export type CadAgentMessagePhase = "commentary" | "final_answer";
+
+/**
+ * Ephemeral text transport emitted separately from durable session snapshots.
+ *
+ * Backend contract: `completed` may only be true after the completed item has
+ * been committed to `conversation` and its authoritative snapshot has been
+ * emitted. `sequence` is monotonically increasing within a streamed item.
+ */
+export interface CadAgentStreamEvent {
+  sessionId: string;
+  runId: string;
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  phase: CadAgentMessagePhase;
+  delta: string;
+  sequence: number;
+  completed: boolean;
+}
+
+export interface CadAgentRun {
+  id: string;
+  sessionId: string;
+  inputRevisionId?: string;
+  outputRevisionId?: string;
+  status: CadAgentRunStatus;
+  prompt: string;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+  activeStep?: string;
+  externalAgent?: string;
+  agentThreadId?: string;
+  externalThreadId?: string;
+  externalTurnId?: string;
+  connectionGeneration?: number;
+  recoveryStatus: CadAgentRecoveryStatus;
+}
+
+export interface CadAgentThread {
+  id: string;
+  sessionId: string;
+  plane: CadAgentPlane;
+  ownerId: string;
+  externalAgent: string;
+  externalThreadId: string;
+  status: CadAgentThreadStatus;
+  connectionGeneration?: number;
+  createdAt: string;
+  updatedAt: string;
+  lastResumedAt?: string;
+  archivedAt?: string;
+  replacedById?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CadValidationEvaluation {
+  id: string;
+  sessionId: string;
+  runId: string;
+  revisionId: string;
+  artifactId: string;
+  kind: CadValidationEvaluationKind;
+  attempt: number;
+  status: CadValidationEvaluationStatus;
+  evaluatorThreadId?: string;
+  externalTurnId?: string;
+  inputContract: Record<string, unknown>;
+  report?: Record<string, unknown>;
+  passed?: boolean;
+  score?: number;
+  passThreshold: number;
+  error?: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface CadValidationBatch {
+  id: string;
+  sessionId: string;
+  runId: string;
+  revisionId: string;
+  artifactId: string;
+  attempt: number;
+  status: CadValidationBatchStatus;
+  aggregateReport?: Record<string, unknown>;
+  createdAt: string;
+  startedAt?: string;
+  settlementClaimedAt?: string;
+  settledAt?: string;
+  effectsClaimedAt?: string;
+  refinementRequestedAt?: string;
+  refinementBoundAt?: string;
+  effectsAppliedAt?: string;
+}
+
+export interface CadValidationCheck {
+  id: string;
+  batchId: string;
+  sessionId: string;
+  kind: CadValidationCheckKind;
+  status: CadValidationCheckStatus;
+  inputContract: Record<string, unknown>;
+  report?: Record<string, unknown>;
+  passed?: boolean;
+  error?: string;
+  evaluatorThreadId?: string;
+  externalTurnId?: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface CadAgentRunDiagnostic {
+  runId: string;
+  status: CadAgentRunStatus;
+  recoveryStatus: CadAgentRecoveryStatus;
+  agentThreadId?: string;
+  externalThreadId?: string;
+  externalTurnId?: string;
+  connectionGeneration?: number;
+  lastError?: string;
+  updatedAt: string;
+}
+
+export interface CadAgentThreadDiagnostic {
+  thread: CadAgentThread;
+  runs: CadAgentRunDiagnostic[];
+}
+
+export interface CadAgentSessionDiagnostics {
+  sessionId: string;
+  archived: boolean;
+  threads: CadAgentThreadDiagnostic[];
+  unboundRuns: CadAgentRunDiagnostic[];
+  transportEventCount: number;
+}
+
+export interface StartNewAgentConversationResult {
+  archivedThread?: CadAgentThread;
+  activeThread: CadAgentThread;
+  state: CadSessionState;
+}
+
+export interface CadAgentTransportCleanupInput {
+  sessionId?: string;
+  createdBefore?: string;
+  maxEventsPerSession?: number;
+}
+
+export interface CadAgentTransportCleanupResult {
+  deletedCount: number;
+  deletedEventIds: string[];
+}
+
+export interface CadAgentRunEvent {
+  id: string;
+  sessionId: string;
+  runId: string;
+  revisionId?: string;
+  type: CadAgentRunEventType;
+  sequence: number;
+  createdAt: string;
+  payload: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CadModelPlanComponent {
+  name: string;
+  purpose: string;
+  requiredFeatures?: string[];
+}
+
+export interface CadModelAspectRatio {
+  x: number;
+  y: number;
+  z: number;
+  tolerance: number;
+}
+
+export interface CadModelPlanDraftAspectRatio {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface CadModelPlanDraft {
+  summary: string;
+  mainComponent: CadModelPlanComponent;
+  supportingComponents: CadModelPlanComponent[];
+  expectedAspectRatio: CadModelPlanDraftAspectRatio;
+}
+
+export interface CadModelRuntimeConstraints {
+  runtime: CadRuntimeKind;
+  requiredFeatures?: string[];
+  forbiddenFeatures?: string[];
+  mainComponentAnnotation?: string;
+}
+
+export interface CadModelPlan {
+  schemaVersion: string;
+  summary: string;
+  mainComponent: CadModelPlanComponent;
+  supportingComponents: CadModelPlanComponent[];
+  expectedAspectRatio: CadModelAspectRatio;
+  sourceLanguage: CadSourceLanguage;
+  runtimeConstraints: CadModelRuntimeConstraints;
+}
+
+export interface CadWorkflowPlan {
+  runId: string;
+  revisionId?: string;
+  plan: CadModelPlan;
+  sourceLanguage: CadSourceLanguage;
+  createdAt: string;
+}
+
+export interface CadWorkflowOuterIteration {
+  id: string;
+  runId: string;
+  iteration: number;
+  revisionId?: string;
+  structuralReport: Record<string, unknown>;
+  dfmReport?: CadDfmReport;
+  vlmReport?: Record<string, unknown>;
+  failureReport?: Record<string, unknown>;
+  passed: boolean;
+  createdAt: string;
+}
+
+export interface CadWorkflowPendingVlm {
+  runId: string;
+  artifactId: string;
+  contract: Record<string, unknown>;
+  dfmReport?: CadDfmReport;
+  passThreshold: number;
+  createdAt: string;
+}
+
+export interface CadDfmReport extends Record<string, unknown> {
+  contractType: "cadastrophe.dfm_report.v1";
+  passed: boolean;
+  checks: unknown[];
+  diagnostics: unknown[];
+  profileHash: string;
+  gcodeArtifactId?: string;
+  keySettings?: Record<string, string>;
+}
+
+export interface CadWorkflowState {
+  plans: CadWorkflowPlan[];
+  outerIterations: CadWorkflowOuterIteration[];
+  pendingVlm: CadWorkflowPendingVlm[];
+}
+
+export interface CadRevisionRunLink {
+  runId: string;
+  role: "input" | "output" | string;
+  status: CadAgentRunStatus;
+  updatedAt: string;
+}
+
+export interface CadRevisionSummary {
+  id: string;
+  sourceHash: string;
+  parentRevisionId?: string;
+  restoredFromRevisionId?: string;
+  sourceLanguage: CadSourceLanguage;
+  createdAt: string;
+  diagnostics: CadDiagnostics;
+  artifactCount: number;
+  runLinks: CadRevisionRunLink[];
+}
+
+export interface CadRevision extends CadRevisionSummary {
+  sessionId: string;
+  source: string;
+  parameters: CadParameter[];
+  artifacts: CadArtifact[];
+  userEvents: CadUserEvent[];
+}
+
+export interface CadSession {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  lastViewedAt?: string;
+  connectedUiClients: number;
+  title?: string;
+  titleSource: CadSessionTitleSource;
+  activeRevisionId?: string;
+  selectedRuntime: CadRuntimeKind;
+  status: CadSessionStatus;
+  recoveryDiagnostics?: CadDiagnostic[];
+  archivedAt?: string;
+  deletedAt?: string;
+  revisions: CadRevisionSummary[];
+}
+
+export interface CadSessionState {
+  session: CadSession;
+  activeRevision?: CadRevision;
+  messages: CadUserMessage[];
+  conversation: CadConversationMessage[];
+  agentThreads: CadAgentThread[];
+  agentRuns: CadAgentRun[];
+  agentRunEvents: CadAgentRunEvent[];
+  validationEvaluations: CadValidationEvaluation[];
+  validationBatches: CadValidationBatch[];
+  validationChecks: CadValidationCheck[];
+  workflow: CadWorkflowState;
+}
+
+export interface CadBridgeEvent {
+  id: string;
+  type:
+    | "session.created"
+    | "session.updated"
+    | "revision.created"
+    | "revision.activated"
+    | "revision.restored"
+    | "preview.rendered"
+    | "message.created"
+    | "artifact.exported"
+    | "artifact.deleted"
+    | "artifact.verified"
+    | CadAgentRunEventType;
+  sessionId: string;
+  createdAt: string;
+  state: CadSessionState;
+}
+
+export interface CreateCadSessionInput {
+  title?: string;
+  selectedRuntime?: CadRuntimeKind;
+}
+
+export interface CreateCadSessionResult {
+  sessionId: string;
+  uiUrl: string;
+  state: CadSessionState;
+}
+
+export interface BootCadSessionResult {
+  sessionId: string;
+  uiUrl: string;
+  state: CadSessionState;
+  isFirstRun: boolean;
+  createdSession: boolean;
+  shouldUseExampleSession: boolean;
+  shouldAutoRender: boolean;
+}
+
+export interface CurrentCadSessionResult {
+  sessionId?: string;
+  uiUrl?: string;
+  state?: CadSessionState;
+}
+
+export interface ListCadSessionsInput {
+  includeArchived?: boolean;
+  query?: string;
+}
+
+export interface CadSessionListItem {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  lastViewedAt?: string;
+  title?: string;
+  titleSource: CadSessionTitleSource;
+  activeRevisionId?: string;
+  activeRevision?: CadRevisionSummary;
+  selectedRuntime: CadRuntimeKind;
+  status: CadSessionStatus;
+  archived: boolean;
+  archivedAt?: string;
+  revisionCount: number;
+  artifactCount: number;
+}
+
+export interface ListCadSessionsResult {
+  sessions: CadSessionListItem[];
+  searchFields: string[];
+}
+
+export interface RenameCadSessionInput {
+  sessionId: string;
+  title: string;
+}
+
+export interface ArchiveCadSessionInput {
+  sessionId: string;
+  archived?: boolean;
+}
+
+export interface DuplicateCadSessionInput {
+  sessionId: string;
+  title?: string;
+}
+
+export interface DeleteCadSessionInput {
+  sessionId: string;
+}
+
+export interface DeleteCadSessionResult {
+  sessionId: string;
+  currentSessionId?: string;
+}
+
+export interface UpdateModelSourceInput {
+  sessionId: string;
+  sourceLanguage: CadSourceLanguage;
+  source: string;
+  parentRevisionId?: string;
+  parameters?: CadParameter[];
+}
+
+export interface UpdateModelSourceResult {
+  revisionId: string;
+  state: CadSessionState;
+}
+
+export interface SetActiveRevisionInput {
+  sessionId: string;
+  revisionId: string;
+}
+
+export interface RestoreRevisionInput {
+  sessionId: string;
+  revisionId: string;
+}
+
+export interface RestoreRevisionResult {
+  revisionId: string;
+  state: CadSessionState;
+}
+
+export interface RenderPreviewInput {
+  sessionId: string;
+  revisionId?: string;
+}
+
+export interface PostUserMessageInput {
+  sessionId: string;
+  revisionId?: string;
+  message: string;
+}
+
+export interface CreateAgentRunInput {
+  sessionId: string;
+  prompt: string;
+  revisionId?: string;
+  retryOfRunId?: string;
+}
+
+export interface CreateAgentRunResult {
+  message: CadConversationMessage;
+  run: CadAgentRun;
+  state: CadSessionState;
+}
+
+export interface DeleteArtifactInput {
+  sessionId: string;
+  artifactId: string;
+}
+
+export interface DeleteArtifactResult {
+  artifactId: string;
+  state: CadSessionState;
+}
+
+export interface OpenArtifactResult {
+  artifact: CadArtifact;
+  path: string;
+}
+
+export interface RevealArtifactResult {
+  artifact: CadArtifact;
+  path: string;
+  revealed: boolean;
+}
+
+export interface VerifyArtifactFilesResult {
+  checkedCount: number;
+  missingArtifactIds: string[];
+  hashMismatchArtifactIds: string[];
+  sizeMismatchArtifactIds: string[];
+  corruptMetadataArtifactIds: string[];
+  invalidPathArtifactIds: string[];
+  orphanPaths: string[];
+  diagnostics: CadDiagnostic[];
+  state?: CadSessionState;
+}
+
+export interface CleanupOrphanArtifactsResult {
+  checkedFileCount: number;
+  orphanPaths: string[];
+  deletedPaths: string[];
+}
+
+export interface WaitForUserMessageInput {
+  sessionId: string;
+  afterMessageId?: string;
+  timeoutMs?: number;
+}
+
+export interface ExportArtifactInput {
+  sessionId: string;
+  revisionId?: string;
+  format: "stl" | "metadata";
+}

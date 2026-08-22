@@ -1,0 +1,49 @@
+[package]
+name = "cadastrophe"
+version = "0.1.2"
+description = "Cadastrophe desktop backend"
+edition = "2021"
+default-run = "cadastrophe"
+
+[lib]
+name = "cadastrophe_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+async-trait = "0.1"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2.11.5", features = [] }
+tauri-plugin-dialog = "2.7.0"
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+sha2 = "0.11.0"
+
+[[bin]]
+name = "cadastrophe-session-current"
+path = "src/bin/cadastrophe_session_current.rs"
+
+[[bin]]
+name = "cadastrophe-session-state"
+path = "src/bin/cadastrophe_session_state.rs"
+
+[[bin]]
+name = "cadastrophe-plan-commit"
+path = "src/bin/cadastrophe_plan_commit.rs"
+
+[[bin]]
+name = "cadastrophe-source-apply"
+path = "src/bin/cadastrophe_source_apply.rs"
+
+[[bin]]
+name = "cadastrophe-finalize"
+path = "src/bin/cadastrophe_finalize.rs"
+
+[[bin]]
+name = "cadastrophe-vlm-submit"
+path = "src/bin/cadastrophe_vlm_submit.rs"

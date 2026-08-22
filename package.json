@@ -1,0 +1,41 @@
+{
+  "name": "cadastrophe",
+  "version": "0.1.2",
+  "private": true,
+  "type": "module",
+  "description": "Text-to-CAD Tauri desktop workspace",
+  "scripts": {
+    "dev:ui": "vite --host 127.0.0.1",
+    "dev:tauri": "npm run build:cli-tools && tauri dev",
+    "build": "tsc --noEmit && vite build",
+    "build:tauri": "tauri build",
+    "build:sidecar": "node scripts/build-structural-sidecar.mjs --profile debug",
+    "build:sidecar:release": "node scripts/build-structural-sidecar.mjs --profile release",
+    "clean:obsolete-cli-tools": "node scripts/clean-obsolete-cli-tools.mjs",
+    "build:cli-tools": "npm run clean:obsolete-cli-tools && cargo build --manifest-path src-tauri/Cargo.toml --bins && npm run build:sidecar",
+    "check": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts tests/*.test.tsx",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
+    "lucide-react": "^0.468.0",
+    "openscad-wasm": "^0.0.4",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "three": "^0.178.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@types/three": "^0.178.1",
+    "@vitejs/plugin-react": "^4.7.0",
+    "happy-dom": "^20.11.1",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.0"
+  }
+}

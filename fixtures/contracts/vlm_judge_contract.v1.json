@@ -1,0 +1,8 @@
+{
+  "contractType": "cadastrophe.vlm_judge.v1",
+  "handoff": "VLM Judge Handoff needed.",
+  "renderedImages": {
+    "available": true,
+    "path": "/absolute/path/render-grid.png"
+  }
+}

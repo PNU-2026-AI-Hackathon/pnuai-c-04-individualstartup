@@ -1,0 +1,12 @@
+{
+  "contractType": "cadastrophe.vlm_submission.v1",
+  "scores": {
+    "structure": 3,
+    "components": 3,
+    "proportions": 2
+  },
+  "inconsistencies": [
+    "The rear view differs slightly from the front view."
+  ],
+  "diagnostic": "All requested major components are visible."
+}

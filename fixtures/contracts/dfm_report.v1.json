@@ -1,0 +1,40 @@
+{
+  "contractType": "cadastrophe.dfm_report.v1",
+  "runId": "run-fixture-1",
+  "revisionId": "revision-fixture-1",
+  "artifactId": "artifact-fixture-stl",
+  "passed": true,
+  "checks": [
+    {
+      "name": "prusaslicer_execution",
+      "passed": true,
+      "severity": "info",
+      "message": "PrusaSlicer exited successfully."
+    },
+    {
+      "name": "gcode_generated",
+      "passed": true,
+      "severity": "info",
+      "message": "Generated G-code."
+    }
+  ],
+  "diagnostics": [],
+  "profileHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "keySettings": {
+    "printer_technology": "FFF",
+    "nozzle_diameter": "0.4",
+    "filament_diameter": "1.75",
+    "layer_height": "0.2",
+    "gcode_flavor": "reprap"
+  },
+  "gcodeArtifactId": "artifact-fixture-gcode",
+  "process": {
+    "exitCode": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "prusaslicer": {
+    "path": "/Applications/PrusaSlicer.app/Contents/MacOS/PrusaSlicer",
+    "version": "PrusaSlicer 2.9.6"
+  }
+}
