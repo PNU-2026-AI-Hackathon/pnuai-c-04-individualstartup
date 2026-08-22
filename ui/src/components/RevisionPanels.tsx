@@ -7,10 +7,11 @@ export function Parameters(props: {
   readOnly: boolean;
   onUpdate: (parameter: CadParameter, value: CadParameter["value"]) => void;
 }) {
+  const parameters = props.revision?.parameters ?? [];
   return (
-    <section className="panel">
+    <section className="panel parameters-panel">
       <h2>Parameters</h2>
-      {(props.revision?.parameters ?? []).map((parameter) => (
+      {parameters.map((parameter) => (
         <label className="parameter" key={parameter.name}>
           <span>{parameter.label ?? parameter.name}</span>
           {parameter.type === "number" ? (
@@ -42,6 +43,9 @@ export function Parameters(props: {
           )}
         </label>
       ))}
+      {parameters.length === 0 ? (
+        <p className="panel-empty">No parameters are available for this revision.</p>
+      ) : null}
     </section>
   );
 }
@@ -123,6 +127,9 @@ export function Timeline({
           </li>
         ))}
       </ol>
+      {state.session.revisions.length === 0 ? (
+        <p className="panel-empty">No revisions yet.</p>
+      ) : null}
       {activeRevision && diffRevision ? (
         <RevisionDiff activeRevision={activeRevision} compareRevision={diffRevision} />
       ) : null}

@@ -15,8 +15,10 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import type { CadSessionListItem } from "../protocol";
+import type { CadSessionListItem, CadSessionState } from "../protocol";
 import type { WorkspaceView } from "../navigation";
+import { Timeline } from "./RevisionPanels";
+import { VerticalSplit } from "./VerticalSplit";
 
 export function SessionRail({
   sessions,
@@ -26,6 +28,9 @@ export function SessionRail({
   busy,
   open,
   view,
+  revisionState,
+  revisionsReadOnly = false,
+  sourceDirty = false,
   onQueryChange,
   onShowArchivedChange,
   onCreateSession,
@@ -35,6 +40,8 @@ export function SessionRail({
   onDuplicate,
   onDelete,
   onNavigate,
+  onActivateRevision = () => undefined,
+  onRestoreRevision = () => undefined,
   onClose
 }: {
   sessions: CadSessionListItem[];
@@ -44,6 +51,9 @@ export function SessionRail({
   busy: boolean;
   open: boolean;
   view: WorkspaceView;
+  revisionState?: CadSessionState;
+  revisionsReadOnly?: boolean;
+  sourceDirty?: boolean;
   onQueryChange: (query: string) => void;
   onShowArchivedChange: (showArchived: boolean) => void;
   onCreateSession: () => void;
@@ -53,6 +63,8 @@ export function SessionRail({
   onDuplicate: (sessionId: string) => void | Promise<void>;
   onDelete: (sessionId: string) => void | Promise<void>;
   onNavigate: (view: WorkspaceView) => void;
+  onActivateRevision?: (revisionId: string) => void | Promise<void>;
+  onRestoreRevision?: (revisionId: string) => void | Promise<void>;
   onClose: () => void;
 }) {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
@@ -83,30 +95,40 @@ export function SessionRail({
 
   return (
     <aside className={open ? "session-rail open" : "session-rail"} aria-label="Sessions">
-      <div className="session-rail-header">
-        <strong>Sessions</strong>
-        <button onClick={onCreateSession} disabled={busy} title="Create session">
-          <Plus size={16} /> New
-        </button>
-      </div>
-      <label className="search-field session-rail-search">
-        <Search size={15} />
-        <input
-          aria-label="Search sessions"
-          value={query}
-          onChange={(event) => onQueryChange(event.target.value)}
-          placeholder="Search"
-        />
-      </label>
-      <label className="archive-toggle">
-        <input
-          type="checkbox"
-          checked={showArchived}
-          onChange={(event) => onShowArchivedChange(event.target.checked)}
-        />
-        <span>Show archived</span>
-      </label>
-      <ol className="session-rail-list">
+      <VerticalSplit
+        className="session-rail-split"
+        defaultRatio={58}
+        lowerLabel="Revisions"
+        maxRatio={72}
+        minRatio={28}
+        storageKey="cadastrophe.split.left"
+        upperLabel="Sessions"
+      >
+        <section className="session-rail-sessions" aria-label="Session list">
+          <div className="session-rail-header">
+            <strong>Sessions</strong>
+            <button onClick={onCreateSession} disabled={busy} title="Create session">
+              <Plus size={16} /> New
+            </button>
+          </div>
+          <label className="search-field session-rail-search">
+            <Search size={15} />
+            <input
+              aria-label="Search sessions"
+              value={query}
+              onChange={(event) => onQueryChange(event.target.value)}
+              placeholder="Search"
+            />
+          </label>
+          <label className="archive-toggle">
+            <input
+              type="checkbox"
+              checked={showArchived}
+              onChange={(event) => onShowArchivedChange(event.target.checked)}
+            />
+            <span>Show archived</span>
+          </label>
+          <ol className="session-rail-list">
         {visibleSessions.map((session) => {
           const isEditing = editingSessionId === session.id;
           const menuOpen = openMenuSessionId === session.id;
@@ -223,14 +245,35 @@ export function SessionRail({
             </li>
           );
         })}
-      </ol>
-      {visibleSessions.length === 0 ? <p className="session-rail-empty">No sessions found.</p> : null}
+          </ol>
+          {visibleSessions.length === 0 ? <p className="session-rail-empty">No sessions found.</p> : null}
+        </section>
+        <div className="session-rail-revisions">
+          {revisionState ? (
+            <Timeline
+              state={revisionState}
+              busy={busy}
+              readOnly={revisionsReadOnly}
+              sourceDirty={sourceDirty}
+              onActivate={onActivateRevision}
+              onRestore={onRestoreRevision}
+            />
+          ) : (
+            <section className="panel">
+              <h2>Revisions</h2>
+              <p className="panel-empty">No session loaded.</p>
+            </section>
+          )}
+        </div>
+      </VerticalSplit>
       <nav className="session-rail-nav" aria-label="Workspace tools">
         {navItems.map((item) => {
           const Icon = item.icon;
           return (
             <button
               className={view === item.view ? "active" : ""}
+              aria-label={item.label}
+              aria-current={view === item.view ? "page" : undefined}
               key={item.view}
               onClick={() => {
                 onNavigate(item.view);
@@ -238,7 +281,7 @@ export function SessionRail({
               }}
               title={item.label}
             >
-              <Icon size={16} /> {item.label}
+              <Icon aria-hidden="true" size={18} />
             </button>
           );
         })}
