@@ -26,7 +26,6 @@ import { AgentWorkspace } from "./AgentWorkspace";
 import {
   latestValidationBatch,
   latestValidationEvaluation,
-  validationBatchPassed,
   validationChecksForBatch,
   workflowRunView
 } from "./AgentWorkflow";
@@ -136,13 +135,14 @@ export function WorkspacePanel({
                 <div className="export-toolbar-control">
                   <button
                     className="preview-export-button"
+                    aria-label="Export current model"
                     onClick={() => setExportSelectorOpen((open) => !open)}
                     disabled={busy || sessionArchived || !activeRevision?.id}
                     title="Export current model"
                     aria-expanded={exportSelectorOpen}
                     aria-haspopup="dialog"
                   >
-                    <Download size={16} /> Export
+                    <Download aria-hidden="true" size={15} />
                   </button>
                   {exportSelectorOpen ? (
                     <ExportFormatSelector
@@ -617,18 +617,12 @@ function workflowSteps(
       if (check.status === "failed") return "fail" as const;
       return check.passed === true ? "pass" as const : "fail" as const;
     };
-    const completeState = validationBatch.status === "queued" || validationBatch.status === "running"
-      ? "pending"
-      : validationBatch.status === "failed"
-        ? "fail"
-        : validationBatchPassed(validationBatch) ? "pass" : "fail";
     return [
       planStep,
       previewStep,
       { label: "Structural", state: checkStepState("structural") },
       { label: "DFM", state: checkStepState("dfm") },
       { label: "VLM", state: checkStepState("vlm") },
-      { label: "Complete", state: completeState }
     ];
   }
   const legacyPendingVlm = validationEvaluation
@@ -684,7 +678,6 @@ function workflowSteps(
             ? "active"
             : "pending"
     },
-    { label: "Complete", state: vlmPassed ? "pass" : vlmFailed || dfmFailed || structuralFailed ? "fail" : "pending" }
   ];
 }
 

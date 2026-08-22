@@ -292,7 +292,9 @@ test("workspace preview toolbar export selector does not add result actions unde
     assert.equal(gcodeButton.disabled, true);
     assert.equal(previewModes.querySelectorAll("[aria-checked='true']").length, 1);
 
-    const exportButton = buttonByText(container, "Export");
+    const exportButton = container.querySelector<HTMLButtonElement>("[aria-label='Export current model']");
+    assert.ok(exportButton);
+    assert.equal(exportButton.textContent, "");
     await act(async () => exportButton.click());
 
     assert.ok(container.textContent?.includes("STL"));
