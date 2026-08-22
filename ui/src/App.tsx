@@ -1057,7 +1057,7 @@ export function App() {
             <Menu size={17} />
           </button>
           <div className="topbar-context">
-            {view === "workspace" ? null : <h1>{state.session.title}</h1>}
+            <h1>{state.session.title}</h1>
             <p><span>Session</span> {state.session.id}</p>
           </div>
           <div className="status-group">

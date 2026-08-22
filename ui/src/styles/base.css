@@ -189,34 +189,6 @@ textarea {
   background: #6b7280;
 }
 
-.runtime-state {
-  min-width: 82px;
-  border: 1px solid #c8d1da;
-  border-radius: 6px;
-  padding: 5px 8px;
-  text-align: center;
-  font-size: 12px;
-  color: #2f3b46;
-  background: #ffffff;
-}
-
-.runtime-state-rendering,
-.runtime-state-initializing {
-  border-color: #9f783c;
-  color: #6f4a14;
-}
-
-.runtime-state-completed {
-  border-color: #55886a;
-  color: #2d6947;
-}
-
-.runtime-state-failed,
-.runtime-state-canceled {
-  border-color: #b9605f;
-  color: #8a2f2d;
-}
-
 .error {
   margin-bottom: 12px;
   border-left: 4px solid #a33a38;

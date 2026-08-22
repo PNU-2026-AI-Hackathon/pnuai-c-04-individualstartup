@@ -126,10 +126,7 @@ export function WorkspacePanel({
         >
           <div className="preview-pane">
             <div className="pane-toolbar preview-toolbar">
-              <div className="preview-session-title">
-                <h2>{state.session.title ?? "Untitled CAD session"}</h2>
-                <small title={state.session.id}>{shortId(state.session.id)}</small>
-              </div>
+              <h2>Preview</h2>
               <WorkflowProgressStrip state={state} activeRun={activeRun} runtimeState={runtimeState} />
               <div className="toolbar-actions">
                 <PreviewModeSelector
@@ -743,8 +740,4 @@ function ExportFormatSelector({
       </button>
     </div>
   );
-}
-
-function shortId(value?: string): string {
-  return value ? value.slice(0, 8) : "-";
 }
