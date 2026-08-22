@@ -24,8 +24,62 @@
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
-  gap: 14px;
-  align-items: start;
+  min-height: 0;
+  flex: 1;
+  gap: 10px;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+.vertical-split {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows:
+    minmax(var(--split-upper-min, 0px), var(--split-upper))
+    10px
+    minmax(var(--split-lower-min, 0px), var(--split-lower));
+  overflow: hidden;
+}
+
+.vertical-split-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.vertical-split-handle {
+  position: relative;
+  z-index: 3;
+  display: grid;
+  min-height: 10px;
+  place-items: center;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.vertical-split-handle::before {
+  position: absolute;
+  inset: 0;
+  content: "";
+}
+
+.vertical-split-handle span {
+  width: 42px;
+  height: 2px;
+  border-radius: 999px;
+  background: #c4ced6;
+  transition: width 120ms ease, height 120ms ease, background 120ms ease;
+}
+
+.vertical-split-handle:hover span,
+.vertical-split-handle:focus-visible span,
+.vertical-split.is-dragging .vertical-split-handle span {
+  width: 64px;
+  height: 3px;
+  background: #216a6b;
 }
 
 .session-rail {

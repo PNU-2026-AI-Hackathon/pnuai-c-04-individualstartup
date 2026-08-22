@@ -13,6 +13,11 @@ body {
   margin: 0;
 }
 
+body.split-resizing {
+  cursor: row-resize;
+  user-select: none;
+}
+
 .application-error-boundary {
   display: flex;
   min-height: 100vh;
@@ -58,6 +63,12 @@ button {
 button:disabled {
   color: #8a98a6;
   cursor: not-allowed;
+}
+
+button:focus-visible,
+[role="separator"]:focus-visible {
+  outline: 3px solid rgba(33, 106, 107, 0.3);
+  outline-offset: 2px;
 }
 
 button.danger {
