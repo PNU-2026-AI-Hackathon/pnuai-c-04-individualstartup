@@ -31,6 +31,7 @@ import {
   workflowRunView
 } from "./AgentWorkflow";
 import { Parameters, Timeline } from "./RevisionPanels";
+import { VerticalSplit } from "./VerticalSplit";
 
 type WorkspacePanelProps = {
   state: CadSessionState;
@@ -114,84 +115,93 @@ export function WorkspacePanel({
   return (
     <section className="workspace">
       <main className="modeling-area">
-        <WorkflowProgressStrip state={state} activeRun={activeRun} runtimeState={runtimeState} />
-        <div className="preview-pane">
-          <div className="pane-toolbar preview-toolbar">
-            <h2>Preview</h2>
-            <div className="toolbar-actions">
-              <span className={`runtime-state runtime-state-${runtimeState}`}>
-                {runtimeStateLabel(runtimeState)}
-              </span>
-              <PreviewModeSelector
-                mode={activePreviewMode}
-                gcodeAvailable={Boolean(gcode)}
-                onChange={setPreviewMode}
-              />
-              <div className="export-toolbar-control">
-                <button
-                  onClick={() => setExportSelectorOpen((open) => !open)}
-                  disabled={busy || sessionArchived || !activeRevision?.id}
-                  title="Export current model"
-                  aria-expanded={exportSelectorOpen}
-                  aria-haspopup="dialog"
-                >
-                  <Download size={16} /> Export
-                </button>
-                {exportSelectorOpen ? (
-                  <ExportFormatSelector
-                    selectedFormat={selectedExportFormat}
-                    busy={busy}
-                    readOnly={sessionArchived}
-                    revisionId={activeRevision?.id}
-                    onSelectFormat={setSelectedExportFormat}
-                    onExport={async () => {
-                      await onExport(selectedExportFormat, activeRevision?.id);
-                      setExportSelectorOpen(false);
-                    }}
-                  />
-                ) : null}
+        <VerticalSplit
+          className="modeling-area-split"
+          defaultRatio={62}
+          lowerLabel="OpenSCAD Source"
+          maxRatio={72}
+          minRatio={42}
+          storageKey="cadastrophe.split.center"
+          upperLabel="Preview"
+        >
+          <div className="preview-pane" role="region" aria-label="Preview">
+            <div className="pane-toolbar preview-toolbar">
+              <WorkflowProgressStrip state={state} activeRun={activeRun} runtimeState={runtimeState} />
+              <div className="toolbar-actions">
+                <PreviewModeSelector
+                  mode={activePreviewMode}
+                  gcodeAvailable={Boolean(gcode)}
+                  onChange={setPreviewMode}
+                />
+                <div className="export-toolbar-control">
+                  <button
+                    className="preview-export-button"
+                    aria-label="Export current model"
+                    onClick={() => setExportSelectorOpen((open) => !open)}
+                    disabled={busy || sessionArchived || !activeRevision?.id}
+                    title="Export current model"
+                    aria-expanded={exportSelectorOpen}
+                    aria-haspopup="dialog"
+                  >
+                    <Download aria-hidden="true" size={15} />
+                  </button>
+                  {exportSelectorOpen ? (
+                    <ExportFormatSelector
+                      selectedFormat={selectedExportFormat}
+                      busy={busy}
+                      readOnly={sessionArchived}
+                      revisionId={activeRevision?.id}
+                      onSelectFormat={setSelectedExportFormat}
+                      onExport={async () => {
+                        await onExport(selectedExportFormat, activeRevision?.id);
+                        setExportSelectorOpen(false);
+                      }}
+                    />
+                  ) : null}
+                </div>
               </div>
             </div>
-          </div>
-          <UiErrorBoundary
-            className="preview-error-boundary"
-            resetKey={`${activeRevision?.id ?? "no-revision"}:${activePreviewMode}:${gcodeArtifactId ?? "no-gcode"}:${
-              state.activeRevision?.artifacts.find((artifact) => artifact.kind === "preview-mesh")?.id ?? "no-preview"
-            }`}
-            scope="Preview"
-          >
-            <MeshPreview mesh={mesh} gcode={gcode} bedShape={gcodeBedShape} mode={activePreviewMode} />
-          </UiErrorBoundary>
-        </div>
-
-        <div className="editor-pane">
-          <div className="pane-toolbar">
-            <h2>OpenSCAD Source</h2>
-            <button
-              onClick={() => {
-                onDismissStarterOverlay();
-                onSaveSource();
-              }}
-              disabled={busy || !sourceDirty || sessionArchived}
-              title="Save source revision"
+            <UiErrorBoundary
+              className="preview-error-boundary"
+              resetKey={`${activeRevision?.id ?? "no-revision"}:${activePreviewMode}:${gcodeArtifactId ?? "no-gcode"}:${
+                state.activeRevision?.artifacts.find((artifact) => artifact.kind === "preview-mesh")?.id ?? "no-preview"
+              }`}
+              scope="Preview"
             >
-              <Save size={16} /> Save revision
-            </button>
+              <MeshPreview mesh={mesh} gcode={gcode} bedShape={gcodeBedShape} mode={activePreviewMode} />
+            </UiErrorBoundary>
           </div>
-          <SourceEditorErrorBoundary sourceIdentity={sourceEditorIdentity(state, activeRevision)}>
-            <SourceEditor
-              sessionId={state.session.id}
-              revisionId={activeRevision?.id}
-              source={source}
-              starterSource={starterSource}
-              showStarterOverlay={showStarterOverlay}
-              readOnly={sessionArchived}
-              onDismissStarterOverlay={onDismissStarterOverlay}
-              onEditSource={onEditSource}
-            />
-          </SourceEditorErrorBoundary>
-          <SourceDiagnostics diagnostics={activeRevision?.diagnostics} source={source} />
-        </div>
+          <div className="editor-pane">
+            <div className="pane-toolbar source-toolbar">
+              <h2>OpenSCAD Source</h2>
+              <button
+                onClick={() => {
+                  onDismissStarterOverlay();
+                  onSaveSource();
+                }}
+                disabled={busy || !sourceDirty || sessionArchived}
+                title="Save source revision"
+              >
+                <Save size={16} /> Save revision
+              </button>
+            </div>
+            <div className="source-editor-scroll">
+              <SourceEditorErrorBoundary sourceIdentity={sourceEditorIdentity(state, activeRevision)}>
+                <SourceEditor
+                  sessionId={state.session.id}
+                  revisionId={activeRevision?.id}
+                  source={source}
+                  starterSource={starterSource}
+                  showStarterOverlay={showStarterOverlay}
+                  readOnly={sessionArchived}
+                  onDismissStarterOverlay={onDismissStarterOverlay}
+                  onEditSource={onEditSource}
+                />
+              </SourceEditorErrorBoundary>
+              <SourceDiagnostics diagnostics={activeRevision?.diagnostics} source={source} />
+            </div>
+          </div>
+        </VerticalSplit>
       </main>
 
       <aside className="workspace-inspector" aria-label="Workspace inspector">
@@ -547,10 +557,14 @@ function WorkflowProgressStrip({
   return (
     <section className="workflow-progress-strip" aria-label="Workflow progress">
       {steps.map((step, index) => (
-        <div className={`workflow-step workflow-step-${step.state}`} key={step.label}>
+        <div
+          aria-label={`${step.label}: ${step.state}`}
+          className={`workflow-step workflow-step-${step.state}`}
+          key={step.label}
+          title={step.state}
+        >
           <span>{index + 1}</span>
           <strong>{step.label}</strong>
-          <small>{step.state}</small>
         </div>
       ))}
     </section>
@@ -684,15 +698,6 @@ function stringField(value: Record<string, unknown>, key: string): string | unde
   return typeof field === "string" && field.trim() ? field : undefined;
 }
 
-function runtimeStateLabel(state: OpenscadRuntimeState): string {
-  if (state === "idle") return "Preview not rendered";
-  if (state === "completed") return "Preview ready";
-  if (state === "failed") return "Render failed";
-  if (state === "canceled") return "Render canceled";
-  if (state === "initializing") return "Initializing";
-  return "Rendering";
-}
-
 function ExportFormatSelector({
   selectedFormat,
   busy,
@@ -739,8 +744,4 @@ function ExportFormatSelector({
       </button>
     </div>
   );
-}
-
-function shortId(value?: string): string {
-  return value ? value.slice(0, 8) : "-";
 }

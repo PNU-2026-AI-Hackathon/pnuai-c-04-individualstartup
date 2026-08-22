@@ -66,6 +66,12 @@ test("starter preview does not advance workflow progress for an empty session", 
   const steps = [...harness.container.querySelectorAll<HTMLElement>(".workflow-step")];
   const previewStep = steps.find((step) => step.textContent?.includes("Preview"));
   const structuralStep = steps.find((step) => step.textContent?.includes("Structural"));
+  assert.deepEqual(
+    steps.map((step) => step.querySelector("strong")?.textContent),
+    ["Plan", "Preview", "Structural", "DFM", "VLM", "Complete"]
+  );
+  assert.ok(steps.every((step) => step.querySelector("small") === null));
+  assert.ok(steps.every((step) => step.title === "pending"));
 
   assert.ok(previewStep?.classList.contains("workflow-step-pending"));
   assert.ok(structuralStep?.classList.contains("workflow-step-pending"));
@@ -338,7 +344,7 @@ test("source editor click after session switch uses the new editor instance", as
   harness.cleanup();
 });
 
-test("source editor click during render keeps render UI and editor mounted", async () => {
+test("source editor click during render keeps preview UI and editor mounted without a runtime badge", async () => {
   const harness = mountWorkspace({
     sessionId: "rendering-session",
     source: "cylinder(h = 8, r = 2);",
@@ -347,7 +353,8 @@ test("source editor click during render keeps render UI and editor mounted", asy
 
   await clickAndFocus(harness.sourceEditor());
 
-  assert.match(harness.container.textContent ?? "", /Rendering/);
+  assert.equal(harness.container.querySelector(".runtime-state"), null);
+  assert.ok(harness.container.querySelector(".workflow-progress-strip"));
   assert.ok(harness.container.querySelector(".preview-pane"));
   assert.ok(harness.sourceEditor());
   harness.cleanup();

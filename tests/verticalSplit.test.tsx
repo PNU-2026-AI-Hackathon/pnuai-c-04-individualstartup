@@ -97,6 +97,78 @@ test("vertical split restores a finite zero ratio when zero is allowed", async (
   }
 });
 
+test("vertical split supports keyboard resizing and restores the saved ratio", async () => {
+  const browserWindow = installDom();
+  const storageKey = "keyboard-persistence";
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+
+  try {
+    const split = (
+      <VerticalSplit
+        storageKey={storageKey}
+        defaultRatio={50}
+        minRatio={20}
+        maxRatio={80}
+        upperLabel="Preview"
+        lowerLabel="OpenSCAD Source"
+      >
+        <div>Upper</div>
+        <div>Lower</div>
+      </VerticalSplit>
+    );
+    await act(async () => {
+      root.render(split);
+    });
+
+    const handle = container.querySelector<HTMLDivElement>(".vertical-split-handle");
+    assert.ok(handle);
+
+    await pressKey(browserWindow, handle, "ArrowDown");
+    assert.equal(handle.getAttribute("aria-valuenow"), "52");
+
+    await pressKey(browserWindow, handle, "ArrowUp", true);
+    assert.equal(handle.getAttribute("aria-valuenow"), "42");
+
+    await pressKey(browserWindow, handle, "Home");
+    assert.equal(handle.getAttribute("aria-valuenow"), "20");
+
+    await pressKey(browserWindow, handle, "End");
+    assert.equal(handle.getAttribute("aria-valuenow"), "80");
+    assert.equal(window.sessionStorage.getItem(storageKey), "80");
+
+    await act(async () => {
+      root.render(<div>Split unmounted</div>);
+    });
+    await act(async () => {
+      root.render(split);
+    });
+
+    const restoredHandle = container.querySelector<HTMLDivElement>(".vertical-split-handle");
+    assert.ok(restoredHandle);
+    assert.equal(restoredHandle.getAttribute("aria-valuenow"), "80");
+  } finally {
+    act(() => root.unmount());
+    browserWindow.close();
+  }
+});
+
+async function pressKey(
+  browserWindow: Window,
+  handle: HTMLElement,
+  key: string,
+  shiftKey = false
+) {
+  await act(async () => {
+    handle.dispatchEvent(new browserWindow.KeyboardEvent("keydown", {
+      bubbles: true,
+      key,
+      shiftKey
+    }) as unknown as Event);
+  });
+}
+
 function installDom(): Window {
   const browserWindow = new Window({ url: "http://127.0.0.1:5173/" });
   defineGlobal("window", browserWindow);

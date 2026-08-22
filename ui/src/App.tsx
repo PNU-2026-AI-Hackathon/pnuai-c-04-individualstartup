@@ -1051,14 +1051,14 @@ export function App() {
         </div>
       ) : null}
 
-      <div className="workspace-main">
+      <div className={view === "workspace" ? "workspace-main workspace-main-model" : "workspace-main"}>
         <header className="topbar">
           <button className="rail-menu-button" onClick={() => setSessionRailOpen(true)} title="Open sessions">
             <Menu size={17} />
           </button>
-          <div>
+          <div className="topbar-context">
             <h1>{state.session.title}</h1>
-            <p>{state.session.id}</p>
+            <p><span>Session</span> {state.session.id}</p>
           </div>
           <div className="status-group">
             {topbarStatusLabel(workspaceState ?? state, Boolean(activeAgentRun), sessionArchived) ? (
