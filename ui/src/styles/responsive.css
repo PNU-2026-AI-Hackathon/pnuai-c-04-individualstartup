@@ -73,8 +73,13 @@
     grid-template-columns: 1fr;
   }
 
-  .inspector-tabs {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .preview-toolbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .preview-toolbar .workflow-progress-strip {
+    grid-column: 1 / -1;
+    grid-row: 2;
   }
 
   .session-list li {
@@ -101,13 +106,13 @@
   }
 
   .mesh-preview {
-    min-height: 280px;
-    height: clamp(300px, 48vh, 420px);
+    min-height: 0;
+    height: 100%;
   }
 
   .source-editor-wrap,
   .source-editor-wrap textarea,
   .source-starter-overlay {
-    min-height: 300px;
+    min-height: 170px;
   }
 }
