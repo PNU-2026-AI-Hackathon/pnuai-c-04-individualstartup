@@ -124,9 +124,8 @@ export function WorkspacePanel({
           storageKey="cadastrophe.split.center"
           upperLabel="Preview"
         >
-          <div className="preview-pane">
+          <div className="preview-pane" role="region" aria-label="Preview">
             <div className="pane-toolbar preview-toolbar">
-              <h2>Preview</h2>
               <WorkflowProgressStrip state={state} activeRun={activeRun} runtimeState={runtimeState} />
               <div className="toolbar-actions">
                 <PreviewModeSelector
