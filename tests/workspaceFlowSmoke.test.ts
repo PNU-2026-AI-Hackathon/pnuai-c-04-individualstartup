@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
 import { Window } from "happy-dom";
 import { filterSessionsByDeletedIds, latestRenderableGcodeArtifact } from "../ui/src/App";
+import { Timeline } from "../ui/src/components/RevisionPanels";
 import { SessionRail } from "../ui/src/components/SessionRail";
 import { WorkspacePanel } from "../ui/src/components/WorkspacePanel";
 import type { CadRevision, CadSessionListItem, CadSessionState } from "../ui/src/protocol";
@@ -133,22 +135,39 @@ test("session rail combines revisions with accessible icon-only navigation and k
       toJSON: () => ({})
     });
     await act(async () => {
-      splitter.dispatchEvent(
-        new browserWindow.PointerEvent("pointerdown", { button: 0, clientY: 120, bubbles: true }) as unknown as Event
-      );
+      splitter.dispatchEvent(new browserWindow.PointerEvent(
+        "pointerdown", { button: 0, clientY: 120, pointerId: 7, bubbles: true }
+      ) as unknown as Event);
     });
     await act(async () => {
-      browserWindow.dispatchEvent(
-        new browserWindow.PointerEvent("pointermove", { clientY: 280, bubbles: true })
-      );
+      splitter.dispatchEvent(new browserWindow.PointerEvent(
+        "pointermove", { clientY: 280, pointerId: 7, bubbles: true }
+      ) as unknown as Event);
     });
     assert.equal(Number(splitter.getAttribute("aria-valuenow")), 70);
     await act(async () => {
-      browserWindow.dispatchEvent(new browserWindow.PointerEvent("pointerup"));
+      splitter.dispatchEvent(new browserWindow.PointerEvent(
+        "pointerup", { pointerId: 7, bubbles: true }
+      ) as unknown as Event);
     });
   } finally {
     act(() => root.unmount());
     browserWindow.close();
+  }
+});
+
+test("timeline renders an empty state when revision state is unavailable", () => {
+  for (const state of [undefined, {} as CadSessionState]) {
+    const html = renderToStaticMarkup(React.createElement(Timeline, {
+      state,
+      busy: false,
+      readOnly: false,
+      sourceDirty: false,
+      onActivate: () => undefined,
+      onRestore: () => undefined
+    }));
+
+    assert.match(html, /No revisions yet\./);
   }
 });
 

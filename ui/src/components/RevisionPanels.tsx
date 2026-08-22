@@ -73,7 +73,7 @@ export function Timeline({
   onActivate,
   onRestore
 }: {
-  state: CadSessionState;
+  state?: CadSessionState;
   busy: boolean;
   readOnly: boolean;
   sourceDirty: boolean;
@@ -81,16 +81,18 @@ export function Timeline({
   onRestore: (revisionId: string) => void;
 }) {
   const [diffRevisionId, setDiffRevisionId] = useState<string | null>(null);
-  const activeRevision = state.session.revisions.find((revision) => revision.id === state.session.activeRevisionId);
+  const revisions = state?.session?.revisions ?? [];
+  const activeRevisionId = state?.session?.activeRevisionId;
+  const activeRevision = revisions.find((revision) => revision.id === activeRevisionId);
   const diffRevision = diffRevisionId
-    ? state.session.revisions.find((revision) => revision.id === diffRevisionId)
+    ? revisions.find((revision) => revision.id === diffRevisionId)
     : undefined;
   return (
     <section className="panel">
       <h2>Revisions</h2>
       <ol className="timeline">
-        {state.session.revisions.map((revision) => (
-          <li className={revision.id === state.session.activeRevisionId ? "active" : ""} key={revision.id}>
+        {revisions.map((revision) => (
+          <li className={revision.id === activeRevisionId ? "active" : ""} key={revision.id}>
             <div className="revision-row-main">
               <span>{revision.id.slice(0, 8)}</span>
               <small>{new Date(revision.createdAt).toLocaleTimeString()}</small>
@@ -101,7 +103,7 @@ export function Timeline({
             <div className="revision-actions">
               <button
                 aria-label={`Activate revision ${revision.id.slice(0, 8)}`}
-                disabled={busy || readOnly || sourceDirty || revision.id === state.session.activeRevisionId}
+                disabled={busy || readOnly || sourceDirty || revision.id === activeRevisionId}
                 onClick={() => onActivate(revision.id)}
                 title={sourceDirty ? "Save or discard source edits before switching revisions" : "Activate revision"}
               >
@@ -127,7 +129,7 @@ export function Timeline({
           </li>
         ))}
       </ol>
-      {state.session.revisions.length === 0 ? (
+      {revisions.length === 0 ? (
         <p className="panel-empty">No revisions yet.</p>
       ) : null}
       {activeRevision && diffRevision ? (
