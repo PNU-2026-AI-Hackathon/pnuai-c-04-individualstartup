@@ -30,7 +30,7 @@ import {
   validationChecksForBatch,
   workflowRunView
 } from "./AgentWorkflow";
-import { Parameters, Timeline } from "./RevisionPanels";
+import { Parameters } from "./RevisionPanels";
 import { VerticalSplit } from "./VerticalSplit";
 
 type WorkspacePanelProps = {
@@ -59,8 +59,6 @@ type WorkspacePanelProps = {
   onRetryRun: (run: CadAgentRun) => void | Promise<void>;
   onCancelRun: (runId: string) => void | Promise<void>;
   onUpdateParameter: (parameter: CadParameter, value: CadParameter["value"]) => void | Promise<void>;
-  onActivateRevision: (revisionId: string) => void | Promise<void>;
-  onRestoreRevision: (revisionId: string) => void | Promise<void>;
   onExport: (format: "stl" | "metadata", revisionId?: string) => void | Promise<void>;
   onOpenFullHistory: () => void;
 };
@@ -91,22 +89,13 @@ export function WorkspacePanel({
   onRetryRun,
   onCancelRun,
   onUpdateParameter,
-  onActivateRevision,
-  onRestoreRevision,
   onExport,
   onOpenFullHistory
 }: WorkspacePanelProps) {
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab>(() =>
-    preferredInspectorTab(state, activeRun)
-  );
   const [exportSelectorOpen, setExportSelectorOpen] = useState(false);
   const [selectedExportFormat, setSelectedExportFormat] = useState<ExportFormat>("stl");
   const [previewMode, setPreviewMode] = useState<PreviewMode>("stl");
   const activePreviewMode = previewMode === "gcode" && !gcode ? "stl" : previewMode;
-
-  useEffect(() => {
-    setInspectorTab(preferredInspectorTab(state, activeRun));
-  }, [activeRun?.id, activeRun?.status, state.activeRevision?.parameters.length]);
 
   useEffect(() => {
     if (!gcode && previewMode === "gcode") setPreviewMode("stl");
@@ -205,21 +194,16 @@ export function WorkspacePanel({
       </main>
 
       <aside className="workspace-inspector" aria-label="Workspace inspector">
-        <div className="inspector-tabs" role="tablist" aria-label="Inspector sections">
-          {INSPECTOR_TABS.map((tab) => (
-            <button
-              className={inspectorTab === tab.id ? "active" : ""}
-              key={tab.id}
-              onClick={() => setInspectorTab(tab.id)}
-              role="tab"
-              aria-selected={inspectorTab === tab.id}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-        <div className="inspector-body">
-          {inspectorTab === "agent" ? (
+        <VerticalSplit
+          className="workspace-inspector-split"
+          defaultRatio={58}
+          lowerLabel="Parameters"
+          maxRatio={72}
+          minRatio={35}
+          storageKey="cadastrophe.split.right"
+          upperLabel="Agent"
+        >
+          <div className="inspector-section inspector-agent" aria-label="Agent">
             <AgentWorkspace
               conversation={state.conversation}
               runs={state.agentRuns}
@@ -241,27 +225,16 @@ export function WorkspacePanel({
               onCancelRun={onCancelRun}
               onOpenFullHistory={onOpenFullHistory}
             />
-          ) : null}
-          {inspectorTab === "parameters" ? (
+          </div>
+          <div className="inspector-section inspector-parameters" aria-label="Parameters">
             <Parameters revision={activeRevision} readOnly={sessionArchived} onUpdate={onUpdateParameter} />
-          ) : null}
-          {inspectorTab === "revisions" ? (
-            <Timeline
-              state={state}
-              busy={busy}
-              readOnly={sessionArchived}
-              sourceDirty={sourceDirty}
-              onActivate={onActivateRevision}
-              onRestore={onRestoreRevision}
-            />
-          ) : null}
-        </div>
+          </div>
+        </VerticalSplit>
       </aside>
     </section>
   );
 }
 
-type InspectorTab = "agent" | "parameters" | "revisions";
 type ExportFormat = "stl";
 export type PreviewMode = "stl" | "gcode";
 
@@ -299,12 +272,6 @@ export function PreviewModeSelector({
     </div>
   );
 }
-
-const INSPECTOR_TABS: Array<{ id: InspectorTab; label: string }> = [
-  { id: "agent", label: "Agent" },
-  { id: "parameters", label: "Parameters" },
-  { id: "revisions", label: "Revisions" }
-];
 
 type SourceEditorErrorBoundaryProps = {
   children: ReactNode;
@@ -431,12 +398,6 @@ function sourceEditorIdentity(state: CadSessionState, activeRevision?: CadRevisi
 
 function editorErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function preferredInspectorTab(state: CadSessionState, activeRun?: CadAgentRun): InspectorTab {
-  if (activeRun) return "agent";
-  if (state.activeRevision?.parameters.length) return "parameters";
-  return "agent";
 }
 
 function SourceDiagnostics({
