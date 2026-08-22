@@ -26,6 +26,7 @@ import { AgentWorkspace } from "./AgentWorkspace";
 import {
   latestValidationBatch,
   latestValidationEvaluation,
+  validationBatchPassed,
   validationChecksForBatch,
   workflowRunView
 } from "./AgentWorkflow";
@@ -556,10 +557,14 @@ function WorkflowProgressStrip({
   return (
     <section className="workflow-progress-strip" aria-label="Workflow progress">
       {steps.map((step, index) => (
-        <div className={`workflow-step workflow-step-${step.state}`} key={step.label}>
+        <div
+          aria-label={`${step.label}: ${step.state}`}
+          className={`workflow-step workflow-step-${step.state}`}
+          key={step.label}
+          title={step.state}
+        >
           <span>{index + 1}</span>
           <strong>{step.label}</strong>
-          <small>{step.state}</small>
         </div>
       ))}
     </section>
@@ -617,12 +622,18 @@ function workflowSteps(
       if (check.status === "failed") return "fail" as const;
       return check.passed === true ? "pass" as const : "fail" as const;
     };
+    const completeState = validationBatch.status === "queued" || validationBatch.status === "running"
+      ? "pending"
+      : validationBatch.status === "failed"
+        ? "fail"
+        : validationBatchPassed(validationBatch) ? "pass" : "fail";
     return [
       planStep,
       previewStep,
       { label: "Structural", state: checkStepState("structural") },
       { label: "DFM", state: checkStepState("dfm") },
       { label: "VLM", state: checkStepState("vlm") },
+      { label: "Complete", state: completeState }
     ];
   }
   const legacyPendingVlm = validationEvaluation
@@ -678,6 +689,7 @@ function workflowSteps(
             ? "active"
             : "pending"
     },
+    { label: "Complete", state: vlmPassed ? "pass" : vlmFailed || dfmFailed || structuralFailed ? "fail" : "pending" }
   ];
 }
 

@@ -650,12 +650,6 @@ h2 {
   white-space: nowrap;
 }
 
-.workflow-step small {
-  color: #667789;
-  font-size: 9px;
-  text-transform: uppercase;
-}
-
 .workflow-step-pass {
   border-color: #a8cbbb;
   background: #f3fbf8;
