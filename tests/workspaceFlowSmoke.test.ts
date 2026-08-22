@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
 import { Window } from "happy-dom";
 import { filterSessionsByDeletedIds, latestRenderableGcodeArtifact } from "../ui/src/App";
+import { Timeline } from "../ui/src/components/RevisionPanels";
 import { SessionRail } from "../ui/src/components/SessionRail";
 import { WorkspacePanel } from "../ui/src/components/WorkspacePanel";
 import type { CadRevision, CadSessionListItem, CadSessionState } from "../ui/src/protocol";
@@ -62,6 +64,110 @@ test("session rail exposes inline management without top-level Logs navigation",
   } finally {
     act(() => root.unmount());
     browserWindow.close();
+  }
+});
+
+test("session rail combines revisions with accessible icon-only navigation and keyboard resizing", async () => {
+  const browserWindow = installDom();
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  const state = sampleState();
+
+  try {
+    await act(async () => {
+      root.render(React.createElement(SessionRail, {
+        sessions: [sessionListItem("session-1")],
+        activeSessionId: "session-1",
+        query: "",
+        showArchived: false,
+        busy: false,
+        open: true,
+        view: "workspace",
+        revisionState: state,
+        revisionsReadOnly: false,
+        sourceDirty: false,
+        onQueryChange: () => undefined,
+        onShowArchivedChange: () => undefined,
+        onCreateSession: () => undefined,
+        onOpenSession: () => undefined,
+        onArchiveChange: () => undefined,
+        onRename: () => undefined,
+        onDuplicate: () => undefined,
+        onDelete: () => undefined,
+        onNavigate: () => undefined,
+        onActivateRevision: () => undefined,
+        onRestoreRevision: () => undefined,
+        onClose: () => undefined
+      }));
+    });
+
+    assert.ok(container.querySelector(".session-rail-sessions"));
+    assert.ok(container.querySelector(".session-rail-revisions .timeline"));
+    for (const label of ["Model", "Files", "Settings"]) {
+      const button = container.querySelector<HTMLButtonElement>(`.session-rail-nav [aria-label='${label}']`);
+      assert.ok(button);
+      assert.equal(button.textContent, "");
+      assert.equal(button.title, label);
+    }
+
+    const splitter = container.querySelector<HTMLElement>("[aria-label='Resize Sessions and Revisions']");
+    assert.ok(splitter);
+    const before = Number(splitter.getAttribute("aria-valuenow"));
+    await act(async () => {
+      splitter.dispatchEvent(
+        new browserWindow.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }) as unknown as Event
+      );
+    });
+    assert.equal(Number(splitter.getAttribute("aria-valuenow")), before + 2);
+
+    const split = container.querySelector<HTMLElement>(".session-rail-split");
+    assert.ok(split);
+    split.getBoundingClientRect = () => ({
+      x: 0,
+      y: 0,
+      top: 0,
+      right: 272,
+      bottom: 400,
+      left: 0,
+      width: 272,
+      height: 400,
+      toJSON: () => ({})
+    });
+    await act(async () => {
+      splitter.dispatchEvent(new browserWindow.PointerEvent(
+        "pointerdown", { button: 0, clientY: 120, pointerId: 7, bubbles: true }
+      ) as unknown as Event);
+    });
+    await act(async () => {
+      splitter.dispatchEvent(new browserWindow.PointerEvent(
+        "pointermove", { clientY: 280, pointerId: 7, bubbles: true }
+      ) as unknown as Event);
+    });
+    assert.equal(Number(splitter.getAttribute("aria-valuenow")), 70);
+    await act(async () => {
+      splitter.dispatchEvent(new browserWindow.PointerEvent(
+        "pointerup", { pointerId: 7, bubbles: true }
+      ) as unknown as Event);
+    });
+  } finally {
+    act(() => root.unmount());
+    browserWindow.close();
+  }
+});
+
+test("timeline renders an empty state when revision state is unavailable", () => {
+  for (const state of [undefined, {} as CadSessionState]) {
+    const html = renderToStaticMarkup(React.createElement(Timeline, {
+      state,
+      busy: false,
+      readOnly: false,
+      sourceDirty: false,
+      onActivate: () => undefined,
+      onRestore: () => undefined
+    }));
+
+    assert.match(html, /No revisions yet\./);
   }
 });
 
@@ -218,6 +324,7 @@ function installDom(): Window {
   defineGlobal("HTMLInputElement", browserWindow.HTMLInputElement);
   defineGlobal("SVGElement", browserWindow.SVGElement);
   defineGlobal("Event", browserWindow.Event);
+  defineGlobal("PointerEvent", browserWindow.PointerEvent);
   defineGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   return browserWindow;
 }

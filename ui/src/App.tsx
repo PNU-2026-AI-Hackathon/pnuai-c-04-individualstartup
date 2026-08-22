@@ -993,6 +993,9 @@ export function App() {
         busy={busy}
         open={sessionRailOpen}
         view={view}
+        revisionState={workspaceState ?? state}
+        revisionsReadOnly={sessionArchived}
+        sourceDirty={sourceDirty}
         onQueryChange={setSessionSearch}
         onShowArchivedChange={setShowArchivedSessions}
         onCreateSession={createNewSession}
@@ -1002,6 +1005,8 @@ export function App() {
         onDuplicate={duplicateSession}
         onDelete={requestDeleteSession}
         onNavigate={navigateTo}
+        onActivateRevision={setActiveRevision}
+        onRestoreRevision={restoreRevision}
         onClose={() => setSessionRailOpen(false)}
       />
       {sessionRailOpen ? (
