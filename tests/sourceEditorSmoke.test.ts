@@ -338,7 +338,7 @@ test("source editor click after session switch uses the new editor instance", as
   harness.cleanup();
 });
 
-test("source editor click during render keeps render UI and editor mounted", async () => {
+test("source editor click during render keeps preview UI and editor mounted without a runtime badge", async () => {
   const harness = mountWorkspace({
     sessionId: "rendering-session",
     source: "cylinder(h = 8, r = 2);",
@@ -347,7 +347,8 @@ test("source editor click during render keeps render UI and editor mounted", asy
 
   await clickAndFocus(harness.sourceEditor());
 
-  assert.match(harness.container.textContent ?? "", /Rendering/);
+  assert.equal(harness.container.querySelector(".runtime-state"), null);
+  assert.ok(harness.container.querySelector(".workflow-progress-strip"));
   assert.ok(harness.container.querySelector(".preview-pane"));
   assert.ok(harness.sourceEditor());
   harness.cleanup();
