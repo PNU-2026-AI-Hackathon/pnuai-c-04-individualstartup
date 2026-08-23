@@ -1,6 +1,29 @@
 use super::*;
 use std::io::Write;
 
+fn rename_verified_export(temporary: &Path, destination: &Path) -> Result<(), String> {
+    if let Err(rename_error) = fs::rename(temporary, destination) {
+        return match temporary.try_exists() {
+            Ok(false) => Err(format!(
+                "Failed to finalize STL export {} because the verified temporary file {} no longer exists: {rename_error}",
+                destination.display(),
+                temporary.display()
+            )),
+            Ok(true) => Err(format!(
+                "Failed to finalize STL export {} while the verified temporary file {} still exists: {rename_error}",
+                destination.display(),
+                temporary.display()
+            )),
+            Err(check_error) => Err(format!(
+                "Failed to finalize STL export {}: {rename_error} Failed to determine whether the verified temporary file {} still exists: {check_error}",
+                destination.display(),
+                temporary.display()
+            )),
+        };
+    }
+    Ok(())
+}
+
 impl SessionService {
     pub fn read_artifact(&self, artifact_id: &str) -> Result<String, String> {
         let artifact = self.load_artifact_manifest(artifact_id)?;
@@ -163,12 +186,7 @@ impl SessionService {
                     written_hash
                 ));
             }
-            fs::rename(&temporary, &destination).map_err(|error| {
-                format!(
-                    "Failed to finalize STL export {}: {error}",
-                    destination.display()
-                )
-            })?;
+            rename_verified_export(&temporary, &destination)?;
             Ok(())
         })();
         if let Err(error) = write_result {
@@ -649,6 +667,31 @@ impl SessionService {
             diagnostics,
             state: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rename_reports_when_verified_temporary_export_disappears() {
+        let export_dir = std::env::temp_dir().join(format!(
+            "cadastrophe-missing-temporary-export-test-{}",
+            uuid()
+        ));
+        fs::create_dir_all(&export_dir).unwrap();
+        let temporary = export_dir.join(".model.stl.cadastrophe-test.tmp");
+        let destination = export_dir.join("model.stl");
+
+        let error = rename_verified_export(&temporary, &destination)
+            .expect_err("a missing temporary export must fail finalization");
+
+        assert!(error.contains("verified temporary file"));
+        assert!(error.contains("no longer exists"));
+        assert!(error.contains(&temporary.to_string_lossy().to_string()));
+        assert!(!destination.exists());
+        fs::remove_dir(export_dir).unwrap();
     }
 }
 
