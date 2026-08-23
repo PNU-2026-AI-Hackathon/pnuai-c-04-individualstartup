@@ -278,6 +278,14 @@ fn export_artifact(
 }
 
 #[tauri::command]
+fn export_artifact_file(
+    input: ExportArtifactFileInput,
+    state: State<'_, AppState>,
+) -> Result<ExportArtifactFileResult, String> {
+    state.service.export_artifact_file(input)
+}
+
+#[tauri::command]
 fn read_artifact(artifact_id: String, state: State<'_, AppState>) -> Result<String, String> {
     state.service.read_artifact(&artifact_id)
 }
@@ -439,6 +447,7 @@ pub fn run() {
             get_agent_run,
             cancel_agent_run,
             export_artifact,
+            export_artifact_file,
             read_artifact,
             open_artifact,
             reveal_artifact,

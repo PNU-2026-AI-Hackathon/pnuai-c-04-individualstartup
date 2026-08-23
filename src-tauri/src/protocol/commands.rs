@@ -224,6 +224,22 @@ pub struct ExportArtifactInput {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct ExportArtifactFileInput {
+    pub artifact_id: String,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportArtifactFileResult {
+    pub artifact: CadArtifact,
+    pub path: String,
+    pub bytes: u64,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteArtifactInput {
     pub session_id: String,
     pub artifact_id: String,
