@@ -348,6 +348,72 @@ fn sqlite_repository_persists_duplicate_archive_and_delete() {
 }
 
 #[test]
+fn duplicate_preserves_source_and_starts_without_artifacts() {
+    let app_data_dir =
+        std::env::temp_dir().join(format!("cadastrophe-duplicate-source-test-{}", uuid()));
+    let layout = StorageLayout::from_app_data_dir(app_data_dir);
+    storage::initialize_storage(&layout).unwrap();
+
+    let service = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout.clone())),
+    )
+    .unwrap();
+    let created = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let source = "difference() { cube([8, 8, 2]); cylinder(r = 2); }";
+    let revision_id = create_test_revision(&service, &created.session_id, source);
+    service
+        .export_artifact(ExportArtifactInput {
+            session_id: created.session_id.clone(),
+            revision_id: Some(revision_id),
+            format: "metadata".to_string(),
+        })
+        .unwrap();
+
+    let original = service.get_session_state(&created.session_id).unwrap();
+    let original_revision = original.active_revision.expect("original active revision");
+    assert_eq!(original_revision.source, source);
+    assert_eq!(original_revision.artifact_count, 1);
+    assert_eq!(original_revision.artifacts.len(), 1);
+
+    let duplicated = service
+        .duplicate_session(DuplicateCadSessionInput {
+            session_id: created.session_id,
+            title: None,
+        })
+        .unwrap();
+    let duplicated_revision = duplicated
+        .state
+        .active_revision
+        .expect("duplicated active revision");
+    assert_eq!(duplicated_revision.source, source);
+    assert_eq!(
+        duplicated_revision.source_hash,
+        storage::sha256_hex(source.as_bytes())
+    );
+    assert_eq!(duplicated_revision.artifact_count, 0);
+    assert!(duplicated_revision.artifacts.is_empty());
+    assert_eq!(duplicated.state.session.revisions.len(), 1);
+    assert_eq!(duplicated.state.session.revisions[0].artifact_count, 0);
+
+    let reloaded = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout)),
+    )
+    .unwrap();
+    let persisted = reloaded
+        .get_session_state(&duplicated.session_id)
+        .unwrap()
+        .active_revision
+        .expect("persisted duplicated active revision");
+    assert_eq!(persisted.source, source);
+    assert_eq!(persisted.artifact_count, 0);
+    assert!(persisted.artifacts.is_empty());
+}
+
+#[test]
 fn restart_marks_persisted_loaded_thread_not_loaded_without_changing_mapping() {
     let app_data_dir =
         std::env::temp_dir().join(format!("cadastrophe-thread-restart-test-{}", uuid()));
