@@ -20,6 +20,7 @@ jobs:
         os:
           - ubuntu-22.04
           - windows-2022
+          - macos-15
 
     steps:
       - name: Check out repository
@@ -51,6 +52,8 @@ jobs:
 
       - name: Build Tauri bundles
         run: npm run build:tauri
+        env:
+          CI: "true"
 
       - name: Upload Tauri bundles
         uses: actions/upload-artifact@v7
