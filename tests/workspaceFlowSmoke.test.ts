@@ -352,6 +352,31 @@ test("workspace keeps agent and empty parameters visible at responsive height", 
   }
 });
 
+test("workspace uses a compact preview toolbar and simultaneous split preview, source, agent, and parameters", async () => {
+  const browserWindow = installDom();
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  const state = sampleState();
+
+  try {
+    await act(async () => {
+      root.render(React.createElement(WorkspacePanel, workspaceProps(state, [])));
+    });
+
+    assert.ok(container.querySelector(".preview-toolbar .workflow-progress-strip"));
+    assert.equal(container.querySelector(".runtime-state"), null);
+    assert.equal(container.querySelector(".inspector-tabs"), null);
+    assert.ok(container.querySelector(".inspector-agent .agent-workspace"));
+    assert.ok(container.querySelector(".inspector-parameters .parameters-panel"));
+    assert.equal(container.querySelectorAll("[role='separator']").length, 2);
+    assert.equal(container.querySelectorAll(".workflow-step").length, 6);
+  } finally {
+    act(() => root.unmount());
+    browserWindow.close();
+  }
+});
+
 function installDom(width = 1024, height = 768): Window {
   const browserWindow = new Window({
     url: "http://127.0.0.1:5173/sessions/test",
