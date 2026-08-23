@@ -722,3 +722,10 @@ export interface ExportArtifactInput {
   revisionId?: string;
   format: "stl" | "metadata";
 }
+
+export interface ExportArtifactFileResult {
+  artifact: CadArtifact;
+  path: string;
+  bytes: number;
+  sha256: string;
+}

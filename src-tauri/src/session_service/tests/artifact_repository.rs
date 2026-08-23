@@ -1,5 +1,124 @@
 use super::*;
 
+const MINIMAL_ASCII_STL: &[u8] = br#"solid triangle
+  facet normal 0 0 1
+    outer loop
+      vertex 0 0 0
+      vertex 1 0 0
+      vertex 0 1 0
+    endloop
+  endfacet
+endsolid triangle
+"#;
+
+#[test]
+fn stl_artifact_exports_to_a_named_external_path_and_reopens_byte_for_byte() {
+    let app_data_dir =
+        std::env::temp_dir().join(format!("cadastrophe-external-stl-source-test-{}", uuid()));
+    let export_dir =
+        std::env::temp_dir().join(format!("cadastrophe-external-stl-target-test-{}", uuid()));
+    fs::create_dir_all(&export_dir).unwrap();
+    let layout = StorageLayout::from_app_data_dir(app_data_dir);
+    storage::initialize_storage(&layout).unwrap();
+    let service = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout)),
+    )
+    .unwrap();
+    let created = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let revision_id = create_test_revision(&service, &created.session_id, "cube([1, 1, 1]);");
+    let artifact = service
+        .write_artifact_bytes(
+            &revision_id,
+            CadArtifactKind::Stl,
+            "stl",
+            MINIMAL_ASCII_STL,
+            None,
+        )
+        .unwrap();
+    let destination = export_dir.join("custom-model-name.stl");
+    fs::write(&destination, b"previous export").unwrap();
+
+    let result = service
+        .export_artifact_file(ExportArtifactFileInput {
+            artifact_id: artifact.id.clone(),
+            path: destination.to_string_lossy().to_string(),
+        })
+        .unwrap();
+
+    assert_eq!(result.artifact.id, artifact.id);
+    assert_eq!(result.path, destination.to_string_lossy());
+    assert_eq!(result.bytes, MINIMAL_ASCII_STL.len() as u64);
+    assert_eq!(result.sha256, storage::sha256_hex(MINIMAL_ASCII_STL));
+    assert_eq!(fs::read(&destination).unwrap(), MINIMAL_ASCII_STL);
+}
+
+#[test]
+fn stl_file_export_rejects_invalid_destinations_and_corrupt_artifacts() {
+    let app_data_dir =
+        std::env::temp_dir().join(format!("cadastrophe-external-stl-errors-test-{}", uuid()));
+    let export_dir =
+        std::env::temp_dir().join(format!("cadastrophe-external-stl-errors-target-{}", uuid()));
+    fs::create_dir_all(&export_dir).unwrap();
+    let layout = StorageLayout::from_app_data_dir(app_data_dir);
+    storage::initialize_storage(&layout).unwrap();
+    let service = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout)),
+    )
+    .unwrap();
+    let created = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let revision_id = create_test_revision(&service, &created.session_id, "sphere(1);");
+    let artifact = service
+        .write_artifact_bytes(
+            &revision_id,
+            CadArtifactKind::Stl,
+            "stl",
+            MINIMAL_ASCII_STL,
+            None,
+        )
+        .unwrap();
+
+    let relative_error = service
+        .export_artifact_file(ExportArtifactFileInput {
+            artifact_id: artifact.id.clone(),
+            path: "relative.stl".to_string(),
+        })
+        .expect_err("relative export path must fail");
+    assert!(relative_error.contains("must be absolute"));
+
+    let extension_error = service
+        .export_artifact_file(ExportArtifactFileInput {
+            artifact_id: artifact.id.clone(),
+            path: export_dir.join("wrong.obj").to_string_lossy().to_string(),
+        })
+        .expect_err("non-STL extension must fail");
+    assert!(extension_error.contains(".stl extension"));
+
+    let internal_path = PathBuf::from(
+        artifact
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("path"))
+            .and_then(Value::as_str)
+            .unwrap(),
+    );
+    fs::write(&internal_path, b"corrupt").unwrap();
+    let corrupt_destination = export_dir.join("must-not-be-created.stl");
+    let corrupt_error = service
+        .export_artifact_file(ExportArtifactFileInput {
+            artifact_id: artifact.id,
+            path: corrupt_destination.to_string_lossy().to_string(),
+        })
+        .expect_err("corrupt artifact must fail before destination write");
+    assert!(corrupt_error.contains("size mismatch"));
+    assert!(!corrupt_destination.exists());
+}
+
 #[test]
 fn sqlite_repository_restores_artifact_manifest_after_restart() {
     let app_data_dir =

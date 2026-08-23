@@ -1,4 +1,5 @@
 use super::*;
+use std::io::Write;
 
 impl SessionService {
     pub fn read_artifact(&self, artifact_id: &str) -> Result<String, String> {
@@ -40,6 +41,172 @@ impl SessionService {
             artifact: opened.artifact,
             path: opened.path,
             revealed,
+        })
+    }
+
+    pub fn export_artifact_file(
+        &self,
+        input: ExportArtifactFileInput,
+    ) -> Result<ExportArtifactFileResult, String> {
+        let artifact = self.load_artifact_manifest(&input.artifact_id)?;
+        if artifact.deleted_at.is_some() {
+            return Err("Artifact has been deleted.".to_string());
+        }
+        if artifact.kind != CadArtifactKind::Stl || !artifact.format.eq_ignore_ascii_case("stl") {
+            return Err(format!(
+                "Artifact {} is not an STL artifact.",
+                input.artifact_id
+            ));
+        }
+
+        let destination = PathBuf::from(&input.path);
+        if !destination.is_absolute() {
+            return Err("STL export path must be absolute.".to_string());
+        }
+        if !destination
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("stl"))
+        {
+            return Err("STL export path must use the .stl extension.".to_string());
+        }
+        let parent = destination
+            .parent()
+            .ok_or_else(|| "STL export path has no parent directory.".to_string())?;
+        if !parent.is_dir() {
+            return Err(format!(
+                "STL export directory does not exist: {}",
+                parent.display()
+            ));
+        }
+
+        let source = self.artifact_manifest_path(&artifact)?;
+        let contents = match fs::read(&source) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.mark_artifact_missing(&artifact.id, Some(timestamp()))?;
+                return Err(format!("Artifact file is missing: {}", source.display()));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Failed to read STL artifact {}: {error}",
+                    source.display()
+                ))
+            }
+        };
+        let source_hash = storage::sha256_hex(&contents);
+        let expected_bytes = artifact
+            .bytes
+            .ok_or_else(|| format!("STL artifact {} is missing its byte count.", artifact.id))?;
+        if expected_bytes != contents.len() as u64 {
+            return Err(format!(
+                "STL artifact {} size mismatch: expected {expected_bytes} bytes, received {}.",
+                artifact.id,
+                contents.len()
+            ));
+        }
+        let expected_hash = artifact
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("sha256"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("STL artifact {} is missing its SHA-256 hash.", artifact.id))?;
+        if expected_hash != source_hash {
+            return Err(format!(
+                "STL artifact {} hash mismatch: expected {expected_hash}, received {source_hash}.",
+                artifact.id
+            ));
+        }
+
+        let file_name = destination
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "STL export path must contain a valid UTF-8 file name.".to_string())?;
+        let temporary = parent.join(format!(".{file_name}.cadastrophe-{}.tmp", uuid()));
+        let write_result = (|| -> Result<(), String> {
+            let mut file = fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temporary)
+                .map_err(|error| {
+                    format!(
+                        "Failed to create temporary STL export {}: {error}",
+                        temporary.display()
+                    )
+                })?;
+            file.write_all(&contents).map_err(|error| {
+                format!(
+                    "Failed to write temporary STL export {}: {error}",
+                    temporary.display()
+                )
+            })?;
+            file.sync_all().map_err(|error| {
+                format!(
+                    "Failed to flush temporary STL export {}: {error}",
+                    temporary.display()
+                )
+            })?;
+            let written = fs::read(&temporary).map_err(|error| {
+                format!(
+                    "Failed to verify temporary STL export {}: {error}",
+                    temporary.display()
+                )
+            })?;
+            let written_hash = storage::sha256_hex(&written);
+            if written.len() != contents.len() || written_hash != source_hash {
+                return Err(format!(
+                    "STL export verification failed for {}: expected {} bytes and SHA-256 {}, received {} bytes and SHA-256 {}.",
+                    destination.display(),
+                    contents.len(),
+                    source_hash,
+                    written.len(),
+                    written_hash
+                ));
+            }
+            fs::rename(&temporary, &destination).map_err(|error| {
+                format!(
+                    "Failed to finalize STL export {}: {error}",
+                    destination.display()
+                )
+            })?;
+            Ok(())
+        })();
+        if let Err(error) = write_result {
+            return match fs::remove_file(&temporary) {
+                Ok(()) => Err(error),
+                Err(cleanup_error) if cleanup_error.kind() == std::io::ErrorKind::NotFound => {
+                    Err(error)
+                }
+                Err(cleanup_error) => Err(format!(
+                    "{error} Temporary export cleanup also failed for {}: {cleanup_error}",
+                    temporary.display()
+                )),
+            };
+        }
+
+        let exported = fs::read(&destination).map_err(|error| {
+            format!(
+                "Failed to reopen exported STL {}: {error}",
+                destination.display()
+            )
+        })?;
+        let exported_hash = storage::sha256_hex(&exported);
+        if exported.len() != contents.len() || exported_hash != source_hash {
+            return Err(format!(
+                "Exported STL verification failed for {}: expected {} bytes and SHA-256 {}, received {} bytes and SHA-256 {}.",
+                destination.display(),
+                contents.len(),
+                source_hash,
+                exported.len(),
+                exported_hash
+            ));
+        }
+
+        Ok(ExportArtifactFileResult {
+            artifact,
+            path: destination.to_string_lossy().to_string(),
+            bytes: exported.len() as u64,
+            sha256: exported_hash,
         })
     }
 

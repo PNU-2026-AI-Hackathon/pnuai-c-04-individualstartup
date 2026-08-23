@@ -38,6 +38,14 @@ async function assertClientShape(client: CadBackendClient) {
   assert.equal(openedArtifact.artifact.id, "artifact-1");
   assert.equal(openedArtifact.artifact.kind, "stl");
   assert.equal(typeof openedArtifact.path, "string");
+  const exportedArtifact = await client.exportArtifactFile({
+    artifactId: "artifact-1",
+    path: "/tmp/custom-export-name.stl"
+  });
+  assert.equal(exportedArtifact.artifact.id, "artifact-1");
+  assert.equal(exportedArtifact.path, "/tmp/custom-export-name.stl");
+  assert.equal(exportedArtifact.bytes, 128);
+  assert.match(exportedArtifact.sha256, /^[a-f0-9]{64}$/);
 
   const observedSnapshots: CadSessionState[] = [];
   const unsubscribe = client.subscribeSession(created.sessionId, {
@@ -370,6 +378,17 @@ class ContractBackendClient implements CadBackendClient {
 
   async exportArtifact(): Promise<{ state: CadSessionState }> {
     return { state: this.requireState() };
+  }
+
+  async exportArtifactFile(input: { artifactId: string; path: string }) {
+    return {
+      artifact: this.requireState().activeRevision!.artifacts.find(
+        (artifact) => artifact.id === input.artifactId
+      )!,
+      path: input.path,
+      bytes: 128,
+      sha256: "a".repeat(64)
+    };
   }
 
   async openArtifact() {

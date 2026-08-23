@@ -17,6 +17,7 @@ import type {
   CurrentCadSessionResult,
   DeleteArtifactResult,
   DeleteCadSessionResult,
+  ExportArtifactFileResult,
   ListCadSessionsInput,
   ListCadSessionsResult,
   OpenArtifactResult,
@@ -87,6 +88,7 @@ export interface CadBackendClient {
   cleanupAgentTransportEvents(input: CadAgentTransportCleanupInput): Promise<CadAgentTransportCleanupResult>;
   cancelAgentRun(input: { sessionId: string; runId: string }): Promise<{ run: CadAgentRun; state: CadSessionState }>;
   exportArtifact(input: { sessionId: string; revisionId?: string; format: "stl" | "metadata" }): Promise<{ state: CadSessionState }>;
+  exportArtifactFile(input: { artifactId: string; path: string }): Promise<ExportArtifactFileResult>;
   openArtifact(artifactId: string): Promise<OpenArtifactResult>;
   revealArtifact(artifactId: string): Promise<RevealArtifactResult>;
   deleteArtifact(input: { sessionId: string; artifactId: string }): Promise<DeleteArtifactResult>;
@@ -234,6 +236,10 @@ export class TauriCadBackendClient implements CadBackendClient, DfmSettingsBacke
     format: "stl" | "metadata";
   }): Promise<{ state: CadSessionState }> {
     return invokeCommand("export_artifact", { input });
+  }
+
+  exportArtifactFile(input: { artifactId: string; path: string }): Promise<ExportArtifactFileResult> {
+    return invokeCommand("export_artifact_file", { input });
   }
 
   async readPreviewMesh(artifact: CadArtifact): Promise<CadMesh> {

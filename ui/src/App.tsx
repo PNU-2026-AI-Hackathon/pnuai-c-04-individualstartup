@@ -53,6 +53,7 @@ import {
   type OpenscadRuntimeState
 } from "./runtime/openscadRuntime";
 import { applyParameterValuesToSource, parameterHashInput, updateParameterDraft } from "./runtime/parameterDraft";
+import { chooseStlExportPath, stlExportDefaultFileName } from "./runtime/artifactExport";
 import {
   createAgentStreamState,
   reconcileAgentStreamSnapshot,
@@ -411,6 +412,8 @@ export function App() {
     await runBusy(async () => {
       await resyncIfDisconnected();
       if (format === "stl") {
+        const destination = await chooseStlExportPath(stlExportDefaultFileName(state.session.title));
+        if (destination === null) return;
         const revision = await ensureSavedRevisionForExport(revisionId);
         const rendered = await cachedOrRenderedStl(revision);
         const persisted = await persistRuntimeArtifactWithDiagnostics({
@@ -422,6 +425,18 @@ export function App() {
           diagnostics: rendered.diagnostics,
           metadata: runtimeMetadata(rendered, "export")
         }, rendered);
+        const exported = await backend.exportArtifactFile({
+          artifactId: persisted.artifact.id,
+          path: destination
+        });
+        if (exported.bytes !== rendered.stlBytes.byteLength || exported.sha256 !== rendered.stlSha256) {
+          throw new Error(
+            `Exported STL verification mismatch for ${exported.path}. ` +
+            `Expected ${rendered.stlBytes.byteLength} bytes and SHA-256 ${rendered.stlSha256}, ` +
+            `received ${exported.bytes} bytes and SHA-256 ${exported.sha256}.`
+          );
+        }
+        setOpenedArtifactPath(exported.path);
         applySessionSnapshot(persisted.state);
         return;
       }
