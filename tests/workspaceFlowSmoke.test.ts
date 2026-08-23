@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -316,8 +317,47 @@ test("workspace preview toolbar export selector does not add result actions unde
   }
 });
 
-function installDom(): Window {
-  const browserWindow = new Window({ url: "http://127.0.0.1:5173/sessions/test" });
+test("workspace keeps agent and empty parameters visible at responsive height", async () => {
+  const browserWindow = installDom(1000, 800);
+  const style = document.createElement("style");
+  style.textContent = [
+    readFileSync(new URL("../ui/src/styles/workspace.css", import.meta.url), "utf8"),
+    readFileSync(new URL("../ui/src/styles/responsive.css", import.meta.url), "utf8")
+  ].join("\n");
+  document.head.appendChild(style);
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  const state = sampleState();
+
+  try {
+    await act(async () => {
+      root.render(React.createElement(WorkspacePanel, workspaceProps(state, [])));
+    });
+
+    const workspace = container.querySelector<HTMLElement>(".workspace");
+    const agent = container.querySelector<HTMLElement>(".inspector-agent .agent-workspace");
+    const parameters = container.querySelector<HTMLElement>(".inspector-parameters .parameters-panel");
+    const inspector = container.querySelector<HTMLElement>(".workspace-inspector");
+    assert.ok(workspace);
+    assert.ok(agent);
+    assert.ok(parameters);
+    assert.ok(inspector);
+    assert.match(parameters.textContent ?? "", /No parameters are available for this revision\./);
+    assert.equal(window.getComputedStyle(workspace).overflowY, "auto");
+    assert.equal(window.getComputedStyle(inspector).height, "620px");
+  } finally {
+    act(() => root.unmount());
+    browserWindow.close();
+  }
+});
+
+function installDom(width = 1024, height = 768): Window {
+  const browserWindow = new Window({
+    url: "http://127.0.0.1:5173/sessions/test",
+    width,
+    height
+  });
   defineGlobal("window", browserWindow);
   defineGlobal("document", browserWindow.document);
   defineGlobal("navigator", browserWindow.navigator);
