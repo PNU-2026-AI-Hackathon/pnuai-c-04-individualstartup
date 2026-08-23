@@ -10,6 +10,9 @@ export function buildSidecars({
   targetTriple,
   sidecars
 }) {
+  if (!["debug", "release"].includes(profile)) {
+    throw new Error(`Unsupported sidecar build profile: ${profile}`);
+  }
   requireCommand("cmake");
   for (const sidecar of sidecars) {
     buildSidecar({
@@ -52,6 +55,7 @@ function buildSidecar({
   sidecar
 }) {
   const cmakeOptions = sidecar.cmakeOptions ?? [];
+  const cmakeConfiguration = profile === "release" ? "Release" : "Debug";
   const sidecarRoot = join(repoRoot, "src-tauri", "sidecars", sidecar.name);
   const buildRoot = resolve(
     repoRoot,
@@ -78,13 +82,19 @@ function buildSidecar({
     "-B",
     buildRoot,
     ...cmakeOptions,
-    `-DCMAKE_BUILD_TYPE=${profile === "release" ? "Release" : "Debug"}`
+    `-DCMAKE_BUILD_TYPE=${cmakeConfiguration}`,
+    `-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=${buildRoot}`,
+    `-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_${cmakeConfiguration.toUpperCase()}=${buildRoot}`,
+    `-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=${buildRoot}`,
+    `-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_${cmakeConfiguration.toUpperCase()}=${buildRoot}`,
+    `-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=${buildRoot}`,
+    `-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY_${cmakeConfiguration.toUpperCase()}=${buildRoot}`
   ]);
   run(repoRoot, "cmake", [
     "--build",
     buildRoot,
     "--config",
-    profile === "release" ? "Release" : "Debug"
+    cmakeConfiguration
   ]);
 
   if (!existsSync(builtExecutable)) {

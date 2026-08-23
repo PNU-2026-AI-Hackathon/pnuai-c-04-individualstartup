@@ -1,6 +1,6 @@
 [package]
 name = "cadastrophe"
-version = "0.1.2"
+version = "0.2.0"
 description = "Cadastrophe desktop backend"
 edition = "2021"
 default-run = "cadastrophe"
