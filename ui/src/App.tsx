@@ -37,6 +37,7 @@ import {
   workspaceViewFromUrl,
   type WorkspaceView
 } from "./navigation";
+import { duplicateSessionWithPreview } from "./sessionWorkflow";
 import {
   cancelOpenScadRender,
   createRenderFailureDiagnostics,
@@ -603,9 +604,12 @@ export function App() {
 
   async function duplicateSession(sessionId: string) {
     await runBusy(async () => {
-      const duplicated = await backend.duplicateSession({ sessionId });
-      applySessionSnapshot(duplicated.state, { forceSource: true });
-      await backend.markSessionViewed(duplicated.sessionId);
+      const duplicated = await duplicateSessionWithPreview({
+        backend,
+        sessionId,
+        applySessionSnapshot: (nextState) => applySessionSnapshot(nextState, { forceSource: true }),
+        renderRevision: renderAndPersistRevision
+      });
       setOpenedArtifactPath(null);
       navigateTo("workspace", duplicated.sessionId);
     });
