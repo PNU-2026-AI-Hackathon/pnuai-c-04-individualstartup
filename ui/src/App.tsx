@@ -1121,8 +1121,6 @@ export function App() {
             onRetryRun={(run) => startAgentRun(run.prompt, run.id)}
             onCancelRun={cancelAgentRun}
             onUpdateParameter={updateParameter}
-            onActivateRevision={setActiveRevision}
-            onRestoreRevision={restoreRevision}
             onExport={exportArtifact}
             onOpenFullHistory={() => navigateTo("logs")}
           />

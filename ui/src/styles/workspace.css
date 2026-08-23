@@ -354,16 +354,26 @@
   display: none;
 }
 
-.modeling-area {
+.modeling-area,
+.workspace-inspector {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
 
-.modeling-area-split {
+.modeling-area-split,
+.workspace-inspector-split {
   height: 100%;
+}
+
+.modeling-area-split {
   --split-upper-min: 260px;
   --split-lower-min: 220px;
+}
+
+.workspace-inspector-split {
+  --split-upper-min: 240px;
+  --split-lower-min: 180px;
 }
 
 .preview-pane,
@@ -580,35 +590,21 @@ h2 {
 }
 
 .workspace-inspector {
-  position: sticky;
-  top: 16px;
-  max-height: calc(100vh - 32px);
-  min-height: 560px;
+  height: 100%;
 }
 
-.inspector-tabs {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 4px;
-}
-
-.inspector-tabs button {
-  min-width: 0;
-  padding: 0 6px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.inspector-tabs button.active {
-  border-color: #216a6b;
-  background: #eef7f7;
-  color: #216a6b;
-  font-weight: 700;
-}
-
-.inspector-body {
+.inspector-section {
+  height: 100%;
   min-height: 0;
   overflow: auto;
+}
+
+.inspector-section > .panel {
+  min-height: 100%;
+}
+
+.inspector-parameters > .panel {
+  border-color: #d8e1e8;
 }
 
 .workflow-progress-strip {

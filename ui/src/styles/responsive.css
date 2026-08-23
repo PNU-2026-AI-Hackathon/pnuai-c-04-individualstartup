@@ -37,13 +37,17 @@
   }
 
   .workspace {
-    grid-template-columns: 1fr;
+    display: block;
+    overflow-y: auto;
+  }
+
+  .modeling-area {
+    height: max(620px, calc(100vh - 82px));
   }
 
   .workspace-inspector {
-    position: static;
-    max-height: none;
-    min-height: 360px;
+    height: 620px;
+    margin-top: 10px;
   }
 }
 
