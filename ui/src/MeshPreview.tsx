@@ -202,23 +202,10 @@ export function mountPreview({
   };
 
   try {
-    renderer = runtime.createRenderer();
-    renderer.setPixelRatio(Math.min(runtime.devicePixelRatio, PREVIEW_PIXEL_RATIO_LIMIT));
-    renderer.setSize(width, height, false);
-    container.appendChild(renderer.domElement);
     axisLines = mode === "stl" ? createAxisLines(5000) : null;
     if (axisLines) scene.add(axisLines);
     bedGrid = mode === "gcode" && bedBounds ? createBedGrid(bedBounds) : null;
     if (bedGrid) scene.add(bedGrid);
-
-    controls = runtime.createControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.enableRotate = true;
-    controls.enableZoom = true;
-    controls.enablePan = true;
-    controls.dampingFactor = 0.08;
-    controls.zoomSpeed = 0.9;
-    controls.rotateSpeed = 0.7;
 
     if (mode === "stl") {
       if (!activeMesh) throw new Error("STL preview mesh is unavailable.");
@@ -229,6 +216,20 @@ export function mountPreview({
       modelObject = gcodeObject;
     }
     scene.add(modelObject);
+
+    renderer = runtime.createRenderer();
+    renderer.setPixelRatio(Math.min(runtime.devicePixelRatio, PREVIEW_PIXEL_RATIO_LIMIT));
+    renderer.setSize(width, height, false);
+    container.appendChild(renderer.domElement);
+
+    controls = runtime.createControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.enableRotate = true;
+    controls.enableZoom = true;
+    controls.enablePan = true;
+    controls.dampingFactor = 0.08;
+    controls.zoomSpeed = 0.9;
+    controls.rotateSpeed = 0.7;
 
     const bounds = new THREE.Box3().setFromObject(modelObject);
     if (bedGrid) bounds.expandByObject(bedGrid);

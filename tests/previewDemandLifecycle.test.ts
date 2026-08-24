@@ -83,7 +83,7 @@ test("new G-code content receives an immediate frame with bed-aware framing", ()
   browserWindow.document.body.appendChild(domContainer);
   const container = domContainer as unknown as HTMLDivElement;
   setElementSize(container, 300, 180);
-  const harness = createPreviewRuntimeHarness(browserWindow, 1.25);
+  const harness = createPreviewRuntimeHarness(browserWindow, 1);
   const gcodeObject = parseRenderableGCode("G90\nG1 X0 Y0 Z0\nG1 X10 Y10 Z1 E1");
 
   const dispose = mountPreview({
@@ -95,12 +95,13 @@ test("new G-code content receives an immediate frame with bed-aware framing", ()
     mode: "gcode"
   }, harness.runtime);
 
-  assert.equal(harness.pixelRatios.at(-1), 1.25);
+  assert.equal(harness.pixelRatios.at(-1), 1);
   assert.equal(harness.animationFrames.pendingCount(), 1);
   harness.animationFrames.flushNext();
   assert.equal(harness.rendered.length, 1);
   const gcodeResources = trackSceneResources(harness.rendered[0].scene);
   assert.ok(harness.rendered[0].scene.getObjectByName("gcode"));
+  assert.equal(harness.rendered[0].scene.children.some((child) => child instanceof THREE.Mesh), false);
   assert.ok(harness.controls.target.distanceTo(new THREE.Vector3(10, 0.5, -10)) < 1e-6);
   assert.equal(harness.animationFrames.pendingCount(), 0);
 
@@ -108,6 +109,33 @@ test("new G-code content receives an immediate frame with bed-aware framing", ()
   assert.equal(harness.controls.listenerCount, 0);
   assert.equal(harness.observerDisconnected, true);
   gcodeResources.assertDisposed();
+
+  const restoredHarness = createPreviewRuntimeHarness(browserWindow, 1.5);
+  const restoredTexture = new THREE.Texture();
+  let restoredTextureDisposed = false;
+  restoredTexture.addEventListener("dispose", () => { restoredTextureDisposed = true; });
+  const translatedMesh: CadMesh = {
+    ...triangleMesh,
+    vertices: triangleMesh.vertices.map((coordinate, index) => (
+      coordinate + (index % 3 === 0 ? 100 : 0)
+    ))
+  };
+  const disposeRestored = mountPreview({
+    activeMesh: translatedMesh,
+    bedBounds: null,
+    container,
+    gcodeObject: null,
+    matcap: restoredTexture,
+    mode: "stl"
+  }, restoredHarness.runtime);
+  restoredHarness.animationFrames.flushNext();
+  assert.ok(restoredHarness.rendered[0].scene.children.some((child) => child instanceof THREE.Mesh));
+  assert.ok(restoredHarness.controls.target.distanceTo(new THREE.Vector3(105, 5, 0)) < 1e-6);
+  assert.equal(restoredHarness.animationFrames.pendingCount(), 0);
+  disposeRestored();
+  assert.equal(restoredTextureDisposed, true);
+  assert.equal(restoredHarness.controls.listenerCount, 0);
+  assert.equal(restoredHarness.observerDisconnected, true);
   browserWindow.close();
 });
 

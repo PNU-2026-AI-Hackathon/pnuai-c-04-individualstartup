@@ -115,6 +115,48 @@ test("Matcap loader rejects instead of substituting a fallback material", async 
   );
 });
 
+test("invalid STL geometry is shown by the Preview error boundary", async () => {
+  const browserWindow = installDom();
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  const invalidMesh: CadMesh = {
+    vertices: [0, 0, 0, 1, 0, 0, 2, 0, 0],
+    normals: [0, 0, 1, 0, 0, 1, 0, 0, 1],
+    indices: [0, 1, 2]
+  };
+  const texture = new THREE.Texture();
+  let textureDisposed = false;
+  const originalLoadAsync = THREE.TextureLoader.prototype.loadAsync;
+  const originalConsoleError = console.error;
+  THREE.TextureLoader.prototype.loadAsync = async () => texture;
+  texture.addEventListener("dispose", () => { textureDisposed = true; });
+  console.error = () => undefined;
+
+  try {
+    await act(async () => {
+      root.render(
+        <UiErrorBoundary scope="Preview">
+          <MeshPreview mesh={invalidMesh} gcode={null} mode="stl" />
+        </UiErrorBoundary>
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const boundary = container.querySelector("[data-testid='preview-error-boundary']");
+    assert.ok(boundary);
+    assert.match(boundary.textContent ?? "", /triangle 0 is degenerate/);
+    assert.equal(textureDisposed, true);
+    assert.equal(container.querySelector("canvas"), null);
+  } finally {
+    THREE.TextureLoader.prototype.loadAsync = originalLoadAsync;
+    console.error = originalConsoleError;
+    act(() => root.unmount());
+    browserWindow.close();
+  }
+});
+
 test("an in-flight Matcap texture is disposed when the Preview unmounts", async () => {
   const browserWindow = installDom();
   const container = document.createElement("div");
