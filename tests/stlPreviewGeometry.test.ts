@@ -86,6 +86,18 @@ test("vertex merge tolerance follows model scale without joining a distinct feat
   distinctGeometry.dispose();
 });
 
+test("merge tolerance preserves distinct vertices that form a small triangle feature", () => {
+  const geometry = createStlPreviewGeometry({
+    vertices: [0, 0, 0, 5e-7, 0, 0, 0, 1, 0],
+    normals: [0, 0, 1, 0, 0, 1, 0, 0, 1],
+    indices: [0, 1, 2]
+  });
+
+  assert.equal(getStlPreviewGeometryStats(geometry).mergedVertexCount, 3);
+  assert.equal(geometry.getAttribute("position").count, 3);
+  geometry.dispose();
+});
+
 test("derived geometry disposal is observable for every repeated preview instance", () => {
   const first = createStlPreviewGeometry(createFoldMesh(0, 0));
   const second = createStlPreviewGeometry(createFoldMesh(0, 0));

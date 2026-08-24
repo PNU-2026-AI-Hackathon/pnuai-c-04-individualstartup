@@ -15,6 +15,7 @@ export interface StlPreviewGeometryStats {
 type WeldedVertex = {
   position: THREE.Vector3;
   faceNormals: THREE.Vector3[];
+  sourceIndices: number[];
 };
 
 /**
@@ -49,7 +50,12 @@ export function createStlPreviewGeometry(mesh: CadMesh): THREE.BufferGeometry {
     maxCoordinate * Number.EPSILON * 16,
     Number.EPSILON
   );
-  const { sourceToWelded, weldedVertices } = weldVertices(sourcePositions, vertexMergeTolerance);
+  const trianglePeers = buildTrianglePeers(mesh.indices, sourceVertexCount);
+  const { sourceToWelded, weldedVertices } = weldVertices(
+    sourcePositions,
+    trianglePeers,
+    vertexMergeTolerance
+  );
   const faceNormals: THREE.Vector3[] = [];
   const minimumDoubleArea = diagonal * diagonal * Number.EPSILON * 16;
 
@@ -63,7 +69,11 @@ export function createStlPreviewGeometry(mesh: CadMesh): THREE.BufferGeometry {
       throw new Error(`STL preview triangle ${index / 3} collapses after vertex merging.`);
     }
 
-    const [a, b, c] = weldedIndices.map((vertexIndex) => weldedVertices[vertexIndex].position);
+    const [a, b, c] = [
+      sourcePositions[mesh.indices[index]],
+      sourcePositions[mesh.indices[index + 1]],
+      sourcePositions[mesh.indices[index + 2]]
+    ];
     const normal = new THREE.Vector3()
       .crossVectors(new THREE.Vector3().subVectors(b, a), new THREE.Vector3().subVectors(c, a));
     if (!Number.isFinite(normal.lengthSq()) || normal.length() <= minimumDoubleArea) {
@@ -88,7 +98,8 @@ export function createStlPreviewGeometry(mesh: CadMesh): THREE.BufferGeometry {
       throw new Error(`STL preview normal generation failed at triangle ${Math.floor(index / 3)}.`);
     }
     smoothNormal.normalize();
-    positions.push(vertex.position.x, vertex.position.y, vertex.position.z);
+    const sourcePosition = sourcePositions[mesh.indices[index]];
+    positions.push(sourcePosition.x, sourcePosition.y, sourcePosition.z);
     normals.push(smoothNormal.x, smoothNormal.y, smoothNormal.z);
   }
 
@@ -145,6 +156,7 @@ function validateMeshArrays(mesh: CadMesh): void {
 
 function weldVertices(
   positions: THREE.Vector3[],
+  trianglePeers: Array<Set<number>>,
   tolerance: number
 ): { sourceToWelded: number[]; weldedVertices: WeldedVertex[] } {
   const cells = new Map<string, number[]>();
@@ -152,7 +164,8 @@ function weldVertices(
   const weldedVertices: WeldedVertex[] = [];
   const toleranceSquared = tolerance * tolerance;
 
-  for (const position of positions) {
+  for (let sourceIndex = 0; sourceIndex < positions.length; sourceIndex += 1) {
+    const position = positions[sourceIndex];
     const cell = [
       Math.floor(position.x / tolerance),
       Math.floor(position.y / tolerance),
@@ -164,7 +177,14 @@ function weldVertices(
         for (let z = -1; z <= 1 && weldedIndex === null; z += 1) {
           const candidates = cells.get(cellKey(cell[0] + x, cell[1] + y, cell[2] + z)) ?? [];
           for (const candidate of candidates) {
-            if (weldedVertices[candidate].position.distanceToSquared(position) <= toleranceSquared) {
+            const candidateVertex = weldedVertices[candidate];
+            const sharesTriangle = candidateVertex.sourceIndices.some((candidateSourceIndex) => (
+              trianglePeers[sourceIndex].has(candidateSourceIndex)
+            ));
+            if (
+              !sharesTriangle
+              && candidateVertex.position.distanceToSquared(position) <= toleranceSquared
+            ) {
               weldedIndex = candidate;
               break;
             }
@@ -174,15 +194,30 @@ function weldVertices(
     }
     if (weldedIndex === null) {
       weldedIndex = weldedVertices.length;
-      weldedVertices.push({ position: position.clone(), faceNormals: [] });
+      weldedVertices.push({ position: position.clone(), faceNormals: [], sourceIndices: [sourceIndex] });
       const key = cellKey(cell[0], cell[1], cell[2]);
       const entries = cells.get(key) ?? [];
       entries.push(weldedIndex);
       cells.set(key, entries);
+    } else {
+      weldedVertices[weldedIndex].sourceIndices.push(sourceIndex);
     }
     sourceToWelded.push(weldedIndex);
   }
   return { sourceToWelded, weldedVertices };
+}
+
+function buildTrianglePeers(indices: number[], vertexCount: number): Array<Set<number>> {
+  const trianglePeers = Array.from({ length: vertexCount }, () => new Set<number>());
+  for (let index = 0; index < indices.length; index += 3) {
+    const triangle = [indices[index], indices[index + 1], indices[index + 2]];
+    for (const vertexIndex of triangle) {
+      for (const peerIndex of triangle) {
+        if (peerIndex !== vertexIndex) trianglePeers[vertexIndex].add(peerIndex);
+      }
+    }
+  }
+  return trianglePeers;
 }
 
 function cellKey(x: number, y: number, z: number): string {
