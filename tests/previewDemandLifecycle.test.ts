@@ -29,6 +29,7 @@ test("preview renders initial STL, controls, and resize only on demand", () => {
     bedBounds: null,
     container,
     gcodeObject: null,
+    matcap: new THREE.Texture(),
     mode: "stl"
   }, harness.runtime);
 
@@ -90,6 +91,7 @@ test("new G-code content receives an immediate frame with bed-aware framing", ()
     bedBounds: { minX: 0, maxX: 20, minY: 0, maxY: 20 },
     container,
     gcodeObject,
+    matcap: null,
     mode: "gcode"
   }, harness.runtime);
 
