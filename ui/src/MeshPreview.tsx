@@ -8,6 +8,7 @@ import {
   createDemandRenderScheduler,
   type DemandRenderScheduler
 } from "./previewRenderScheduler";
+import { createStlPreviewGeometry } from "./stlPreviewGeometry";
 
 export const PREVIEW_PIXEL_RATIO_LIMIT = 1.5;
 
@@ -292,12 +293,7 @@ export function createStlPreviewObject(
   mesh: CadMesh,
   matcap: THREE.Texture
 ): THREE.Mesh<THREE.BufferGeometry, THREE.MeshMatcapMaterial> {
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(mesh.vertices, 3));
-  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(mesh.normals, 3));
-  geometry.setIndex(mesh.indices);
-  geometry.computeBoundingBox();
-  geometry.computeBoundingSphere();
+  const geometry = createStlPreviewGeometry(mesh);
   const material = new THREE.MeshMatcapMaterial({
     color: 0xa8bac5,
     matcap
