@@ -1,9 +1,25 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GCodeLoader } from "three/addons/loaders/GCodeLoader.js";
 import type { CadMesh } from "./protocol";
 import type { PreviewMode } from "./components/WorkspacePanel";
+
+export const COLD_METAL_MATCAP_URL = new URL("./assets/cold-metal.webp", import.meta.url).href;
+
+type MatcapTextureLoader = Pick<THREE.TextureLoader, "loadAsync">;
+
+export async function loadColdMetalMatcap(
+  loader: MatcapTextureLoader = new THREE.TextureLoader()
+): Promise<THREE.Texture> {
+  try {
+    const texture = await loader.loadAsync(COLD_METAL_MATCAP_URL);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    return texture;
+  } catch (cause) {
+    throw new Error("Cold-metal Matcap texture failed to load or decode.", { cause });
+  }
+}
 
 export function MeshPreview({
   mesh,
@@ -26,33 +42,122 @@ export function MeshPreview({
     [bedShape, mode]
   );
   const activeMesh = mode === "stl" ? mesh : null;
+  const [previewFailure, setPreviewFailure] = useState<{
+    mode: PreviewMode;
+    mesh: CadMesh | null;
+    error: Error;
+  } | null>(null);
+
+  if (
+    previewFailure
+    && previewFailure.mode === mode
+    && previewFailure.mesh === activeMesh
+  ) {
+    throw previewFailure.error;
+  }
 
   useEffect(() => {
     const container = ref.current;
     const hasPreview = mode === "stl" ? Boolean(activeMesh) : Boolean(gcodeObject);
     if (!container || !hasPreview) return;
-    const width = Math.max(container.clientWidth, 1);
-    const height = Math.max(container.clientHeight, 1);
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xf6f7f9);
+    let cancelled = false;
+    let disposePreview: (() => void) | null = null;
 
-    const camera = new THREE.PerspectiveCamera(35, width / height, 0.1, 5000);
+    const initialize = async () => {
+      const matcap = mode === "stl" ? await loadColdMetalMatcap() : null;
+      if (cancelled) {
+        matcap?.dispose();
+        return;
+      }
+      disposePreview = mountPreview({
+        activeMesh,
+        bedBounds,
+        container,
+        gcodeObject,
+        matcap,
+        mode
+      });
+    };
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    void initialize().catch((caught: unknown) => {
+      if (cancelled) return;
+      const error = caught instanceof Error
+        ? caught
+        : new Error("Preview initialization failed with an unknown error.", { cause: caught });
+      setPreviewFailure({ mode, mesh: activeMesh, error });
+    });
+
+    return () => {
+      cancelled = true;
+      disposePreview?.();
+    };
+  }, [activeMesh, bedBounds, gcodeObject, mode]);
+
+  const hasPreview = mode === "stl" ? Boolean(mesh) : Boolean(gcodeObject);
+  return (
+    <div className="mesh-preview" data-preview-mode={mode} ref={ref}>
+      {!hasPreview ? <span>No {mode === "stl" ? "STL" : "G-code"} preview available</span> : null}
+    </div>
+  );
+}
+
+function mountPreview({
+  activeMesh,
+  bedBounds,
+  container,
+  gcodeObject,
+  matcap,
+  mode
+}: {
+  activeMesh: CadMesh | null;
+  bedBounds: RectangularBedShape | null;
+  container: HTMLDivElement;
+  gcodeObject: THREE.Group | null;
+  matcap: THREE.Texture | null;
+  mode: PreviewMode;
+}): () => void {
+  const width = Math.max(container.clientWidth, 1);
+  const height = Math.max(container.clientHeight, 1);
+  const scene = createPreviewScene();
+  const camera = new THREE.PerspectiveCamera(35, width / height, 0.1, 5000);
+  let renderer: THREE.WebGLRenderer | null = null;
+  let controls: OrbitControls | null = null;
+  let observer: ResizeObserver | null = null;
+  let modelObject: THREE.Object3D | null = null;
+  let axisLines: THREE.LineSegments | null = null;
+  let bedGrid: THREE.LineSegments | null = null;
+  let frame = 0;
+  let updateCameraDebugState: (() => void) | null = null;
+
+  const dispose = () => {
+    if (frame) cancelAnimationFrame(frame);
+    observer?.disconnect();
+    if (controls && updateCameraDebugState) {
+      controls.removeEventListener("change", updateCameraDebugState);
+    }
+    controls?.dispose();
+    if (modelObject) disposeObject(modelObject);
+    else matcap?.dispose();
+    if (axisLines) disposeObject(axisLines);
+    if (bedGrid) disposeObject(bedGrid);
+    renderer?.dispose();
+    if (renderer?.domElement.parentNode === container) {
+      container.removeChild(renderer.domElement);
+    }
+  };
+
+  try {
+    renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(width, height, false);
     container.appendChild(renderer.domElement);
 
-    const ambient = new THREE.AmbientLight(0xffffff, 1.8);
-    const key = new THREE.DirectionalLight(0xffffff, 2.4);
-    key.position.set(50, -80, 120);
-    scene.add(ambient, key);
-    const axisLines = mode === "stl" ? createAxisLines(5000) : null;
+    axisLines = mode === "stl" ? createAxisLines(5000) : null;
     if (axisLines) scene.add(axisLines);
-    const bedGrid = mode === "gcode" && bedBounds ? createBedGrid(bedBounds) : null;
+    bedGrid = mode === "gcode" && bedBounds ? createBedGrid(bedBounds) : null;
     if (bedGrid) scene.add(bedGrid);
 
-    const controls = new OrbitControls(camera, renderer.domElement);
+    controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.enableRotate = true;
     controls.enableZoom = true;
@@ -61,21 +166,10 @@ export function MeshPreview({
     controls.zoomSpeed = 0.9;
     controls.rotateSpeed = 0.7;
 
-    let modelObject: THREE.Object3D;
     if (mode === "stl") {
       if (!activeMesh) throw new Error("STL preview mesh is unavailable.");
-      const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute("position", new THREE.Float32BufferAttribute(activeMesh.vertices, 3));
-      geometry.setAttribute("normal", new THREE.Float32BufferAttribute(activeMesh.normals, 3));
-      geometry.setIndex(activeMesh.indices);
-      geometry.computeBoundingBox();
-      geometry.computeBoundingSphere();
-      const material = new THREE.MeshStandardMaterial({
-        color: 0x2c7a7b,
-        metalness: 0.08,
-        roughness: 0.48
-      });
-      modelObject = new THREE.Mesh(geometry, material);
+      if (!matcap) throw new Error("Cold-metal Matcap texture is unavailable.");
+      modelObject = createStlPreviewObject(activeMesh, matcap);
     } else {
       if (!gcodeObject) throw new Error("G-code preview is unavailable.");
       modelObject = gcodeObject;
@@ -96,7 +190,8 @@ export function MeshPreview({
     camera.updateProjectionMatrix();
     controls.update();
 
-    const updateCameraDebugState = () => {
+    updateCameraDebugState = () => {
+      if (!controls) return;
       container.dataset.cameraDistance = controls.getDistance().toFixed(3);
       container.dataset.cameraPosition = [camera.position.x, camera.position.y, camera.position.z]
         .map((value) => value.toFixed(3))
@@ -106,43 +201,51 @@ export function MeshPreview({
     updateCameraDebugState();
 
     const resize = () => {
+      if (!renderer) return;
       const nextWidth = Math.max(container.clientWidth, 1);
       const nextHeight = Math.max(container.clientHeight, 1);
       camera.aspect = nextWidth / nextHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(nextWidth, nextHeight, false);
     };
-    const observer = new ResizeObserver(resize);
+    observer = new ResizeObserver(resize);
     observer.observe(container);
 
-    let frame = 0;
     const animate = () => {
       frame = requestAnimationFrame(animate);
-      controls.update();
-      renderer.render(scene, camera);
-      updateCameraDebugState();
+      controls?.update();
+      renderer?.render(scene, camera);
+      updateCameraDebugState?.();
     };
     animate();
+    return dispose;
+  } catch (error) {
+    dispose();
+    throw error;
+  }
+}
 
-    return () => {
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-      controls.removeEventListener("change", updateCameraDebugState);
-      controls.dispose();
-      disposeObject(modelObject);
-      if (axisLines) disposeObject(axisLines);
-      if (bedGrid) disposeObject(bedGrid);
-      renderer.dispose();
-      container.removeChild(renderer.domElement);
-    };
-  }, [activeMesh, bedBounds, gcodeObject, mode]);
+export function createStlPreviewObject(
+  mesh: CadMesh,
+  matcap: THREE.Texture
+): THREE.Mesh<THREE.BufferGeometry, THREE.MeshMatcapMaterial> {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(mesh.vertices, 3));
+  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(mesh.normals, 3));
+  geometry.setIndex(mesh.indices);
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+  const material = new THREE.MeshMatcapMaterial({
+    color: 0xa8bac5,
+    matcap
+  });
+  return new THREE.Mesh(geometry, material);
+}
 
-  const hasPreview = mode === "stl" ? Boolean(mesh) : Boolean(gcodeObject);
-  return (
-    <div className="mesh-preview" data-preview-mode={mode} ref={ref}>
-      {!hasPreview ? <span>No {mode === "stl" ? "STL" : "G-code"} preview available</span> : null}
-    </div>
-  );
+export function createPreviewScene(): THREE.Scene {
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xf6f7f9);
+  return scene;
 }
 
 function createAxisLines(extent: number): THREE.LineSegments {
@@ -273,9 +376,10 @@ export function parseRenderableGCode(gcode: string): THREE.Group {
   return object;
 }
 
-function disposeObject(object: THREE.Object3D): void {
+export function disposeObject(object: THREE.Object3D): void {
   const geometries = new Set<THREE.BufferGeometry>();
   const materials = new Set<THREE.Material>();
+  const textures = new Set<THREE.Texture>();
   object.traverse((child) => {
     if ("geometry" in child && child.geometry instanceof THREE.BufferGeometry) {
       geometries.add(child.geometry);
@@ -283,9 +387,14 @@ function disposeObject(object: THREE.Object3D): void {
     if (!("material" in child)) return;
     const childMaterials = Array.isArray(child.material) ? child.material : [child.material];
     for (const material of childMaterials) {
-      if (material instanceof THREE.Material) materials.add(material);
+      if (!(material instanceof THREE.Material)) continue;
+      materials.add(material);
+      if (material instanceof THREE.MeshMatcapMaterial && material.matcap) {
+        textures.add(material.matcap);
+      }
     }
   });
   for (const geometry of geometries) geometry.dispose();
+  for (const texture of textures) texture.dispose();
   for (const material of materials) material.dispose();
 }
