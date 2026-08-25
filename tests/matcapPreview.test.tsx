@@ -64,6 +64,26 @@ test("STL preview uses the cold-metal Matcap material and disposes all owned res
   assert.deepEqual(disposed, { geometry: true, material: true, texture: true });
 });
 
+test("preview disposal releases every unique texture referenced by a material", () => {
+  const sharedTexture = new THREE.Texture();
+  const normalTexture = new THREE.Texture();
+  const material = new THREE.MeshStandardMaterial({
+    map: sharedTexture,
+    normalMap: normalTexture,
+    roughnessMap: sharedTexture
+  });
+  const object = new THREE.Mesh(new THREE.BufferGeometry(), material);
+  let sharedDisposeCount = 0;
+  let normalDisposeCount = 0;
+  sharedTexture.addEventListener("dispose", () => { sharedDisposeCount += 1; });
+  normalTexture.addEventListener("dispose", () => { normalDisposeCount += 1; });
+
+  disposeObject(object);
+
+  assert.equal(sharedDisposeCount, 1);
+  assert.equal(normalDisposeCount, 1);
+});
+
 test("Matcap preview scene does not create Ambient or Directional lights", () => {
   const scene = createPreviewScene();
   assert.equal(scene.children.some((child) => child instanceof THREE.Light), false);

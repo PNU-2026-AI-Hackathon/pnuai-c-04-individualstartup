@@ -52,6 +52,54 @@ test("demand scheduler cancels pending work and rejects post-disposal requests",
   assert.equal(animationFrames.pendingCount(), 0);
 });
 
+test("demand scheduler clears pending state when update fails", () => {
+  const animationFrames = createAnimationFrameHarness();
+  const expectedError = new Error("update failed");
+  let shouldFail = true;
+  let renderCount = 0;
+  const scheduler = createDemandRenderScheduler({
+    update: () => {
+      if (shouldFail) throw expectedError;
+      return false;
+    },
+    render: () => { renderCount += 1; },
+    requestAnimationFrame: animationFrames.request,
+    cancelAnimationFrame: animationFrames.cancel
+  });
+
+  scheduler.requestRender();
+  assert.throws(() => animationFrames.flushNext(), expectedError);
+  shouldFail = false;
+  scheduler.requestRender();
+  assert.equal(animationFrames.pendingCount(), 1);
+  animationFrames.flushNext();
+  assert.equal(renderCount, 1);
+});
+
+test("demand scheduler clears pending state when render fails", () => {
+  const animationFrames = createAnimationFrameHarness();
+  const expectedError = new Error("render failed");
+  let shouldFail = true;
+  let renderCount = 0;
+  const scheduler = createDemandRenderScheduler({
+    update: () => false,
+    render: () => {
+      if (shouldFail) throw expectedError;
+      renderCount += 1;
+    },
+    requestAnimationFrame: animationFrames.request,
+    cancelAnimationFrame: animationFrames.cancel
+  });
+
+  scheduler.requestRender();
+  assert.throws(() => animationFrames.flushNext(), expectedError);
+  shouldFail = false;
+  scheduler.requestRender();
+  assert.equal(animationFrames.pendingCount(), 1);
+  animationFrames.flushNext();
+  assert.equal(renderCount, 1);
+});
+
 function createAnimationFrameHarness() {
   let nextHandle = 1;
   const callbacks = new Map<number, FrameRequestCallback>();
