@@ -11,8 +11,12 @@ export interface DemandRenderSchedulerOptions {
 }
 
 /**
- * Coalesces invalidations into one frame and continues only while camera
- * damping changes the view.
+ * Coalesces invalidations into one RAF callback. While a callback is running,
+ * requests raised by OrbitControls are folded into that callback; another
+ * frame is scheduled only when damping reports that the view changed.
+ *
+ * A thrown update/render error is allowed to propagate, but the pending handle
+ * is always cleared so the scheduler never remains stuck after the failure.
  */
 export function createDemandRenderScheduler({
   update,
@@ -20,16 +24,20 @@ export function createDemandRenderScheduler({
   requestAnimationFrame,
   cancelAnimationFrame
 }: DemandRenderSchedulerOptions): DemandRenderScheduler {
-  let pendingFrame: number | null = null;
+  let pendingRAFHandle: number | null = null;
   let disposed = false;
 
   const requestRender = () => {
-    if (disposed || pendingFrame !== null) return;
-    pendingFrame = requestAnimationFrame(() => {
-      pendingFrame = null;
+    if (disposed || pendingRAFHandle !== null) return;
+    pendingRAFHandle = requestAnimationFrame(() => {
       if (disposed) return;
-      const dampingChanged = update();
-      render();
+      let dampingChanged = false;
+      try {
+        dampingChanged = update();
+        render();
+      } finally {
+        pendingRAFHandle = null;
+      }
       if (dampingChanged) requestRender();
     });
   };
@@ -39,9 +47,9 @@ export function createDemandRenderScheduler({
     dispose() {
       if (disposed) return;
       disposed = true;
-      if (pendingFrame !== null) {
-        cancelAnimationFrame(pendingFrame);
-        pendingFrame = null;
+      if (pendingRAFHandle !== null) {
+        cancelAnimationFrame(pendingRAFHandle);
+        pendingRAFHandle = null;
       }
     }
   };

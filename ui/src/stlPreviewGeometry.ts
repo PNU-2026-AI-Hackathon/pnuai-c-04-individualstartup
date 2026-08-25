@@ -1,8 +1,24 @@
 import * as THREE from "three";
 import type { CadMesh } from "./protocol";
 
+/**
+ * A 40-degree crease lies within the 30–45 degree CAD-preview range: it
+ * smooths facets on cylinders and other shallow curves while retaining common
+ * machined corners and chamfers as sharp edges.
+ */
 export const STL_CREASE_ANGLE_RADIANS = THREE.MathUtils.degToRad(40);
+
+/**
+ * Vertices may move by one millionth of the model diagonal before they are
+ * considered distinct. Scaling by the diagonal keeps welding unit-agnostic.
+ */
 export const STL_VERTEX_MERGE_RELATIVE_TOLERANCE = 1e-6;
+
+/**
+ * Provides headroom above one ULP when large coordinate offsets make the
+ * diagonal-relative tolerance smaller than representable coordinate spacing.
+ */
+const FLOATING_POINT_SAFETY_FACTOR = 16;
 
 export interface StlPreviewGeometryStats {
   sourceVertexCount: number;
@@ -47,7 +63,7 @@ export function createStlPreviewGeometry(mesh: CadMesh): THREE.BufferGeometry {
   );
   const vertexMergeTolerance = Math.max(
     diagonal * STL_VERTEX_MERGE_RELATIVE_TOLERANCE,
-    maxCoordinate * Number.EPSILON * 16,
+    maxCoordinate * Number.EPSILON * FLOATING_POINT_SAFETY_FACTOR,
     Number.EPSILON
   );
   const trianglePeers = buildTrianglePeers(mesh.indices, sourceVertexCount);
@@ -57,7 +73,7 @@ export function createStlPreviewGeometry(mesh: CadMesh): THREE.BufferGeometry {
     vertexMergeTolerance
   );
   const faceNormals: THREE.Vector3[] = [];
-  const minimumDoubleArea = diagonal * diagonal * Number.EPSILON * 16;
+  const minimumDoubleArea = diagonal * diagonal * Number.EPSILON * FLOATING_POINT_SAFETY_FACTOR;
 
   for (let index = 0; index < mesh.indices.length; index += 3) {
     const weldedIndices = [

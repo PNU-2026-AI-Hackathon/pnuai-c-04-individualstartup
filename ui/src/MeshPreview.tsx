@@ -10,6 +10,7 @@ import {
 } from "./previewRenderScheduler";
 import { createStlPreviewGeometry } from "./stlPreviewGeometry";
 
+// 1.5 keeps diagonal edges crisp while limiting fragment work on high-DPR displays.
 export const PREVIEW_PIXEL_RATIO_LIMIT = 1.5;
 
 type PreviewRenderer = Pick<
@@ -180,6 +181,7 @@ export function mountPreview({
   let scheduler: DemandRenderScheduler | null = null;
   let updateCameraDebugState: (() => void) | null = null;
   let handleControlsChange: (() => void) | null = null;
+  let ownsUnattachedMatcap = matcap !== null;
   let disposed = false;
 
   const dispose = () => {
@@ -192,7 +194,7 @@ export function mountPreview({
     }
     controls?.dispose();
     if (modelObject) disposeObject(modelObject);
-    else matcap?.dispose();
+    if (ownsUnattachedMatcap) matcap?.dispose();
     if (axisLines) disposeObject(axisLines);
     if (bedGrid) disposeObject(bedGrid);
     renderer?.dispose();
@@ -211,6 +213,7 @@ export function mountPreview({
       if (!activeMesh) throw new Error("STL preview mesh is unavailable.");
       if (!matcap) throw new Error("Cold-metal Matcap texture is unavailable.");
       modelObject = createStlPreviewObject(activeMesh, matcap);
+      ownsUnattachedMatcap = false;
     } else {
       if (!gcodeObject) throw new Error("G-code preview is unavailable.");
       modelObject = gcodeObject;
@@ -270,10 +273,15 @@ export function mountPreview({
     };
     controls.addEventListener("change", handleControlsChange);
 
+    let renderedWidth = width;
+    let renderedHeight = height;
     const resize = () => {
       if (disposed || !renderer) return;
       const nextWidth = Math.max(container.clientWidth, 1);
       const nextHeight = Math.max(container.clientHeight, 1);
+      if (nextWidth === renderedWidth && nextHeight === renderedHeight) return;
+      renderedWidth = nextWidth;
+      renderedHeight = nextHeight;
       camera.aspect = nextWidth / nextHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(nextWidth, nextHeight, false);
@@ -449,8 +457,14 @@ export function disposeObject(object: THREE.Object3D): void {
     for (const material of childMaterials) {
       if (!(material instanceof THREE.Material)) continue;
       materials.add(material);
-      if (material instanceof THREE.MeshMatcapMaterial && material.matcap) {
-        textures.add(material.matcap);
+      for (const value of Object.values(material)) {
+        if (
+          typeof value === "object"
+          && value !== null
+          && (value as THREE.Texture).isTexture === true
+        ) {
+          textures.add(value as THREE.Texture);
+        }
       }
     }
   });
