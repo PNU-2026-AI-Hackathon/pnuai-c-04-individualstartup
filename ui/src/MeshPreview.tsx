@@ -8,6 +8,7 @@ import {
   createDemandRenderScheduler,
   type DemandRenderScheduler
 } from "./previewRenderScheduler";
+import { createStlPreviewGeometry } from "./stlPreviewGeometry";
 
 // 1.5 keeps diagonal edges crisp while limiting fragment work on high-DPR displays.
 export const PREVIEW_PIXEL_RATIO_LIMIT = 1.5;
@@ -180,6 +181,7 @@ export function mountPreview({
   let scheduler: DemandRenderScheduler | null = null;
   let updateCameraDebugState: (() => void) | null = null;
   let handleControlsChange: (() => void) | null = null;
+  let ownsUnattachedMatcap = matcap !== null;
   let disposed = false;
 
   const dispose = () => {
@@ -192,7 +194,7 @@ export function mountPreview({
     }
     controls?.dispose();
     if (modelObject) disposeObject(modelObject);
-    else matcap?.dispose();
+    if (ownsUnattachedMatcap) matcap?.dispose();
     if (axisLines) disposeObject(axisLines);
     if (bedGrid) disposeObject(bedGrid);
     renderer?.dispose();
@@ -224,6 +226,7 @@ export function mountPreview({
       if (!activeMesh) throw new Error("STL preview mesh is unavailable.");
       if (!matcap) throw new Error("Cold-metal Matcap texture is unavailable.");
       modelObject = createStlPreviewObject(activeMesh, matcap);
+      ownsUnattachedMatcap = false;
     } else {
       if (!gcodeObject) throw new Error("G-code preview is unavailable.");
       modelObject = gcodeObject;
@@ -298,12 +301,7 @@ export function createStlPreviewObject(
   mesh: CadMesh,
   matcap: THREE.Texture
 ): THREE.Mesh<THREE.BufferGeometry, THREE.MeshMatcapMaterial> {
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(mesh.vertices, 3));
-  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(mesh.normals, 3));
-  geometry.setIndex(mesh.indices);
-  geometry.computeBoundingBox();
-  geometry.computeBoundingSphere();
+  const geometry = createStlPreviewGeometry(mesh);
   const material = new THREE.MeshMatcapMaterial({
     color: 0xa8bac5,
     matcap
