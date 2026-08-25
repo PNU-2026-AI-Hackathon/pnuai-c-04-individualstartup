@@ -501,7 +501,6 @@ function workspaceProps(options: WorkspaceHarnessOptions, handlers: WorkspaceHan
     onStartRun: () => undefined,
     onRetryRun: () => undefined,
     onCancelRun: () => undefined,
-    onUpdateParameter: () => undefined,
     onActivateRevision: () => undefined,
     onRestoreRevision: () => undefined,
     onExport: () => undefined,

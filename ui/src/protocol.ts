@@ -625,7 +625,6 @@ export interface UpdateModelSourceInput {
   sourceLanguage: CadSourceLanguage;
   source: string;
   parentRevisionId?: string;
-  parameters?: CadParameter[];
 }
 
 export interface UpdateModelSourceResult {

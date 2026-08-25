@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { CadBackendClient } from "../ui/src/backendClient";
 import type { CadRevision, CadSessionState, CreateCadSessionResult } from "../ui/src/protocol";
-import { duplicateSessionWithPreview } from "../ui/src/sessionWorkflow";
+import { duplicateSessionWithPreview, saveSourceRevisionWithPreview } from "../ui/src/sessionWorkflow";
 
 test("duplicating a session applies its copied source before rendering its preview", async () => {
   const duplicatedState = duplicatedSessionState();
@@ -36,6 +36,64 @@ test("duplicating a session applies its copied source before rendering its previ
     "viewed:session-copy",
     "render:session-copy:revision-copy:cube([12, 8, 4]);"
   ]);
+});
+
+test("saving source activates the returned revision before rendering its preview", async () => {
+  const savedState = duplicatedSessionState();
+  const revision = savedState.activeRevision!;
+  const calls: string[] = [];
+  const backend: Pick<CadBackendClient, "updateModelSource"> = {
+    async updateModelSource(input) {
+      calls.push(`save:${input.sessionId}:${input.parentRevisionId}:${input.source}`);
+      return { revisionId: revision.id, state: savedState };
+    }
+  };
+
+  const result = await saveSourceRevisionWithPreview({
+    backend,
+    sessionId: savedState.session.id,
+    source: revision.source,
+    parentRevisionId: "revision-parent",
+    applySessionSnapshot(state) {
+      calls.push(`snapshot:${state.activeRevision?.id}`);
+    },
+    async renderRevision(sessionId, activeRevision) {
+      calls.push(`render:${sessionId}:${activeRevision.id}`);
+    }
+  });
+
+  assert.equal(result.revisionId, revision.id);
+  assert.deepEqual(calls, [
+    `save:${savedState.session.id}:revision-parent:${revision.source}`,
+    `snapshot:${revision.id}`,
+    `render:${savedState.session.id}:${revision.id}`
+  ]);
+});
+
+test("saving source fails before rendering when the returned revision is not active", async () => {
+  const savedState = duplicatedSessionState();
+  const backend: Pick<CadBackendClient, "updateModelSource"> = {
+    async updateModelSource() {
+      return { revisionId: "revision-missing", state: savedState };
+    }
+  };
+  let rendered = false;
+
+  await assert.rejects(
+    saveSourceRevisionWithPreview({
+      backend,
+      sessionId: savedState.session.id,
+      source: savedState.activeRevision!.source,
+      applySessionSnapshot() {
+        throw new Error("snapshot must not be applied");
+      },
+      async renderRevision() {
+        rendered = true;
+      }
+    }),
+    /is not active/
+  );
+  assert.equal(rendered, false);
 });
 
 function duplicatedSessionState(): CadSessionState {

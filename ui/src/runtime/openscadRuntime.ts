@@ -7,7 +7,6 @@ export type RenderFailureOrigin =
   | "worker-throw"
   | "stl-parse"
   | "tauri-persistence"
-  | "parameter-draft"
   | "stale-render";
 
 export interface OpenscadRenderResult {

@@ -6,7 +6,7 @@ import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Window } from "happy-dom";
 import { filterSessionsByDeletedIds, latestRenderableGcodeArtifact } from "../ui/src/App";
-import { Timeline } from "../ui/src/components/RevisionPanels";
+import { Parameters, Timeline } from "../ui/src/components/RevisionPanels";
 import { SessionRail } from "../ui/src/components/SessionRail";
 import { WorkspacePanel } from "../ui/src/components/WorkspacePanel";
 import type { CadRevision, CadSessionListItem, CadSessionState } from "../ui/src/protocol";
@@ -317,6 +317,34 @@ test("workspace preview toolbar export selector does not add result actions unde
   }
 });
 
+test("workspace blocks export while source edits are unsaved", async () => {
+  const browserWindow = installDom();
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  const state = sampleState();
+  const exports: string[] = [];
+
+  try {
+    await act(async () => {
+      root.render(React.createElement(WorkspacePanel, {
+        ...workspaceProps(state, exports),
+        sourceDirty: true
+      }));
+    });
+
+    const exportButton = container.querySelector<HTMLButtonElement>("[aria-label='Export current model']");
+    assert.ok(exportButton);
+    assert.equal(exportButton.disabled, true);
+    assert.equal(exportButton.title, "Save the source revision before exporting");
+    await act(async () => exportButton.click());
+    assert.deepEqual(exports, []);
+  } finally {
+    act(() => root.unmount());
+    browserWindow.close();
+  }
+});
+
 test("workspace keeps agent and empty parameters visible at responsive height", async () => {
   const browserWindow = installDom(1000, 800);
   const style = document.createElement("style");
@@ -350,6 +378,30 @@ test("workspace keeps agent and empty parameters visible at responsive height", 
     act(() => root.unmount());
     browserWindow.close();
   }
+});
+
+test("parameters show source metadata without editable controls", () => {
+  const revision: CadRevision = {
+    ...sampleState().activeRevision!,
+    parameters: [
+      {
+        name: "width",
+        type: "number",
+        value: 32,
+        min: 8,
+        max: 80,
+        step: 1,
+        label: "Width"
+      }
+    ]
+  };
+
+  const html = renderToStaticMarkup(React.createElement(Parameters, { revision }));
+
+  assert.match(html, /<code>width<\/code>/);
+  assert.match(html, />Width<\/span>/);
+  assert.match(html, /<output[^>]*>32<\/output>/);
+  assert.doesNotMatch(html, /<input/);
 });
 
 test("workspace uses a compact preview toolbar and simultaneous split preview, source, agent, and parameters", async () => {
@@ -450,7 +502,6 @@ function workspaceProps(state: CadSessionState, exports: string[]) {
     onStartRun: () => undefined,
     onRetryRun: () => undefined,
     onCancelRun: () => undefined,
-    onUpdateParameter: () => undefined,
     onActivateRevision: () => undefined,
     onRestoreRevision: () => undefined,
     onExport: (format: "stl" | "metadata", revisionId?: string) => {

@@ -128,7 +128,7 @@ difference() {
 }
 
 #[test]
-fn revision_switch_restore_and_parameters_use_immutable_snapshots() {
+fn revision_switch_restore_and_parameter_metadata_use_immutable_snapshots() {
     let service =
         SessionService::new(std::env::temp_dir().join(format!("cadastrophe-test-{}", uuid())));
     let created = service
@@ -146,28 +146,18 @@ fn revision_switch_restore_and_parameters_use_immutable_snapshots() {
         })
         .unwrap();
     let parameterized_revision_id = parameterized.revision_id.clone();
-
-    let parameter_update = service
-        .update_parameters(
-            &created.session_id,
-            metadata_from_value(json!({ "radius": 9 })),
-        )
-        .unwrap();
-    let parameter_revision = parameter_update.active_revision.as_ref().unwrap();
-    assert_ne!(parameter_revision.id, parameterized_revision_id);
-    assert_eq!(
-        parameter_revision.parent_revision_id.as_deref(),
-        Some(parameterized_revision_id.as_str())
-    );
-    assert_eq!(
-        service
-            .get_session_state(&created.session_id)
-            .unwrap()
-            .session
-            .revisions
-            .len(),
-        3
-    );
+    let parameter = &parameterized
+        .state
+        .active_revision
+        .as_ref()
+        .unwrap()
+        .parameters[0];
+    assert_eq!(parameter.name, "radius");
+    assert_eq!(parameter.value, CadParameterValue::Number(4.0));
+    assert_eq!(parameter.min, Some(1.0));
+    assert_eq!(parameter.max, Some(20.0));
+    assert_eq!(parameter.step, Some(1.0));
+    assert_eq!(parameter.label.as_deref(), Some("Radius"));
 
     let switched = service
         .set_active_revision(SetActiveRevisionInput {

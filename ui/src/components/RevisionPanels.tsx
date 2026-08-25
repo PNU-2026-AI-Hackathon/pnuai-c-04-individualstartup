@@ -1,47 +1,26 @@
 import { useState } from "react";
 import { GitCompare, RotateCcw, SquareMousePointer } from "lucide-react";
-import type { CadParameter, CadRevisionSummary, CadSessionState } from "../protocol";
+import type { CadRevisionSummary, CadSessionState } from "../protocol";
 
 export function Parameters(props: {
   revision: CadSessionState["activeRevision"];
-  readOnly: boolean;
-  onUpdate: (parameter: CadParameter, value: CadParameter["value"]) => void;
 }) {
   const parameters = props.revision?.parameters ?? [];
   return (
     <section className="panel parameters-panel">
       <h2>Parameters</h2>
       {parameters.map((parameter) => (
-        <label className="parameter" key={parameter.name}>
-          <span>{parameter.label ?? parameter.name}</span>
-          {parameter.type === "number" ? (
-            <input
-              aria-label={parameter.label ?? parameter.name}
-              type="number"
-              min={parameter.min}
-              max={parameter.max}
-              step={parameter.step ?? 1}
-              disabled={props.readOnly}
-              value={Number(parameter.value)}
-              onChange={(event) => props.onUpdate(parameter, Number(event.target.value))}
-            />
-          ) : parameter.type === "boolean" ? (
-            <input
-              aria-label={parameter.label ?? parameter.name}
-              type="checkbox"
-              checked={Boolean(parameter.value)}
-              disabled={props.readOnly}
-              onChange={(event) => props.onUpdate(parameter, event.target.checked)}
-            />
-          ) : (
-            <input
-              aria-label={parameter.label ?? parameter.name}
-              disabled={props.readOnly}
-              value={String(parameter.value)}
-              onChange={(event) => props.onUpdate(parameter, event.target.value)}
-            />
-          )}
-        </label>
+        <div className="parameter" key={parameter.name}>
+          <div className="parameter-name">
+            <code>{parameter.name}</code>
+            {parameter.label && parameter.label !== parameter.name ? (
+              <span className="parameter-label">{parameter.label}</span>
+            ) : null}
+          </div>
+          <output className="parameter-value" aria-label={`${parameter.name} value`}>
+            {String(parameter.value)}
+          </output>
+        </div>
       ))}
       {parameters.length === 0 ? (
         <p className="panel-empty">No parameters are available for this revision.</p>

@@ -71,7 +71,9 @@ components use `name`, `purpose`, and optional `requiredFeatures`.
   `cylinder`, `translate`, `rotate`, `union`, and `difference`.
 - Include a `// @main_component <name>` header matching the committed plan's
   `mainComponent.name`.
-- Add simple numeric `// @param min=... max=... step=... label=...` annotations
-  when useful.
+- When a simple numeric parameter is useful, put its annotation on the same
+  line, after the complete assignment: `width = 32; // @param min=8 max=80 step=1 label=Width`.
+- Treat `@param` annotations as read-only metadata. Never put `// @param` on
+  the line before an assignment, and do not generate parameter-editing logic.
 - Do not use file I/O, `include`, `use`, host-dependent paths, or nonstandard
   dependencies.

@@ -19,8 +19,8 @@ use agent_adapter::AgentAdapter;
 use agent_gateway::AgentGateway;
 use codex_agent_adapter::CodexAgentAdapter;
 use protocol::*;
-use serde::Deserialize;
-use serde_json::{Map, Value};
+#[cfg(test)]
+use serde_json::Value;
 use session_service::SessionService;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -29,13 +29,6 @@ struct AppState {
     service: Arc<SessionService>,
     gateway: Arc<AgentGateway>,
     codex_adapter: Arc<CodexAgentAdapter>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct UpdateParametersInput {
-    session_id: String,
-    values: Map<String, Value>,
 }
 
 #[tauri::command]
@@ -209,16 +202,6 @@ fn persist_runtime_artifact(
     state: State<'_, AppState>,
 ) -> Result<PersistRuntimeArtifactResult, String> {
     state.service.persist_runtime_artifact(input)
-}
-
-#[tauri::command]
-fn update_parameters(
-    input: UpdateParametersInput,
-    state: State<'_, AppState>,
-) -> Result<CadSessionState, String> {
-    state
-        .service
-        .update_parameters(&input.session_id, input.values)
 }
 
 #[tauri::command]
@@ -440,7 +423,6 @@ pub fn run() {
             restore_revision,
             render_preview,
             persist_runtime_artifact,
-            update_parameters,
             post_user_message,
             create_agent_run,
             list_agent_runs,

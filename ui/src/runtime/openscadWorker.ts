@@ -1,11 +1,7 @@
 import { createOpenSCAD, type OpenSCAD } from "openscad-wasm";
 import { parseStlToMesh } from "./stl";
 import type { CadDiagnostic, CadDiagnostics, CadMesh, CadParameter } from "../protocol";
-import {
-  applyParameterValuesToSource,
-  parameterHashInput,
-  ParameterDraftError
-} from "./parameterDraft";
+import { parameterHashInput } from "./parameterMetadata";
 
 type RenderRequest = {
   type: "render";
@@ -76,12 +72,12 @@ async function render(message: RenderRequest) {
   let sourceHash: string;
   let parameterHash: string;
   try {
-    appliedSource = applyParameterValuesToSource(message.source, message.parameters);
+    appliedSource = message.source;
     sourceHash = await sha256Hex(appliedSource);
     parameterHash = await sha256Hex(parameterHashInput(message.parameters));
   } catch (error) {
     postFailure(message, failureDiagnostics({
-      origin: error instanceof ParameterDraftError ? "parameter-draft" : "worker-throw",
+      origin: "worker-throw",
       message,
       code: errorCode(error),
       detail: errorMessage(error),
@@ -236,7 +232,7 @@ function requestNamespace(message: RenderRequest) {
   ].map((part) => part.replace(/[^A-Za-z0-9_.-]/g, "_")).join("-");
 }
 
-type FailureOrigin = "openscad-stderr" | "worker-throw" | "stl-parse" | "parameter-draft" | "stale-render";
+type FailureOrigin = "openscad-stderr" | "worker-throw" | "stl-parse" | "stale-render";
 
 function postFailure(message: RenderRequest, diagnostics: CadDiagnostics): void {
   if (message.token !== activeToken) return;
@@ -291,7 +287,6 @@ function renderFailureMessage(input: {
 }
 
 function errorCode(error: unknown): string | number | undefined {
-  if (error instanceof ParameterDraftError) return error.code;
   if (typeof error === "object" && error && "code" in error) {
     const code = (error as { code?: unknown }).code;
     if (typeof code === "string" || typeof code === "number") return code;

@@ -58,6 +58,30 @@
   font-size: 13px;
 }
 
+.parameter-name {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.parameter-label {
+  overflow: hidden;
+  color: #667789;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.parameter-value {
+  overflow: hidden;
+  color: #1f3347;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .timeline,
 .artifacts,
 .messages,
@@ -302,4 +326,3 @@
 .messages small {
   color: #667789;
 }
-

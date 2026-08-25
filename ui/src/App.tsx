@@ -37,23 +37,20 @@ import {
   workspaceViewFromUrl,
   type WorkspaceView
 } from "./navigation";
-import { duplicateSessionWithPreview } from "./sessionWorkflow";
+import { duplicateSessionWithPreview, saveSourceRevisionWithPreview } from "./sessionWorkflow";
 import {
-  cancelOpenScadRender,
   createRenderFailureDiagnostics,
   diagnosticsFromOpenScadError,
-  isLatestRenderGeneration,
   isOpenScadRenderCanceled,
   logRenderFailureDiagnostics,
   matchesOpenscadPreviewCache,
-  nextRenderGeneration,
   renderOpenScadInWorker,
   resetOpenScadRuntimeForSessionSwitch,
   type OpenscadRenderRequest,
   type OpenscadRenderResult,
   type OpenscadRuntimeState
 } from "./runtime/openscadRuntime";
-import { applyParameterValuesToSource, parameterHashInput, updateParameterDraft } from "./runtime/parameterDraft";
+import { parameterHashInput } from "./runtime/parameterMetadata";
 import { chooseStlExportPath, stlExportDefaultFileName } from "./runtime/artifactExport";
 import {
   createAgentStreamState,
@@ -79,10 +76,7 @@ export function App() {
   const [mesh, setMesh] = useState<CadMesh | null>(null);
   const [gcodePreview, setGcodePreview] = useState<{ artifactId: string; contents: string } | null>(null);
   const [runtimeState, setRuntimeState] = useState<OpenscadRuntimeState>("idle");
-  const [draftParameters, setDraftParameters] = useState<CadParameter[] | null>(null);
-  const draftParametersRef = useRef<CadParameter[] | null>(null);
   const [draftDiagnostics, setDraftDiagnostics] = useState<CadDiagnostics | null>(null);
-  const draftRenderGenerationRef = useRef(0);
   const sessionRenderGenerationRef = useRef(0);
   const [agentPrompt, setAgentPrompt] = useState("");
   const [busy, setBusy] = useState(false);
@@ -109,9 +103,8 @@ export function App() {
 
   const sessionId = useMemo(() => sessionIdFromUrl(window.location.href, window.location.href), []);
   const activeRevision = state?.activeRevision;
-  const activeDraftParameters = draftParameters ?? activeRevision?.parameters ?? [];
   const activeDraftRevision = activeRevision
-    ? { ...activeRevision, source, parameters: activeDraftParameters }
+    ? { ...activeRevision, source }
     : undefined;
   const workspaceState = useMemo(
     () => state && draftDiagnostics ? stateWithDraftDiagnostics(state, draftDiagnostics) : state,
@@ -173,7 +166,6 @@ export function App() {
         sourceRef.current = nextState.activeRevision?.source ?? "";
         setSourceDirty(false);
         setSourceConflict(false);
-        setDraftParameterState(null);
         setDraftDiagnostics(null);
         sourceDirtyRef.current = false;
         sourceRevisionIdRef.current = nextRevisionId;
@@ -304,72 +296,20 @@ export function App() {
     });
   }, [isStarterSession, sessionArchived, state?.session.id]);
 
-  useEffect(() => {
-    if (!state?.session.id || !draftParameters || sessionArchived) return;
-    const generation = nextRenderGeneration(draftRenderGenerationRef.current);
-    draftRenderGenerationRef.current = generation;
-    const timer = window.setTimeout(() => {
-      renderCurrentDraftPreview({ persistIfClean: false, generation }).catch((caught) => {
-        if (isOpenScadRenderCanceled(caught)) return;
-        if (!isLatestRenderGeneration(draftRenderGenerationRef.current, generation)) return;
-        const diagnostics = diagnosticsFromOpenScadError(caught);
-        if (diagnostics) setDraftDiagnostics(diagnostics);
-        setError(errorMessage(caught));
-      });
-    }, 400);
-    return () => {
-      window.clearTimeout(timer);
-      draftRenderGenerationRef.current = nextRenderGeneration(draftRenderGenerationRef.current);
-      cancelOpenScadRender();
-    };
-  }, [draftParameters, sessionArchived, state?.session.id, source]);
-
   async function saveSource() {
     if (!state || sessionArchived) return;
     await runBusy(async () => {
       await resyncIfDisconnected();
       dismissStarterOverlay(state.session.id);
-      const result = await backend.updateModelSource({
+      await saveSourceRevisionWithPreview({
+        backend,
         sessionId: state.session.id,
-        sourceLanguage: "openscad",
         source: sourceRef.current,
         parentRevisionId: state.session.activeRevisionId,
-        parameters: currentDraftParameters()
+        applySessionSnapshot: (nextState) => applySessionSnapshot(nextState, { forceSource: true }),
+        renderRevision: renderAndPersistSavedRevision
       });
-      applySessionSnapshot(result.state, { forceSource: true });
     });
-  }
-
-  async function updateParameter(parameter: CadParameter, value: CadParameter["value"]) {
-    if (!state || sessionArchived) return;
-    dismissStarterOverlay(state.session.id);
-    let nextParameters: CadParameter[];
-    try {
-      nextParameters = updateParameterDraft(currentDraftParameters(), parameter.name, value);
-    } catch (caught) {
-      const diagnostics = createRenderFailureDiagnostics({
-        origin: "parameter-draft",
-        code: errorCode(caught),
-        message: errorMessage(caught),
-        sessionId: state.session.id,
-        revisionId: state.activeRevision?.id,
-        sourceHash: state.activeRevision?.sourceHash
-      });
-      logRenderFailureDiagnostics(diagnostics);
-      setDraftDiagnostics(diagnostics);
-      setRuntimeState("failed");
-      setError(errorMessage(caught));
-      return;
-    }
-    setDraftParameterState(nextParameters);
-    setSource((previous) => {
-      const nextSource = applyParameterValuesToSource(previous, nextParameters);
-      sourceRef.current = nextSource;
-      return nextSource;
-    });
-    setDraftDiagnostics(null);
-    setSourceDirty(true);
-    sourceDirtyRef.current = true;
   }
 
   async function startAgentRun(promptOverride?: string, retryOfRunId?: string) {
@@ -413,9 +353,9 @@ export function App() {
     await runBusy(async () => {
       await resyncIfDisconnected();
       if (format === "stl") {
+        const revision = requireRevisionForExport(revisionId);
         const destination = await chooseStlExportPath(stlExportDefaultFileName(state.session.title));
         if (destination === null) return;
-        const revision = await ensureSavedRevisionForExport(revisionId);
         const rendered = await cachedOrRenderedStl(revision);
         const persisted = await persistRuntimeArtifactWithDiagnostics({
           sessionId: state.session.id,
@@ -446,20 +386,10 @@ export function App() {
     });
   }
 
-  async function ensureSavedRevisionForExport(revisionId = state?.session.activeRevisionId): Promise<CadRevision> {
+  function requireRevisionForExport(revisionId = state?.session.activeRevisionId): CadRevision {
     if (!state) throw new Error("No active session is loaded.");
-    if (sourceDirty && revisionId === state.session.activeRevisionId) {
-      const result = await backend.updateModelSource({
-        sessionId: state.session.id,
-        sourceLanguage: "openscad",
-        source: sourceRef.current,
-        parentRevisionId: state.session.activeRevisionId,
-        parameters: currentDraftParameters()
-      });
-      applySessionSnapshot(result.state, { forceSource: true });
-      const revision = result.state.activeRevision;
-      if (!revision) throw new Error("Saved source revision is not available.");
-      return revision;
+    if (sourceDirtyRef.current) {
+      throw new Error("Save the source revision before exporting.");
     }
     const revision =
       revisionId === state.activeRevision?.id
@@ -472,7 +402,7 @@ export function App() {
   }
 
   async function cachedOrRenderedStl(revision: CadRevision) {
-    const sourceHash = await sha256Hex(applyParameterValuesToSource(revision.source, revision.parameters));
+    const sourceHash = await sha256Hex(revision.source);
     const parameterHash = await sha256Hex(parameterHashInput(revision.parameters));
     const cache = previewCacheRef.current;
     if (state && matchesOpenscadPreviewCache(cache, {
@@ -747,58 +677,6 @@ export function App() {
     setSourceConflict(false);
   }
 
-  function setDraftParameterState(parameters: CadParameter[] | null) {
-    draftParametersRef.current = parameters;
-    setDraftParameters(parameters);
-  }
-
-  function currentDraftParameters(): CadParameter[] {
-    return draftParametersRef.current ?? state?.activeRevision?.parameters ?? [];
-  }
-
-  async function renderCurrentDraftPreview({
-    persistIfClean,
-    generation
-  }: {
-    persistIfClean: boolean;
-    generation?: number;
-  }) {
-    if (!state) return;
-    const sessionId = state.session.id;
-    const revisionId = state.activeRevision?.id ?? EMPTY_DRAFT_REVISION_ID;
-    const renderGeneration = sessionRenderGenerationRef.current;
-    const renderSource = sourceRef.current;
-    const renderParameters = currentDraftParameters();
-    let renderRequest: OpenscadRenderRequest | undefined;
-    let rendered: OpenscadRenderResult;
-    try {
-      renderRequest = await renderRequestFor(sessionId, revisionId, renderSource, renderParameters);
-      if (!(await isCurrentRenderTarget(renderRequest, renderGeneration))) return;
-      rendered = await renderOpenScadInWorker(renderRequest, setRuntimeStateForRenderTarget(renderRequest, renderGeneration));
-    } catch (caught) {
-      if (isOpenScadRenderCanceled(caught)) return;
-      if (!isLatestRenderGeneration(draftRenderGenerationRef.current, generation)) return;
-      if (renderRequest && !(await isCurrentRenderTarget(renderRequest, renderGeneration))) return;
-      const diagnostics = diagnosticsFromOpenScadError(caught);
-      if (diagnostics) {
-        setDraftDiagnostics(diagnostics);
-      } else {
-        setLocalRenderFailureDiagnostics(caught, "parameter-draft", sessionId, revisionId);
-      }
-      throw caught;
-    }
-    if (!isLatestRenderGeneration(draftRenderGenerationRef.current, generation)) return;
-    if (!(await isCurrentRenderTarget(renderRequest, renderGeneration))) return;
-    previewCacheRef.current = rendered;
-    setMesh(rendered.mesh);
-    setDraftDiagnostics(rendered.diagnostics);
-    if (!state.activeRevision || !persistIfClean || sourceDirtyRef.current) return;
-    const persisted = await persistPreviewMesh(sessionId, revisionId, rendered);
-    if (await isCurrentRenderTarget(renderRequest, renderGeneration)) {
-      applySessionSnapshot(persisted.state);
-    }
-  }
-
   async function persistPreviewMesh(sessionId: string, revisionId: string, rendered: OpenscadRenderResult) {
     return persistRuntimeArtifactWithDiagnostics({
         sessionId,
@@ -835,47 +713,36 @@ export function App() {
     }
   }
 
-  function setLocalRenderFailureDiagnostics(
-    caught: unknown,
-    origin: "parameter-draft" | "stale-render",
-    sessionId: string,
-    revisionId: string
-  ) {
-    const diagnostics = createRenderFailureDiagnostics({
-      origin,
-      code: errorCode(caught),
-      message: errorMessage(caught),
-      sessionId,
-      revisionId,
-      sourceHash: state?.activeRevision?.sourceHash
-    });
-    logRenderFailureDiagnostics(diagnostics);
-    setRuntimeState("failed");
-    setDraftDiagnostics(diagnostics);
-  }
-
   async function renderAndPersistRevision(sessionId: string, revision?: CadRevision) {
     if (!revision || autoRenderedSessionIdsRef.current.has(sessionId)) return;
     autoRenderedSessionIdsRef.current.add(sessionId);
+    await renderAndPersistSavedRevision(sessionId, revision);
+  }
+
+  async function renderAndPersistSavedRevision(sessionId: string, revision: CadRevision) {
     const renderGeneration = sessionRenderGenerationRef.current;
     const renderRequest = await renderRequestFor(sessionId, revision.id, revision.source, revision.parameters);
-    if (!(await isCurrentRenderTarget(renderRequest, renderGeneration))) return;
+    if (!(await isCurrentRenderTarget(renderRequest, renderGeneration))) {
+      throw new Error("The saved revision render target changed before rendering started.");
+    }
     try {
       const rendered = await renderOpenScadInWorker(renderRequest, setRuntimeStateForRenderTarget(renderRequest, renderGeneration));
-      if (!(await isCurrentRenderTarget(renderRequest, renderGeneration))) return;
+      if (!(await isCurrentRenderTarget(renderRequest, renderGeneration))) {
+        throw new Error("The saved revision render target changed before rendering completed.");
+      }
       previewCacheRef.current = rendered;
       setMesh(rendered.mesh);
       setDraftDiagnostics(rendered.diagnostics);
       const persisted = await persistPreviewMesh(sessionId, revision.id, rendered);
-      if (await isCurrentRenderTarget(renderRequest, renderGeneration)) {
-        applySessionSnapshot(persisted.state);
+      if (!(await isCurrentRenderTarget(renderRequest, renderGeneration))) {
+        throw new Error("The saved revision render target changed before preview persistence completed.");
       }
+      applySessionSnapshot(persisted.state);
     } catch (caught) {
-      if (isOpenScadRenderCanceled(caught)) return;
-      if (!(await isCurrentRenderTarget(renderRequest, renderGeneration))) return;
+      if (isOpenScadRenderCanceled(caught)) throw caught;
       const diagnostics = diagnosticsFromOpenScadError(caught);
       if (diagnostics) setDraftDiagnostics(diagnostics);
-      setError(errorMessage(caught));
+      throw caught;
     }
   }
 
@@ -936,7 +803,7 @@ export function App() {
       revisionId,
       source: renderSource,
       parameters: renderParameters,
-      sourceHash: await sha256Hex(applyParameterValuesToSource(renderSource, renderParameters)),
+      sourceHash: await sha256Hex(renderSource),
       parameterHash: await sha256Hex(parameterHashInput(renderParameters))
     };
   }
@@ -984,11 +851,7 @@ export function App() {
     generation: number
   ): Promise<boolean> {
     if (!isCurrentRenderGeneration(request, generation)) return false;
-    const currentParameters = currentDraftParameters();
-    const sourceHash = await sha256Hex(applyParameterValuesToSource(sourceRef.current, currentParameters));
-    if (sourceHash !== request.sourceHash) return false;
-    const parameterHash = await sha256Hex(parameterHashInput(currentParameters));
-    return parameterHash === request.parameterHash;
+    return await sha256Hex(sourceRef.current) === request.sourceHash;
   }
 
   if (!state) {
@@ -1139,7 +1002,6 @@ export function App() {
             onStartNewConversation={startNewAgentConversation}
             onRetryRun={(run) => startAgentRun(run.prompt, run.id)}
             onCancelRun={cancelAgentRun}
-            onUpdateParameter={updateParameter}
             onExport={exportArtifact}
             onOpenFullHistory={() => navigateTo("logs")}
           />

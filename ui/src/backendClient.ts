@@ -8,7 +8,6 @@ import type {
   CadAgentStreamEvent,
   CadBridgeEvent,
   CadMesh,
-  CadParameter,
   PersistRuntimeArtifactInput,
   PersistRuntimeArtifactResult,
   CadSessionState,
@@ -78,10 +77,6 @@ export interface CadBackendClient {
   restoreRevision(input: { sessionId: string; revisionId: string }): Promise<RestoreRevisionResult>;
   renderPreview(input: { sessionId: string; revisionId?: string }): Promise<{ state: CadSessionState }>;
   persistRuntimeArtifact(input: PersistRuntimeArtifactInput): Promise<PersistRuntimeArtifactResult>;
-  updateParameters(input: {
-    sessionId: string;
-    values: Record<string, CadParameter["value"]>;
-  }): Promise<CadSessionState>;
   createAgentRun(input: { sessionId: string; prompt: string; revisionId?: string; retryOfRunId?: string }): Promise<CreateAgentRunResult>;
   startNewAgentConversation(sessionId: string): Promise<StartNewAgentConversationResult>;
   getAgentSessionDiagnostics(sessionId: string): Promise<CadAgentSessionDiagnostics>;
@@ -201,13 +196,6 @@ export class TauriCadBackendClient implements CadBackendClient, DfmSettingsBacke
 
   persistRuntimeArtifact(input: PersistRuntimeArtifactInput): Promise<PersistRuntimeArtifactResult> {
     return invokeCommand("persist_runtime_artifact", { input });
-  }
-
-  updateParameters(input: {
-    sessionId: string;
-    values: Record<string, CadParameter["value"]>;
-  }): Promise<CadSessionState> {
-    return invokeCommand("update_parameters", { input });
   }
 
   createAgentRun(input: { sessionId: string; prompt: string; revisionId?: string; retryOfRunId?: string }): Promise<CreateAgentRunResult> {

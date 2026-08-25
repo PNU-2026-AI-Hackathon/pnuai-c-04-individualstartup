@@ -291,10 +291,6 @@ class ContractBackendClient implements CadBackendClient {
     return { artifact: state.activeRevision!.artifacts[0], state };
   }
 
-  async updateParameters(): Promise<CadSessionState> {
-    return this.requireState();
-  }
-
   async createAgentRun(input: { sessionId: string; prompt: string; revisionId?: string; retryOfRunId?: string }): Promise<CreateAgentRunResult> {
     const state = this.requireState();
     const now = new Date().toISOString();

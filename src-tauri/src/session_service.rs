@@ -41,10 +41,7 @@ use runtime_render::*;
 use state_view::*;
 pub use support::metadata_from_value;
 pub(crate) use support::timestamp;
-use support::{
-    json_to_parameter_value, lock_error, propose_session_title, source_hash, uuid,
-    verify_diagnostic,
-};
+use support::{lock_error, propose_session_title, source_hash, uuid, verify_diagnostic};
 
 #[derive(Default)]
 pub(crate) struct ServiceState {

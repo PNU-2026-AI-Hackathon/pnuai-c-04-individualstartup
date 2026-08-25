@@ -20,15 +20,6 @@ pub(super) fn source_hash(source: &str) -> String {
     storage::sha256_hex(source.as_bytes())
 }
 
-pub(super) fn json_to_parameter_value(value: Value) -> CadParameterValue {
-    match value {
-        Value::Bool(value) => CadParameterValue::Boolean(value),
-        Value::Number(value) => CadParameterValue::Number(value.as_f64().unwrap_or_default()),
-        Value::String(value) => CadParameterValue::String(value),
-        other => CadParameterValue::String(other.to_string()),
-    }
-}
-
 pub(super) fn propose_session_title(text: &str) -> Option<String> {
     let mut words = Vec::new();
     for raw_word in text.split(|character: char| !character.is_ascii_alphanumeric()) {

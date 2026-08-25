@@ -14,7 +14,6 @@ import type {
   CadDiagnostic,
   CadDiagnostics,
   CadMesh,
-  CadParameter,
   CadRevision,
   CadSessionState
 } from "../protocol";
@@ -58,7 +57,6 @@ type WorkspacePanelProps = {
   onStartNewConversation: () => void | Promise<void>;
   onRetryRun: (run: CadAgentRun) => void | Promise<void>;
   onCancelRun: (runId: string) => void | Promise<void>;
-  onUpdateParameter: (parameter: CadParameter, value: CadParameter["value"]) => void | Promise<void>;
   onExport: (format: "stl" | "metadata", revisionId?: string) => void | Promise<void>;
   onOpenFullHistory: () => void;
 };
@@ -88,7 +86,6 @@ export function WorkspacePanel({
   onStartNewConversation,
   onRetryRun,
   onCancelRun,
-  onUpdateParameter,
   onExport,
   onOpenFullHistory
 }: WorkspacePanelProps) {
@@ -127,8 +124,8 @@ export function WorkspacePanel({
                     className="preview-export-button"
                     aria-label="Export current model"
                     onClick={() => setExportSelectorOpen((open) => !open)}
-                    disabled={busy || sessionArchived || !activeRevision?.id}
-                    title="Export current model"
+                    disabled={busy || sessionArchived || sourceDirty || !activeRevision?.id}
+                    title={sourceDirty ? "Save the source revision before exporting" : "Export current model"}
                     aria-expanded={exportSelectorOpen}
                     aria-haspopup="dialog"
                   >
@@ -138,7 +135,7 @@ export function WorkspacePanel({
                     <ExportFormatSelector
                       selectedFormat={selectedExportFormat}
                       busy={busy}
-                      readOnly={sessionArchived}
+                      readOnly={sessionArchived || sourceDirty}
                       revisionId={activeRevision?.id}
                       onSelectFormat={setSelectedExportFormat}
                       onExport={async () => {
@@ -227,7 +224,7 @@ export function WorkspacePanel({
             />
           </div>
           <div className="inspector-section inspector-parameters" aria-label="Parameters">
-            <Parameters revision={activeRevision} readOnly={sessionArchived} onUpdate={onUpdateParameter} />
+            <Parameters revision={activeRevision} />
           </div>
         </VerticalSplit>
       </aside>
