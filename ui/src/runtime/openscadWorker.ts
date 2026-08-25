@@ -124,7 +124,7 @@ async function render(message: RenderRequest) {
   const outputPath = `/cadastrophe-${namespace}.stl`;
   try {
     openscad.FS.writeFile(inputPath, appliedSource);
-    const exitCode = openscad.callMain([inputPath, "--enable=manifold", "-o", outputPath]);
+    const exitCode = openscad.callMain([inputPath, "--backend=manifold", "-o", outputPath]);
     if (message.token !== activeToken) return;
     const stdout = drainModuleOutput(moduleStdout);
     const stderr = drainModuleOutput(moduleStderr);
