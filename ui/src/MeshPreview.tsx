@@ -4,6 +4,57 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GCodeLoader } from "three/addons/loaders/GCodeLoader.js";
 import type { CadMesh } from "./protocol";
 import type { PreviewMode } from "./components/WorkspacePanel";
+import {
+  createDemandRenderScheduler,
+  type DemandRenderScheduler
+} from "./previewRenderScheduler";
+
+// 1.5 keeps diagonal edges crisp while limiting fragment work on high-DPR displays.
+export const PREVIEW_PIXEL_RATIO_LIMIT = 1.5;
+
+type PreviewRenderer = Pick<
+  THREE.WebGLRenderer,
+  "domElement" | "setPixelRatio" | "setSize" | "render" | "dispose"
+>;
+
+type PreviewControls = Pick<
+  OrbitControls,
+  | "target"
+  | "minDistance"
+  | "maxDistance"
+  | "enableDamping"
+  | "enableRotate"
+  | "enableZoom"
+  | "enablePan"
+  | "dampingFactor"
+  | "zoomSpeed"
+  | "rotateSpeed"
+  | "update"
+  | "getDistance"
+  | "addEventListener"
+  | "removeEventListener"
+  | "dispose"
+>;
+
+export interface PreviewRuntime {
+  devicePixelRatio: number;
+  createRenderer(): PreviewRenderer;
+  createControls(camera: THREE.PerspectiveCamera, element: HTMLElement): PreviewControls;
+  createResizeObserver(callback: ResizeObserverCallback): Pick<ResizeObserver, "observe" | "disconnect">;
+  requestAnimationFrame(callback: FrameRequestCallback): number;
+  cancelAnimationFrame(handle: number): void;
+}
+
+function createBrowserPreviewRuntime(): PreviewRuntime {
+  return {
+    devicePixelRatio: window.devicePixelRatio,
+    createRenderer: () => new THREE.WebGLRenderer({ antialias: true }),
+    createControls: (camera, element) => new OrbitControls(camera, element),
+    createResizeObserver: (callback) => new ResizeObserver(callback),
+    requestAnimationFrame: (callback) => window.requestAnimationFrame(callback),
+    cancelAnimationFrame: (handle) => window.cancelAnimationFrame(handle)
+  };
+}
 
 export function MeshPreview({
   mesh,
@@ -31,15 +82,67 @@ export function MeshPreview({
     const container = ref.current;
     const hasPreview = mode === "stl" ? Boolean(activeMesh) : Boolean(gcodeObject);
     if (!container || !hasPreview) return;
-    const width = Math.max(container.clientWidth, 1);
-    const height = Math.max(container.clientHeight, 1);
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xf6f7f9);
+    return mountPreview({ activeMesh, bedBounds, container, gcodeObject, mode });
+  }, [activeMesh, bedBounds, gcodeObject, mode]);
 
-    const camera = new THREE.PerspectiveCamera(35, width / height, 0.1, 5000);
+  const hasPreview = mode === "stl" ? Boolean(mesh) : Boolean(gcodeObject);
+  return (
+    <div className="mesh-preview" data-preview-mode={mode} ref={ref}>
+      {!hasPreview ? <span>No {mode === "stl" ? "STL" : "G-code"} preview available</span> : null}
+    </div>
+  );
+}
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+export function mountPreview({
+  activeMesh,
+  bedBounds,
+  container,
+  gcodeObject,
+  mode
+}: {
+  activeMesh: CadMesh | null;
+  bedBounds: RectangularBedShape | null;
+  container: HTMLDivElement;
+  gcodeObject: THREE.Group | null;
+  mode: PreviewMode;
+}, runtime: PreviewRuntime = createBrowserPreviewRuntime()): () => void {
+  const width = Math.max(container.clientWidth, 1);
+  const height = Math.max(container.clientHeight, 1);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xf6f7f9);
+  const camera = new THREE.PerspectiveCamera(35, width / height, 0.1, 5000);
+  let renderer: PreviewRenderer | null = null;
+  let controls: PreviewControls | null = null;
+  let observer: Pick<ResizeObserver, "observe" | "disconnect"> | null = null;
+  let modelObject: THREE.Object3D | null = null;
+  let axisLines: THREE.LineSegments | null = null;
+  let bedGrid: THREE.LineSegments | null = null;
+  let scheduler: DemandRenderScheduler | null = null;
+  let updateCameraDebugState: (() => void) | null = null;
+  let handleControlsChange: (() => void) | null = null;
+  let disposed = false;
+
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    scheduler?.dispose();
+    observer?.disconnect();
+    if (controls && handleControlsChange) {
+      controls.removeEventListener("change", handleControlsChange);
+    }
+    controls?.dispose();
+    if (modelObject) disposeObject(modelObject);
+    if (axisLines) disposeObject(axisLines);
+    if (bedGrid) disposeObject(bedGrid);
+    renderer?.dispose();
+    if (renderer?.domElement.parentNode === container) {
+      container.removeChild(renderer.domElement);
+    }
+  };
+
+  try {
+    renderer = runtime.createRenderer();
+    renderer.setPixelRatio(Math.min(runtime.devicePixelRatio, PREVIEW_PIXEL_RATIO_LIMIT));
     renderer.setSize(width, height, false);
     container.appendChild(renderer.domElement);
 
@@ -47,12 +150,12 @@ export function MeshPreview({
     const key = new THREE.DirectionalLight(0xffffff, 2.4);
     key.position.set(50, -80, 120);
     scene.add(ambient, key);
-    const axisLines = mode === "stl" ? createAxisLines(5000) : null;
+    axisLines = mode === "stl" ? createAxisLines(5000) : null;
     if (axisLines) scene.add(axisLines);
-    const bedGrid = mode === "gcode" && bedBounds ? createBedGrid(bedBounds) : null;
+    bedGrid = mode === "gcode" && bedBounds ? createBedGrid(bedBounds) : null;
     if (bedGrid) scene.add(bedGrid);
 
-    const controls = new OrbitControls(camera, renderer.domElement);
+    controls = runtime.createControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.enableRotate = true;
     controls.enableZoom = true;
@@ -61,7 +164,6 @@ export function MeshPreview({
     controls.zoomSpeed = 0.9;
     controls.rotateSpeed = 0.7;
 
-    let modelObject: THREE.Object3D;
     if (mode === "stl") {
       if (!activeMesh) throw new Error("STL preview mesh is unavailable.");
       const geometry = new THREE.BufferGeometry();
@@ -96,53 +198,54 @@ export function MeshPreview({
     camera.updateProjectionMatrix();
     controls.update();
 
-    const updateCameraDebugState = () => {
+    updateCameraDebugState = () => {
+      if (!controls) return;
       container.dataset.cameraDistance = controls.getDistance().toFixed(3);
       container.dataset.cameraPosition = [camera.position.x, camera.position.y, camera.position.z]
         .map((value) => value.toFixed(3))
         .join(",");
     };
-    controls.addEventListener("change", updateCameraDebugState);
     updateCameraDebugState();
 
+    scheduler = createDemandRenderScheduler({
+      update: () => controls?.update() ?? false,
+      render: () => {
+        renderer?.render(scene, camera);
+        updateCameraDebugState?.();
+      },
+      requestAnimationFrame: runtime.requestAnimationFrame,
+      cancelAnimationFrame: runtime.cancelAnimationFrame
+    });
+    handleControlsChange = () => {
+      if (disposed) return;
+      updateCameraDebugState?.();
+      scheduler?.requestRender();
+    };
+    controls.addEventListener("change", handleControlsChange);
+
+    let renderedWidth = width;
+    let renderedHeight = height;
     const resize = () => {
+      if (disposed || !renderer) return;
       const nextWidth = Math.max(container.clientWidth, 1);
       const nextHeight = Math.max(container.clientHeight, 1);
+      if (nextWidth === renderedWidth && nextHeight === renderedHeight) return;
+      renderedWidth = nextWidth;
+      renderedHeight = nextHeight;
       camera.aspect = nextWidth / nextHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(nextWidth, nextHeight, false);
+      scheduler?.requestRender();
     };
-    const observer = new ResizeObserver(resize);
+    observer = runtime.createResizeObserver(resize);
     observer.observe(container);
 
-    let frame = 0;
-    const animate = () => {
-      frame = requestAnimationFrame(animate);
-      controls.update();
-      renderer.render(scene, camera);
-      updateCameraDebugState();
-    };
-    animate();
-
-    return () => {
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-      controls.removeEventListener("change", updateCameraDebugState);
-      controls.dispose();
-      disposeObject(modelObject);
-      if (axisLines) disposeObject(axisLines);
-      if (bedGrid) disposeObject(bedGrid);
-      renderer.dispose();
-      container.removeChild(renderer.domElement);
-    };
-  }, [activeMesh, bedBounds, gcodeObject, mode]);
-
-  const hasPreview = mode === "stl" ? Boolean(mesh) : Boolean(gcodeObject);
-  return (
-    <div className="mesh-preview" data-preview-mode={mode} ref={ref}>
-      {!hasPreview ? <span>No {mode === "stl" ? "STL" : "G-code"} preview available</span> : null}
-    </div>
-  );
+    scheduler.requestRender();
+    return dispose;
+  } catch (error) {
+    dispose();
+    throw error;
+  }
 }
 
 function createAxisLines(extent: number): THREE.LineSegments {
