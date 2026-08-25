@@ -65,12 +65,12 @@ pub struct CodexProcessConfig {
 impl Default for CodexProcessConfig {
     fn default() -> Self {
         Self {
-            command: std::env::var("CADASTROPHE_CODEX_COMMAND")
+            command: std::env::var("CADGEN_AX_CODEX_COMMAND")
                 .map(|command| resolve_executable(&command).unwrap_or(command))
                 .unwrap_or_else(|_| {
                     resolve_executable("codex").unwrap_or_else(|| "codex".to_string())
                 }),
-            request_timeout: duration_from_env("CADASTROPHE_CODEX_REQUEST_TIMEOUT_SECS", 600),
+            request_timeout: duration_from_env("CADGEN_AX_CODEX_REQUEST_TIMEOUT_SECS", 600),
         }
     }
 }
@@ -172,8 +172,8 @@ impl CodexProcessClient {
             "initialize",
             json!({
                 "clientInfo": {
-                    "name": "cadastrophe-tauri-backend",
-                    "title": "Cadastrophe",
+                    "name": "cadgen-ax-tauri-backend",
+                    "title": "CADGEN-AX",
                     "version": env!("CARGO_PKG_VERSION")
                 },
                 "capabilities": {}
@@ -430,7 +430,7 @@ fn spawn_reader(
         fail_pending_requests(&process_state.pending, connection_error.clone()).await;
         if let Err(error) = notification_router.fail_all_routes() {
             eprintln!(
-                "[cadastrophe:codex-process] generation={} failed to invalidate notification routes: {error}",
+                "[cadgen-ax:codex-process] generation={} failed to invalidate notification routes: {error}",
                 process_state.generation
             );
         }
@@ -444,7 +444,7 @@ fn spawn_reader(
         drop(state);
         if let Err(error) = process_state.child.lock().await.kill().await {
             eprintln!(
-                "[cadastrophe:codex-process] generation={} cleanup_error={error}",
+                "[cadgen-ax:codex-process] generation={} cleanup_error={error}",
                 process_state.generation
             );
         }
@@ -508,10 +508,10 @@ fn child_path_env() -> String {
     let mut paths: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|value| std::env::split_paths(&value).collect())
         .unwrap_or_default();
-    for path in cadastrophe_binary_path_entries() {
+    for path in cadgen_ax_binary_path_entries() {
         push_unique_path(&mut paths, path);
     }
-    for path in configured_extra_path_entries(std::env::var_os("CADASTROPHE_CODEX_EXTRA_PATHS")) {
+    for path in configured_extra_path_entries(std::env::var_os("CADGEN_AX_CODEX_EXTRA_PATHS")) {
         push_unique_path(&mut paths, path);
     }
     for path in login_shell_path_entries() {
@@ -529,7 +529,7 @@ fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
     }
 }
 
-fn cadastrophe_binary_path_entries() -> Vec<PathBuf> {
+fn cadgen_ax_binary_path_entries() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(parent) = current_exe.parent() {
@@ -621,7 +621,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let directory = std::env::temp_dir().join(format!(
-            "cadastrophe-codex-process-test-{}",
+            "cadgen-ax-codex-process-test-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&directory).unwrap();
@@ -667,7 +667,7 @@ done
     #[test]
     fn resolves_executable_from_supplied_path() {
         let directory = std::env::temp_dir().join(format!(
-            "cadastrophe-codex-path-test-{}",
+            "cadgen-ax-codex-path-test-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&directory).unwrap();
@@ -685,9 +685,9 @@ done
     #[test]
     fn configured_extra_path_entries_split_platform_path_values() {
         let first =
-            std::env::temp_dir().join(format!("cadastrophe-extra-path-a-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("cadgen-ax-extra-path-a-{}", uuid::Uuid::new_v4()));
         let second =
-            std::env::temp_dir().join(format!("cadastrophe-extra-path-b-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("cadgen-ax-extra-path-b-{}", uuid::Uuid::new_v4()));
         let joined = std::env::join_paths([first.as_path(), second.as_path()]).unwrap();
 
         assert_eq!(
@@ -697,7 +697,7 @@ done
     }
 
     #[test]
-    fn child_path_env_includes_cadastrophe_debug_binary_directory() {
+    fn child_path_env_includes_cadgen_ax_debug_binary_directory() {
         let path = child_path_env();
         let current_exe = std::env::current_exe().unwrap();
         let debug_dir = current_exe
@@ -784,7 +784,7 @@ done
     async fn child_exit_fails_pending_request_and_next_request_starts_new_generation() {
         use std::os::unix::fs::PermissionsExt;
         let directory = std::env::temp_dir().join(format!(
-            "cadastrophe-codex-crash-test-{}",
+            "cadgen-ax-codex-crash-test-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&directory).unwrap();

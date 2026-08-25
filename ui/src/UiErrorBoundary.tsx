@@ -19,7 +19,7 @@ export class UiErrorBoundary extends Component<UiErrorBoundaryProps, UiErrorBoun
   }
 
   componentDidCatch(error: unknown, info: ErrorInfo) {
-    console.error(`[cadastrophe] ${this.props.scope} render failed`, {
+    console.error(`[cadgen-ax] ${this.props.scope} render failed`, {
       error,
       componentStack: info.componentStack
     });

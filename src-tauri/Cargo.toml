@@ -1,12 +1,12 @@
 [package]
-name = "cadastrophe"
-version = "0.2.0"
-description = "Cadastrophe desktop backend"
+name = "cadgen-ax"
+version = "0.2.1"
+description = "CADGEN-AX desktop backend"
 edition = "2021"
-default-run = "cadastrophe"
+default-run = "cadgen-ax"
 
 [lib]
-name = "cadastrophe_lib"
+name = "cadgen_ax_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -25,25 +25,25 @@ rusqlite = { version = "0.40.1", features = ["bundled"] }
 sha2 = "0.11.0"
 
 [[bin]]
-name = "cadastrophe-session-current"
-path = "src/bin/cadastrophe_session_current.rs"
+name = "cadgen-ax-session-current"
+path = "src/bin/cadgen_ax_session_current.rs"
 
 [[bin]]
-name = "cadastrophe-session-state"
-path = "src/bin/cadastrophe_session_state.rs"
+name = "cadgen-ax-session-state"
+path = "src/bin/cadgen_ax_session_state.rs"
 
 [[bin]]
-name = "cadastrophe-plan-commit"
-path = "src/bin/cadastrophe_plan_commit.rs"
+name = "cadgen-ax-plan-commit"
+path = "src/bin/cadgen_ax_plan_commit.rs"
 
 [[bin]]
-name = "cadastrophe-source-apply"
-path = "src/bin/cadastrophe_source_apply.rs"
+name = "cadgen-ax-source-apply"
+path = "src/bin/cadgen_ax_source_apply.rs"
 
 [[bin]]
-name = "cadastrophe-finalize"
-path = "src/bin/cadastrophe_finalize.rs"
+name = "cadgen-ax-finalize"
+path = "src/bin/cadgen_ax_finalize.rs"
 
 [[bin]]
-name = "cadastrophe-vlm-submit"
-path = "src/bin/cadastrophe_vlm_submit.rs"
+name = "cadgen-ax-vlm-submit"
+path = "src/bin/cadgen_ax_vlm_submit.rs"

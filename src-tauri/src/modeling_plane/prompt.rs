@@ -69,7 +69,7 @@ pub fn render_modeling_turn_input(input: &AgentAdapterRunInput) -> Result<String
     require_non_empty("run_id", &input.run_id)?;
     require_non_empty("user request", &input.prompt)?;
     if !input.app_data_dir.is_absolute() {
-        return Err("Cadastrophe app-data directory must be an absolute path.".to_string());
+        return Err("CADGEN-AX app-data directory must be an absolute path.".to_string());
     }
 
     let app_data_dir = shell_quote_path(&input.app_data_dir)?;
@@ -84,16 +84,16 @@ pub fn render_modeling_turn_input(input: &AgentAdapterRunInput) -> Result<String
     };
 
     let session_state_command = format!(
-        "cadastrophe-session-state --app-data-dir {app_data_dir} --session {session_id} --run {run_id}"
+        "cadgen-ax-session-state --app-data-dir {app_data_dir} --session {session_id} --run {run_id}"
     );
     let plan_commit_command = format!(
-        "cadastrophe-plan-commit --app-data-dir {app_data_dir} --session {session_id} --run {run_id}{input_revision_scope} --plan <file>"
+        "cadgen-ax-plan-commit --app-data-dir {app_data_dir} --session {session_id} --run {run_id}{input_revision_scope} --plan <file>"
     );
     let source_apply_command = format!(
-        "cadastrophe-source-apply --app-data-dir {app_data_dir} --session {session_id} --run {run_id}{input_revision_scope} --source <file>"
+        "cadgen-ax-source-apply --app-data-dir {app_data_dir} --session {session_id} --run {run_id}{input_revision_scope} --source <file>"
     );
     let finalize_command = format!(
-        "cadastrophe-finalize --app-data-dir {app_data_dir} --session {session_id} --run {run_id} --revision <revision_id_from_source_apply>"
+        "cadgen-ax-finalize --app-data-dir {app_data_dir} --session {session_id} --run {run_id} --revision <revision_id_from_source_apply>"
     );
 
     render_strict_template(
@@ -146,7 +146,7 @@ fn source_language_name(language: &CadSourceLanguage) -> &'static str {
         CadSourceLanguage::Openscad => "openscad",
         CadSourceLanguage::Cadquery => "cadquery",
         CadSourceLanguage::FreecadPython => "freecad-python",
-        CadSourceLanguage::CadastropheIr => "cadastrophe-ir",
+        CadSourceLanguage::CadgenAxIr => "cadgen-ax-ir",
     }
 }
 
@@ -169,7 +169,7 @@ fn require_non_empty(label: &str, value: &str) -> Result<(), String> {
 
 fn path_text(path: &Path) -> Result<&str, String> {
     path.to_str()
-        .ok_or_else(|| "Cadastrophe app-data path is not valid UTF-8.".to_string())
+        .ok_or_else(|| "CADGEN-AX app-data path is not valid UTF-8.".to_string())
 }
 
 fn shell_quote_path(path: &Path) -> Result<String, String> {
@@ -217,7 +217,7 @@ mod tests {
         })
         .unwrap();
 
-        assert!(prompt.starts_with("# Cadastrophe modeling agent\n"));
+        assert!(prompt.starts_with("# CADGEN-AX modeling agent\n"));
         assert!(prompt.contains("Use only the commands supplied for\nthe current turn"));
         assert!(prompt.contains("enqueues app-owned VLM evaluation"));
         assert!(prompt.contains(
@@ -229,7 +229,7 @@ mod tests {
         assert!(prompt.contains("Slicer-generated support: disabled"));
         assert!(prompt.contains("The slicer will not generate support structures"));
         assert!(prompt.contains("never add sacrificial or disposable support geometry"));
-        assert!(!prompt.contains("cadastrophe-vlm-judge"));
+        assert!(!prompt.contains("cadgen-ax-vlm-judge"));
         assert!(!prompt.contains("separate subagent"));
         assert!(!prompt.contains("{{"));
         assert!(!prompt.contains("}}"));
@@ -262,7 +262,7 @@ mod tests {
             revision_source_language: Some(CadSourceLanguage::Openscad),
             revision_source: Some("cube([1, 1, 1]);".into()),
             latest_workflow_failure_report: Some(json!({
-                "contractType": "cadastrophe.failure_report.v1",
+                "contractType": "cadgen-ax.failure_report.v1",
                 "reason": "missing_support_tab",
                 "nextAction": "outer_loop_refine_source"
             })),
@@ -270,13 +270,13 @@ mod tests {
         })
         .unwrap();
 
-        assert!(prompt.starts_with("# Cadastrophe modeling turn\n"));
+        assert!(prompt.starts_with("# CADGEN-AX modeling turn\n"));
         assert!(prompt.contains("\"Create a wall bracket.\""));
         assert!(prompt.contains("--app-data-dir '/tmp/Cad App Data'"));
         assert!(prompt.contains("--revision 'revision-1' --plan <file>"));
         assert!(prompt.contains("\"latestWorkflowFailureReport\": {"));
         assert!(prompt.contains("\"reason\": \"missing_support_tab\""));
-        assert!(!prompt.contains("# Cadastrophe modeling agent"));
+        assert!(!prompt.contains("# CADGEN-AX modeling agent"));
         assert!(!prompt.contains("## Required workflow"));
         assert!(!prompt.contains("{{"));
         assert!(!prompt.contains("}}"));
@@ -298,7 +298,7 @@ mod tests {
         assert!(render_modeling_turn_input(&input)
             .unwrap_err()
             .contains("must be an absolute path"));
-        input.app_data_dir = PathBuf::from("/tmp/cadastrophe");
+        input.app_data_dir = PathBuf::from("/tmp/cadgen-ax");
         input.run_id = "bad\nrun".into();
         assert!(render_modeling_turn_input(&input)
             .unwrap_err()

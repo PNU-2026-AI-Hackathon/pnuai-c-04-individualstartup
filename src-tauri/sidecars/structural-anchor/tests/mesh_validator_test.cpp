@@ -9,9 +9,9 @@
 
 namespace {
 
-using cadastrophe::mesh::Triangle;
-using cadastrophe::mesh::TriangleMeshValidator;
-using cadastrophe::mesh::Vec3;
+using cadgen_ax::mesh::Triangle;
+using cadgen_ax::mesh::TriangleMeshValidator;
+using cadgen_ax::mesh::Vec3;
 
 void require(bool condition, const std::string& message) {
     if (!condition) {

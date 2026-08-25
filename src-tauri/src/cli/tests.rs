@@ -122,7 +122,7 @@ fn finalize_requires_committed_plan() {
     .unwrap_err();
 
     assert_eq!(error.code, "precondition_failed");
-    assert!(error.message.contains("cadastrophe-plan-commit"));
+    assert!(error.message.contains("cadgen-ax-plan-commit"));
 }
 
 #[cfg(unix)]
@@ -169,7 +169,7 @@ fn finalize_structural_fail_returns_report_without_prusaslicer() {
         .rev()
         .find(|event| {
             event.event_type == CadAgentRunEventType::AgentToolCompleted
-                && event.payload["command"] == "cadastrophe-finalize"
+                && event.payload["command"] == "cadgen-ax-finalize"
         })
         .expect("finalize completion event");
     assert_eq!(
@@ -494,9 +494,9 @@ fn cli_workflow_persists_required_tool_event_order() {
     assert_eq!(
         completed_commands,
         vec![
-            "cadastrophe-plan-commit",
-            "cadastrophe-source-apply",
-            "cadastrophe-finalize",
+            "cadgen-ax-plan-commit",
+            "cadgen-ax-source-apply",
+            "cadgen-ax-finalize",
         ]
     );
     assert_eq!(state.workflow.plans.len(), 1);
@@ -735,7 +735,7 @@ fn source_apply_runtime_failure_records_source_repair_event_diagnostics() {
             event.run_id == run.id
                 && event.event_type == CadAgentRunEventType::AgentToolCompleted
                 && event.payload.get("command").and_then(Value::as_str)
-                    == Some("cadastrophe-source-apply")
+                    == Some("cadgen-ax-source-apply")
         })
         .unwrap();
     assert_eq!(
@@ -886,7 +886,7 @@ run_id=$(printf '%s' "$input" | sed -n 's/.*"runId":"\([^"]*\)".*/\1/p')
 source_sha=$(printf '%s' "$input" | sed -n 's/.*"sourceArtifactSha256":"\([^"]*\)".*/\1/p')
 source_hash=$(printf '%s' "$input" | sed -n 's/.*"sourceHash":"\([^"]*\)".*/\1/p')
 cat <<EOF
-{{"contractType":"cadastrophe.vlm_render_manifest.v1","runId":"$run_id","revisionId":"$revision_id","artifactId":"$artifact_id","sourceArtifactId":"$artifact_id","sourceArtifactSha256":"$source_sha","sourceHash":"$source_hash","format":"png","path":"{}","sha256":"{}","bytes":{}.0,"renderer":"cadastrophe-vlm-renderer","rendererEngine":"fixture-renderer","viewMode":"9-view","resolution":{{"width":1,"height":1}},"views":["Front-Left-Top","Front","Front-Right-Top","Left","Top","Right","Bottom","Back","Back-Right-Top"]}}
+{{"contractType":"cadgen-ax.vlm_render_manifest.v1","runId":"$run_id","revisionId":"$revision_id","artifactId":"$artifact_id","sourceArtifactId":"$artifact_id","sourceArtifactSha256":"$source_sha","sourceHash":"$source_hash","format":"png","path":"{}","sha256":"{}","bytes":{}.0,"renderer":"cadgen-ax-vlm-renderer","rendererEngine":"fixture-renderer","viewMode":"9-view","resolution":{{"width":1,"height":1}},"views":["Front-Left-Top","Front","Front-Right-Top","Left","Top","Right","Bottom","Back","Back-Right-Top"]}}
 EOF
 "#,
                 png_path,
@@ -941,7 +941,7 @@ fn fixture_dfm_profile(app_data_dir: &PathBuf) -> PathBuf {
 
 fn structural_report_json(run_id: &str, revision_id: &str, passed: bool) -> Value {
     let mut report = json!({
-        "contractType": "cadastrophe.structural_report.v1",
+        "contractType": "cadgen-ax.structural_report.v1",
         "runId": run_id,
         "revisionId": revision_id,
         "artifactId": "artifact-from-fixture-sidecar",
@@ -957,7 +957,7 @@ fn structural_report_json(run_id: &str, revision_id: &str, passed: bool) -> Valu
     });
     if !passed {
         report["failureReport"] = json!({
-            "contractType": "cadastrophe.failure_report.v1",
+            "contractType": "cadgen-ax.failure_report.v1",
             "reason": "fixture_structural_anchor_failed",
             "nextAction": "refine_plan_or_source"
         });
@@ -984,7 +984,7 @@ fn vlm_submit_builds_only_validated_score_submission_data() {
     assert_eq!(
         submission,
         json!({
-            "contractType": "cadastrophe.vlm_submission.v1",
+            "contractType": "cadgen-ax.vlm_submission.v1",
             "scores": {"structure": 3, "components": 3, "proportions": 2},
             "inconsistencies": ["rear view differs slightly"],
             "diagnostic": "all requested components are visible"
@@ -1065,7 +1065,7 @@ fn temp_app_data_dir(name: &str) -> PathBuf {
         .unwrap_or_default()
         .as_millis();
     std::env::temp_dir().join(format!(
-        "cadastrophe-cli-{name}-{}-{millis}",
+        "cadgen-ax-cli-{name}-{}-{millis}",
         std::process::id()
     ))
 }

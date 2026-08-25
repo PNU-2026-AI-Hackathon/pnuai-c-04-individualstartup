@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <vector>
 
-namespace cadastrophe::mesh::fixed {
+namespace cadgen_ax::mesh::fixed {
 
 struct IntersectionTolerance {
     // Signed distances are measured after the same pair-wise axis normalization
@@ -44,4 +44,4 @@ bool IsSelfIntersecting(const std::vector<Vec3>& vertices,
                         const std::vector<Triangle>& triangles,
                         const IntersectionTolerance& tolerance = {});
 
-}  // namespace cadastrophe::mesh::fixed
+}  // namespace cadgen_ax::mesh::fixed

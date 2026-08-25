@@ -2,9 +2,9 @@ import { rmSync } from "node:fs";
 import path from "node:path";
 
 const obsoleteCommands = [
-  "cadastrophe-preview-render",
-  "cadastrophe-artifact-export",
-  "cadastrophe-evaluate-structural"
+  "cadgen-ax-preview-render",
+  "cadgen-ax-artifact-export",
+  "cadgen-ax-evaluate-structural"
 ];
 
 for (const profile of ["debug", "release"]) {

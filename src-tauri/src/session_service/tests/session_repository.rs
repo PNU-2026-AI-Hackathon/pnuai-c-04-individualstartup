@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn sqlite_repository_restores_current_session_and_session_index() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-session-repo-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-session-repo-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
 
@@ -48,7 +48,7 @@ fn sqlite_repository_restores_current_session_and_session_index() {
 
 #[test]
 fn first_run_boot_creates_example_once_and_persists_completion() {
-    let app_data_dir = std::env::temp_dir().join(format!("cadastrophe-first-run-test-{}", uuid()));
+    let app_data_dir = std::env::temp_dir().join(format!("cadgen-ax-first-run-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
 
@@ -91,7 +91,7 @@ fn first_run_boot_creates_example_once_and_persists_completion() {
 #[test]
 fn generated_title_updates_from_prompt_until_user_rename() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-title-source-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-title-source-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
 
@@ -165,7 +165,7 @@ fn generated_title_updates_from_prompt_until_user_rename() {
 #[test]
 fn session_list_returns_active_revision_summary_and_searches_title_source_conversation() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-session-list-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-session-list-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
 
@@ -237,7 +237,7 @@ fn session_list_returns_active_revision_summary_and_searches_title_source_conver
 #[test]
 fn archived_sessions_open_readable_but_do_not_become_current_and_deleted_is_explicit_error() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-session-state-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-session-state-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
 
@@ -284,7 +284,7 @@ fn archived_sessions_open_readable_but_do_not_become_current_and_deleted_is_expl
 #[test]
 fn sqlite_repository_persists_duplicate_archive_and_delete() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-session-repo-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-session-repo-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
 
@@ -350,7 +350,7 @@ fn sqlite_repository_persists_duplicate_archive_and_delete() {
 #[test]
 fn duplicate_preserves_source_and_starts_without_artifacts() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-duplicate-source-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-duplicate-source-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
 
@@ -416,7 +416,7 @@ fn duplicate_preserves_source_and_starts_without_artifacts() {
 #[test]
 fn restart_marks_persisted_loaded_thread_not_loaded_without_changing_mapping() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-thread-restart-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-thread-restart-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
     let service = SessionService::with_repository(
@@ -477,7 +477,7 @@ fn restart_marks_persisted_loaded_thread_not_loaded_without_changing_mapping() {
 #[test]
 fn sqlite_repository_rejects_stale_save_after_session_delete() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-session-delete-stale-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-session-delete-stale-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
 
@@ -519,7 +519,7 @@ fn sqlite_repository_rejects_stale_save_after_session_delete() {
 #[test]
 fn sqlite_repository_restores_agent_thread_run_message_and_transport_graph_idempotently() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-agent-graph-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-agent-graph-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
 
@@ -683,7 +683,7 @@ fn sqlite_repository_restores_agent_thread_run_message_and_transport_graph_idemp
 #[test]
 fn duplicate_never_shares_agent_thread_and_archive_requires_terminal_runs() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-thread-lifecycle-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-thread-lifecycle-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
     let service = SessionService::with_repository(
@@ -759,7 +759,7 @@ fn duplicate_never_shares_agent_thread_and_archive_requires_terminal_runs() {
 #[test]
 fn sqlite_repository_persists_restore_summary_fields_and_artifact_count() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-session-repo-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-session-repo-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
 

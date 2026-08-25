@@ -150,7 +150,7 @@ export function createRenderFailureDiagnostics(input: {
 export function logRenderFailureDiagnostics(diagnostics: CadDiagnostics): void {
   if (diagnostics.ok) return;
   const firstMessage = diagnostics.items.find((item) => item.severity === "error")?.message;
-  console.error("Cadastrophe render failure", {
+  console.error("CADGEN-AX render failure", {
     ok: diagnostics.ok,
     elapsedMs: diagnostics.elapsedMs,
     message: firstMessage,

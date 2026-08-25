@@ -149,7 +149,7 @@ fn delete_session(
     state: State<'_, AppState>,
 ) -> Result<DeleteCadSessionResult, String> {
     eprintln!(
-        "[cadastrophe:delete-session] tauri command received session_id={}",
+        "[cadgen-ax:delete-session] tauri command received session_id={}",
         input.session_id
     );
     state.service.delete_session(&input.session_id)
@@ -349,11 +349,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir().map_err(|error| {
-                format!("Failed to resolve Cadastrophe app data directory: {error}")
+                format!("Failed to resolve CADGEN-AX app data directory: {error}")
             })?;
             let storage_layout = storage::StorageLayout::from_app_data_dir(app_data_dir);
             storage::initialize_storage(&storage_layout)
-                .map_err(|error| format!("Failed to initialize Cadastrophe storage: {error}"))?;
+                .map_err(|error| format!("Failed to initialize CADGEN-AX storage: {error}"))?;
             let service = Arc::new(
                 SessionService::with_repository(
                     storage_layout.clone(),
@@ -361,7 +361,7 @@ pub fn run() {
                         storage_layout,
                     )),
                 )
-                .map_err(|error| format!("Failed to load Cadastrophe sessions: {error}"))?,
+                .map_err(|error| format!("Failed to load CADGEN-AX sessions: {error}"))?,
             );
             let codex_adapter = Arc::new(
                 CodexAgentAdapter::from_env(Arc::clone(&service))
@@ -449,13 +449,13 @@ pub fn run() {
             restore_default_dfm_profile
         ])
         .build(tauri::generate_context!())
-        .expect("error while building Cadastrophe Tauri app");
+        .expect("error while building CADGEN-AX Tauri app");
 
     app.run(|app_handle, event| {
         if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
             let adapter = Arc::clone(&app_handle.state::<AppState>().codex_adapter);
             if let Err(error) = tauri::async_runtime::block_on(adapter.shutdown()) {
-                eprintln!("[cadastrophe:shutdown] failed to stop Codex app-server: {error}");
+                eprintln!("[cadgen-ax:shutdown] failed to stop Codex app-server: {error}");
             }
         }
     });
@@ -468,11 +468,11 @@ fn forward_bridge_events(app: AppHandle, service: Arc<SessionService>) {
             match receiver.recv().await {
                 Ok(event) => {
                     if let Err(error) = app.emit("cad_bridge_event", event) {
-                        eprintln!("[cadastrophe:bridge] emit failed: {error}");
+                        eprintln!("[cadgen-ax:bridge] emit failed: {error}");
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    eprintln!("[cadastrophe:bridge] receiver lagged by {count} events");
+                    eprintln!("[cadgen-ax:bridge] receiver lagged by {count} events");
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -487,11 +487,11 @@ fn forward_agent_stream_events(app: AppHandle, service: Arc<SessionService>) {
             match receiver.recv().await {
                 Ok(event) => {
                     if let Err(error) = app.emit("agent_stream_event", event) {
-                        eprintln!("[cadastrophe:agent-stream] emit failed: {error}");
+                        eprintln!("[cadgen-ax:agent-stream] emit failed: {error}");
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    eprintln!("[cadastrophe:agent-stream] receiver lagged by {count} events");
+                    eprintln!("[cadgen-ax:agent-stream] receiver lagged by {count} events");
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }

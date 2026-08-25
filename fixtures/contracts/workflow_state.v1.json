@@ -37,12 +37,12 @@
       "iteration": 1,
       "revisionId": "revision-fixture-1",
       "structuralReport": {
-        "contractType": "cadastrophe.structural_report.v1",
+        "contractType": "cadgen-ax.structural_report.v1",
         "passed": true,
         "checks": []
       },
       "dfmReport": {
-        "contractType": "cadastrophe.dfm_report.v1",
+        "contractType": "cadgen-ax.dfm_report.v1",
         "passed": true,
         "checks": [],
         "diagnostics": [],
@@ -50,7 +50,7 @@
         "gcodeArtifactId": "artifact-fixture-gcode"
       },
       "vlmReport": {
-        "contractType": "cadastrophe.vlm_judge_report.v1",
+        "contractType": "cadgen-ax.vlm_judge_report.v1",
         "scores": {
           "structure": 1,
           "components": 3,
@@ -61,7 +61,7 @@
         "passed": false
       },
       "failureReport": {
-        "contractType": "cadastrophe.failure_report.v1",
+        "contractType": "cadgen-ax.failure_report.v1",
         "reason": "missing_support_tab",
         "nextAction": "outer_loop_refine_source"
       },
@@ -74,7 +74,7 @@
       "runId": "run-fixture-1",
       "artifactId": "artifact-fixture-stl",
       "contract": {
-        "contractType": "cadastrophe.vlm_judge.v1",
+        "contractType": "cadgen-ax.vlm_judge.v1",
         "handoff": "VLM Judge Handoff needed.",
         "renderedImages": {
           "available": true,
@@ -82,7 +82,7 @@
         }
       },
       "dfmReport": {
-        "contractType": "cadastrophe.dfm_report.v1",
+        "contractType": "cadgen-ax.dfm_report.v1",
         "passed": true,
         "checks": [],
         "diagnostics": [],

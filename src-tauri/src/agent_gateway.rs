@@ -55,16 +55,16 @@ impl AgentGateway {
             let inserted = match active_runs.lock() {
                 Ok(mut active) => active.insert(run.id.clone()),
                 Err(_) => {
-                    eprintln!("[cadastrophe:refinement] active run lock poisoned");
+                    eprintln!("[cadgen-ax:refinement] active run lock poisoned");
                     return;
                 }
             };
             if !inserted {
-                eprintln!("[cadastrophe:refinement] duplicate active run: {}", run.id);
+                eprintln!("[cadgen-ax:refinement] duplicate active run: {}", run.id);
                 return;
             }
             if let Err(error) = execute_run(service, adapter, active_runs, coordinator, run).await {
-                eprintln!("[cadastrophe:refinement] failed: {error}");
+                eprintln!("[cadgen-ax:refinement] failed: {error}");
             }
         });
         Ok(())
@@ -161,7 +161,7 @@ impl AgentGateway {
                     format!("Cancel interrupt/reconciliation failed; outcome is unknown and run was not retried: {error}"),
                 ) {
                     eprintln!(
-                        "[cadastrophe:cancel-recovery] session_id={} run_id={} interrupt_error={error:?} persist_error={persist_error:?}",
+                        "[cadgen-ax:cancel-recovery] session_id={} run_id={} interrupt_error={error:?} persist_error={persist_error:?}",
                         session_id_owned, run_id_owned
                     );
                 }
@@ -171,7 +171,7 @@ impl AgentGateway {
                     active.remove(&run_id_owned);
                 }
                 Err(_) => eprintln!(
-                    "[cadastrophe:cancel-recovery] session_id={} run_id={} active run lock poisoned during cleanup",
+                    "[cadgen-ax:cancel-recovery] session_id={} run_id={} active run lock poisoned during cleanup",
                     session_id_owned, run_id_owned
                 ),
             }
@@ -212,7 +212,7 @@ impl AgentGateway {
                                 format!("Startup Codex history reconciliation failed; outcome is unknown and run was not retried: {error}"),
                             ) {
                                 eprintln!(
-                                    "[cadastrophe:startup-recovery] failed to persist unknown outcome for {}/{}: {persist_error}",
+                                    "[cadgen-ax:startup-recovery] failed to persist unknown outcome for {}/{}: {persist_error}",
                                     candidate.session_id, candidate.run_id
                                 );
                             }
@@ -589,10 +589,10 @@ fn apply_adapter_event_with_validation(
                 Some(CadBridgeEventType::AgentToolCompleted),
                 Some(serde_json::json!({"tool": tool_name})),
             )?;
-            if is_cadastrophe_cli_command(&name) {
+            if is_cadgen_ax_cli_command(&name) {
                 service.refresh_session_from_repository(&run.session_id)?;
             }
-            if name.contains("cadastrophe-finalize") {
+            if name.contains("cadgen-ax-finalize") {
                 let queued = service
                     .list_validation_batches(&run.session_id)?
                     .into_iter()
@@ -602,7 +602,7 @@ fn apply_adapter_event_with_validation(
                     .count();
                 if queued > 0 && validation_coordinator.is_none() {
                     return Err(
-                        "cadastrophe-finalize queued validation, but no coordinator is attached."
+                        "cadgen-ax-finalize queued validation, but no coordinator is attached."
                             .to_string(),
                     );
                 }
@@ -681,13 +681,13 @@ pub(crate) fn normalize_transport_payload(payload: &Value) -> Value {
     let redacted = hidden_content_redacted || recursively_redacted;
     if let Value::Object(object) = &mut value {
         object.insert(
-            "_cadastropheTransportPolicy".to_string(),
+            "_cadgen-axTransportPolicy".to_string(),
             json!({ "truncated": truncated, "redacted": redacted }),
         );
     } else {
         value = json!({
             "value": value,
-            "_cadastropheTransportPolicy": { "truncated": truncated, "redacted": redacted }
+            "_cadgen-axTransportPolicy": { "truncated": truncated, "redacted": redacted }
         });
     }
     value
@@ -810,13 +810,13 @@ fn is_active(active_runs: &Arc<Mutex<HashSet<String>>>, run_id: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn is_cadastrophe_cli_command(name: &str) -> bool {
+fn is_cadgen_ax_cli_command(name: &str) -> bool {
     [
-        "cadastrophe-session-current",
-        "cadastrophe-session-state",
-        "cadastrophe-plan-commit",
-        "cadastrophe-source-apply",
-        "cadastrophe-finalize",
+        "cadgen-ax-session-current",
+        "cadgen-ax-session-state",
+        "cadgen-ax-plan-commit",
+        "cadgen-ax-source-apply",
+        "cadgen-ax-finalize",
     ]
     .iter()
     .any(|command| name.contains(command))

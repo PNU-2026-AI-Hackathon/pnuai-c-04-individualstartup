@@ -18,7 +18,7 @@
 #include <unordered_set>
 #include <utility>
 
-namespace cadastrophe::mesh {
+namespace cadgen_ax::mesh {
 namespace {
 
 using Edge = std::pair<std::size_t, std::size_t>;
@@ -673,4 +673,4 @@ double TriangleMeshValidator::GetVolume() const {
     return std::abs(signed_volume);
 }
 
-}  // namespace cadastrophe::mesh
+}  // namespace cadgen_ax::mesh

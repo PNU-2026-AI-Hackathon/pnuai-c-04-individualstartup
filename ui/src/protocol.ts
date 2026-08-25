@@ -4,7 +4,7 @@ export type CadSourceLanguage =
   | "openscad"
   | "cadquery"
   | "freecad-python"
-  | "cadastrophe-ir";
+  | "cadgen-ax-ir";
 
 export type CadSessionStatus =
   | "idle"
@@ -450,7 +450,7 @@ export interface CadWorkflowPendingVlm {
 }
 
 export interface CadDfmReport extends Record<string, unknown> {
-  contractType: "cadastrophe.dfm_report.v1";
+  contractType: "cadgen-ax.dfm_report.v1";
   passed: boolean;
   checks: unknown[];
   diagnostics: unknown[];

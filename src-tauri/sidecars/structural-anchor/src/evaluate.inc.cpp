@@ -268,7 +268,7 @@ Json evaluate(const Json& input, const fs::path& base_dir) {
     std::map<std::string, Json> report{
         {"artifactId", Json::string(artifact_id)},
         {"checks", Json::array(checks)},
-        {"contractType", Json::string("cadastrophe.structural_report.v1")},
+        {"contractType", Json::string("cadgen-ax.structural_report.v1")},
         {"mainComponent", Json::string(main_name)},
         {"passed", Json::boolean(passed)},
         {"revisionId", Json::string(revision_id)},
@@ -277,7 +277,7 @@ Json evaluate(const Json& input, const fs::path& base_dir) {
     if (!passed) {
         const std::string reason = reason_for_failed_check(checks);
         std::map<std::string, Json> failure_report{
-            {"contractType", Json::string("cadastrophe.failure_report.v1")},
+            {"contractType", Json::string("cadgen-ax.failure_report.v1")},
             {"nextAction", Json::string("refine_plan_or_source")},
             {"reason", Json::string(reason.empty() ? "structural_anchor_failed" : reason)},
         };

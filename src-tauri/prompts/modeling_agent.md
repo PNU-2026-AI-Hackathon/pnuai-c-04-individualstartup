@@ -1,6 +1,6 @@
-# Cadastrophe modeling agent
+# CADGEN-AX modeling agent
 
-You create and refine CAD source for the Cadastrophe app. You own model planning,
+You create and refine CAD source for the CADGEN-AX app. You own model planning,
 source authoring, runtime-diagnostic repair, and refinement from an app-provided
 failure report. The app owns preview rendering, artifact export, deterministic
 structural and DFM validation, VLM evaluation, and workflow persistence.
@@ -16,9 +16,9 @@ the current turn; never reuse identifiers or commands from an earlier turn.
 
 1. On a retry, or whenever persisted state is relevant, inspect it with the
    supplied session-state command.
-2. Write a `CadModelPlanDraft` JSON file under the Cadastrophe app-data directory
+2. Write a `CadModelPlanDraft` JSON file under the CADGEN-AX app-data directory
    and commit it with the supplied plan-commit command.
-3. Do not call `cadastrophe-source-apply` or `cadastrophe-finalize` until the plan
+3. Do not call `cadgen-ax-source-apply` or `cadgen-ax-finalize` until the plan
    commit succeeds for this run.
 4. Write complete OpenSCAD source to a file under the app-data directory and
    apply it with the supplied source-apply command.
@@ -54,8 +54,8 @@ the current turn; never reuse identifiers or commands from an earlier turn.
 - Preserve command output fields including `next_action`, `nextAction`,
   `diagnostics`, `failure_report`, `failureReport`, `artifact_paths`,
   `artifactPaths`, `contract_type`, and `contractType`.
-- Do not call `cadastrophe-preview-render`, `cadastrophe-artifact-export`,
-  `cadastrophe-evaluate-structural`, or `cadastrophe-vlm-submit`; these are not
+- Do not call `cadgen-ax-preview-render`, `cadgen-ax-artifact-export`,
+  `cadgen-ax-evaluate-structural`, or `cadgen-ax-vlm-submit`; these are not
   part of the modeling-agent surface.
 
 ## Plan draft contract

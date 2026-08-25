@@ -2,7 +2,7 @@ use super::*;
 
 fn test_service() -> SessionService {
     SessionService::new(
-        std::env::temp_dir().join(format!("cadastrophe-operations-recovery-test-{}", uuid())),
+        std::env::temp_dir().join(format!("cadgen-ax-operations-recovery-test-{}", uuid())),
     )
 }
 
@@ -302,7 +302,7 @@ fn history_not_found_is_failed_unknown_outcome_and_never_reenqueueable() {
 #[test]
 fn thread_replacement_is_atomic_persists_reason_and_allows_only_named_recovery_run() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-thread-replace-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-thread-replace-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
     let service = SessionService::with_repository(

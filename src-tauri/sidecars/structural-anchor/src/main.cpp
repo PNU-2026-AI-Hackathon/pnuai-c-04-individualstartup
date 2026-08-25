@@ -97,7 +97,7 @@ int main(int argc, char** argv) {
         return 0;
     } catch (const std::exception& error) {
         Json envelope = Json::object({
-            {"contractType", Json::string("cadastrophe.structural_anchor_error.v1")},
+            {"contractType", Json::string("cadgen-ax.structural_anchor_error.v1")},
             {"error", Json::string(error.what())},
         });
         std::cerr << dump_json(envelope) << "\n";

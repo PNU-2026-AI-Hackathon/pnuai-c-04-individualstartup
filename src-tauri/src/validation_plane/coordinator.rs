@@ -174,7 +174,7 @@ impl ValidationCoordinator {
                 active.remove(&id);
             }
             if let Err(error) = result {
-                eprintln!("[cadastrophe:validation] batch_id={id} error={error}");
+                eprintln!("[cadgen-ax:validation] batch_id={id} error={error}");
             }
         });
         Ok(())
@@ -888,10 +888,10 @@ fn build_aggregate(
     let failure = if passed {
         Value::Null
     } else {
-        json!({"contractType":"cadastrophe.failure_report.v1","reason":"validation_batch_rejected","summary":"One or more validation checks rejected the final artifact.","nextAction":"outer_loop_refine_source","issues":issues})
+        json!({"contractType":"cadgen-ax.failure_report.v1","reason":"validation_batch_rejected","summary":"One or more validation checks rejected the final artifact.","nextAction":"outer_loop_refine_source","issues":issues})
     };
     Ok(
-        json!({"contractType":"cadastrophe.finalization_report.v2","batchId":batch.id,"revisionId":batch.revision_id,"artifactId":batch.artifact_id,"attempt":batch.attempt,"passed":passed,"checks":map,"failureReport":failure}),
+        json!({"contractType":"cadgen-ax.finalization_report.v2","batchId":batch.id,"revisionId":batch.revision_id,"artifactId":batch.artifact_id,"attempt":batch.attempt,"passed":passed,"checks":map,"failureReport":failure}),
     )
 }
 fn ensure_rejection_has_actionable_issue(

@@ -251,7 +251,7 @@ npm run build:cli-tools        # Rust CLI 전체 + debug sidecar
 
 GUI가 없는 macOS 빌드 환경에서 DMG를 만들 때는 Finder 꾸미기 단계를 건너뛰도록 `CI=true npm run build:tauri`를 사용합니다.
 
-패키징된 macOS 앱은 터미널의 `PATH`를 그대로 상속하지 않을 수 있습니다. 백엔드는 현재 경로, 앱 인접 CLI 경로, 로그인 셸 경로와 `CADASTROPHE_CODEX_EXTRA_PATHS`에 지정된 경로를 조합해 Codex 실행 파일을 찾습니다.
+패키징된 macOS 앱은 터미널의 `PATH`를 그대로 상속하지 않을 수 있습니다. 백엔드는 현재 경로, 앱 인접 CLI 경로, 로그인 셸 경로와 `CADGEN_AX_CODEX_EXTRA_PATHS`에 지정된 경로를 조합해 Codex 실행 파일을 찾습니다.
 
 ### 4.5. 첫 실행 순서
 

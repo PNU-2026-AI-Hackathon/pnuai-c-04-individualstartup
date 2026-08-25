@@ -6,10 +6,10 @@ use serde_json::{json, Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const INPUT_CONTRACT_TYPE: &str = "cadastrophe.vlm_evaluation_input.v1";
-pub const SUBMISSION_CONTRACT_TYPE: &str = "cadastrophe.vlm_submission.v1";
-pub const REPORT_CONTRACT_TYPE: &str = "cadastrophe.vlm_judge_report.v1";
-pub const FAILURE_REPORT_CONTRACT_TYPE: &str = "cadastrophe.failure_report.v1";
+pub const INPUT_CONTRACT_TYPE: &str = "cadgen-ax.vlm_evaluation_input.v1";
+pub const SUBMISSION_CONTRACT_TYPE: &str = "cadgen-ax.vlm_submission.v1";
+pub const REPORT_CONTRACT_TYPE: &str = "cadgen-ax.vlm_judge_report.v1";
+pub const FAILURE_REPORT_CONTRACT_TYPE: &str = "cadgen-ax.failure_report.v1";
 pub const VLM_PASS_COMPOSITE: u64 = 7;
 pub const VLM_MIN_SUBSCORE: u64 = 2;
 pub const VLM_PASS_THRESHOLD: f64 = VLM_PASS_COMPOSITE as f64 / 9.0;
@@ -72,8 +72,8 @@ pub fn build_input_contract(input: EvaluationContractInput<'_>) -> Result<Value,
         .judge_contract
         .as_object()
         .ok_or_else(|| "VLM judge contract must be a JSON object.".to_string())?;
-    if judge.get("contractType").and_then(Value::as_str) != Some("cadastrophe.vlm_judge.v1") {
-        return Err("VLM judge contractType must be cadastrophe.vlm_judge.v1.".to_string());
+    if judge.get("contractType").and_then(Value::as_str) != Some("cadgen-ax.vlm_judge.v1") {
+        return Err("VLM judge contractType must be cadgen-ax.vlm_judge.v1.".to_string());
     }
     Ok(json!({
         "contractType": INPUT_CONTRACT_TYPE,
@@ -106,7 +106,7 @@ pub fn build_input_contract(input: EvaluationContractInput<'_>) -> Result<Value,
         },
         "submissionContract": {
             "contractType": SUBMISSION_CONTRACT_TYPE,
-            "command": "cadastrophe-vlm-submit",
+            "command": "cadgen-ax-vlm-submit",
             "requiredOptions": ["structure", "components", "proportions"],
             "optionalOptions": ["inconsistency", "diagnostic"],
             "applicationOwnedReportFields": ["evaluationId", "sessionId", "runId", "revisionId", "artifactId", "kind", "attempt", "composite", "score", "passed", "failureReport"]

@@ -1,5 +1,5 @@
 {
-  "contractType": "cadastrophe.structural_report.v1",
+  "contractType": "cadgen-ax.structural_report.v1",
   "runId": "run-fixture-1",
   "revisionId": "revision-fixture-1",
   "artifactId": "artifact-fixture-stl",
@@ -30,7 +30,7 @@
     }
   ],
   "failureReport": {
-    "contractType": "cadastrophe.failure_report.v1",
+    "contractType": "cadgen-ax.failure_report.v1",
     "reason": "aspect_ratio_out_of_tolerance",
     "nextAction": "refine_plan_or_source"
   }

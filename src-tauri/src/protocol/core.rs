@@ -16,7 +16,7 @@ pub enum CadSourceLanguage {
     Openscad,
     Cadquery,
     FreecadPython,
-    CadastropheIr,
+    CadgenAxIr,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

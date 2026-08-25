@@ -11,8 +11,8 @@ fn transport_payload_policy_redacts_sensitive_keys_and_marks_truncation() {
     }));
     assert_eq!(normalized["result"]["accessToken"], "[redacted]");
     assert_eq!(normalized["result"]["environment"], "[redacted]");
-    assert_eq!(normalized["_cadastropheTransportPolicy"]["redacted"], true);
-    assert_eq!(normalized["_cadastropheTransportPolicy"]["truncated"], true);
+    assert_eq!(normalized["_cadgen-axTransportPolicy"]["redacted"], true);
+    assert_eq!(normalized["_cadgen-axTransportPolicy"]["truncated"], true);
     assert!(normalized["output"]
         .as_str()
         .unwrap()
@@ -27,7 +27,7 @@ fn transport_payload_policy_removes_hidden_reasoning_and_user_prompt_content() {
     }));
     assert_eq!(reasoning_delta["params"]["delta"], "[redacted]");
     assert_eq!(
-        reasoning_delta["_cadastropheTransportPolicy"]["redacted"],
+        reasoning_delta["_cadgen-axTransportPolicy"]["redacted"],
         true
     );
 
@@ -51,7 +51,7 @@ fn transport_payload_policy_removes_hidden_reasoning_and_user_prompt_content() {
         reasoning["params"]["item"]["summary"],
         serde_json::json!(["public summary"])
     );
-    assert_eq!(reasoning["_cadastropheTransportPolicy"]["redacted"], true);
+    assert_eq!(reasoning["_cadgen-axTransportPolicy"]["redacted"], true);
 
     let user_message = crate::agent_gateway::normalize_transport_payload(&serde_json::json!({
         "method": "item/completed",
@@ -76,7 +76,7 @@ fn transport_payload_policy_removes_hidden_reasoning_and_user_prompt_content() {
 #[test]
 fn completed_stream_event_follows_durable_agent_message_snapshot() {
     let service = SessionService::new(
-        std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
+        std::env::temp_dir().join(format!("cadgen-ax-tauri-test-{}", uuid::Uuid::new_v4())),
     );
     let created = service
         .create_session(CreateCadSessionInput::default())
@@ -150,7 +150,7 @@ fn completed_stream_event_follows_durable_agent_message_snapshot() {
 #[test]
 fn delete_session_rejects_nonterminal_agent_run_without_mutating_session() {
     let service = SessionService::new(
-        std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
+        std::env::temp_dir().join(format!("cadgen-ax-tauri-test-{}", uuid::Uuid::new_v4())),
     );
     let created = service
         .create_session(CreateCadSessionInput::default())
@@ -180,7 +180,7 @@ fn delete_session_rejects_nonterminal_agent_run_without_mutating_session() {
 #[test]
 fn gateway_start_run_is_safe_from_sync_tauri_command_context() {
     let service = Arc::new(SessionService::new(
-        std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
+        std::env::temp_dir().join(format!("cadgen-ax-tauri-test-{}", uuid::Uuid::new_v4())),
     ));
     let gateway = AgentGateway::new(Arc::clone(&service), Arc::new(MessageOnlyAdapter));
     let created = service
@@ -213,7 +213,7 @@ fn gateway_start_run_is_safe_from_sync_tauri_command_context() {
 #[tokio::test]
 async fn gateway_completes_prompt_to_preview_loop() {
     let service = Arc::new(SessionService::new(
-        std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
+        std::env::temp_dir().join(format!("cadgen-ax-tauri-test-{}", uuid::Uuid::new_v4())),
     ));
     let gateway = AgentGateway::new(Arc::clone(&service), Arc::new(SourceUpdateAdapter));
     let created = service
@@ -275,7 +275,7 @@ async fn gateway_completes_prompt_to_preview_loop() {
 #[tokio::test]
 async fn gateway_records_adapter_failure() {
     let service = Arc::new(SessionService::new(
-        std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
+        std::env::temp_dir().join(format!("cadgen-ax-tauri-test-{}", uuid::Uuid::new_v4())),
     ));
     let gateway = AgentGateway::new(Arc::clone(&service), Arc::new(FailingAdapter));
     let created = service
@@ -308,7 +308,7 @@ async fn gateway_records_adapter_failure() {
 #[tokio::test]
 async fn gateway_persists_adapter_progress_before_completion() {
     let service = Arc::new(SessionService::new(
-        std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
+        std::env::temp_dir().join(format!("cadgen-ax-tauri-test-{}", uuid::Uuid::new_v4())),
     ));
     let gateway = AgentGateway::new(Arc::clone(&service), Arc::new(StreamingProgressAdapter));
     let created = service
@@ -359,7 +359,7 @@ async fn gateway_persists_adapter_progress_before_completion() {
 #[tokio::test]
 async fn gateway_cancel_marks_running_run_cancelled() {
     let service = Arc::new(SessionService::new(
-        std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
+        std::env::temp_dir().join(format!("cadgen-ax-tauri-test-{}", uuid::Uuid::new_v4())),
     ));
     let gateway = AgentGateway::new(Arc::clone(&service), Arc::new(DelayedAdapter));
     let created = service
@@ -391,7 +391,7 @@ async fn gateway_cancel_marks_running_run_cancelled() {
 #[tokio::test]
 async fn gateway_cancel_after_external_turn_reconciles_and_terminal_outcome_wins() {
     let service = Arc::new(SessionService::new(
-        std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
+        std::env::temp_dir().join(format!("cadgen-ax-tauri-test-{}", uuid::Uuid::new_v4())),
     ));
     let metadata_ready = Arc::new(Notify::new());
     let release_run = Arc::new(Notify::new());
@@ -465,7 +465,7 @@ async fn gateway_cancel_after_external_turn_reconciles_and_terminal_outcome_wins
 #[tokio::test]
 async fn gateway_cancel_interrupt_failure_records_unknown_outcome() {
     let service = Arc::new(SessionService::new(
-        std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
+        std::env::temp_dir().join(format!("cadgen-ax-tauri-test-{}", uuid::Uuid::new_v4())),
     ));
     let metadata_ready = Arc::new(Notify::new());
     let release_run = Arc::new(Notify::new());
@@ -515,7 +515,7 @@ async fn gateway_cancel_interrupt_failure_records_unknown_outcome() {
 #[tokio::test]
 async fn gateway_includes_latest_workflow_failure_report_in_retry_input() {
     let service = Arc::new(SessionService::new(
-        std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
+        std::env::temp_dir().join(format!("cadgen-ax-tauri-test-{}", uuid::Uuid::new_v4())),
     ));
     let captured_failure = Arc::new(Mutex::new(None));
     let gateway = AgentGateway::new(
@@ -545,13 +545,13 @@ async fn gateway_includes_latest_workflow_failure_report_in_retry_input() {
                 iteration: 1,
                 revision_id: created.state.session.active_revision_id.clone(),
                 structural_report: serde_json::json!({
-                    "contractType": "cadastrophe.structural_report.v1",
+                    "contractType": "cadgen-ax.structural_report.v1",
                     "passed": false
                 }),
                 dfm_report: None,
                 vlm_report: None,
                 failure_report: Some(serde_json::json!({
-                    "contractType": "cadastrophe.failure_report.v1",
+                    "contractType": "cadgen-ax.failure_report.v1",
                     "reason": "missing_support_tab",
                     "nextAction": "outer_loop_refine_source"
                 })),
@@ -594,9 +594,9 @@ async fn gateway_includes_latest_workflow_failure_report_in_retry_input() {
 }
 
 #[tokio::test]
-async fn gateway_refreshes_workflow_state_after_cadastrophe_cli_completion() {
+async fn gateway_refreshes_workflow_state_after_cadgen_ax_cli_completion() {
     let app_data_dir = std::env::temp_dir().join(format!(
-        "cadastrophe-gateway-workflow-refresh-test-{}",
+        "cadgen-ax-gateway-workflow-refresh-test-{}",
         uuid::Uuid::new_v4()
     ));
     let layout = storage::StorageLayout::from_app_data_dir(app_data_dir);
@@ -641,7 +641,7 @@ async fn gateway_refreshes_workflow_state_after_cadastrophe_cli_completion() {
 #[tokio::test]
 async fn gateway_rejects_duplicate_active_run_in_same_session() {
     let service = Arc::new(SessionService::new(
-        std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
+        std::env::temp_dir().join(format!("cadgen-ax-tauri-test-{}", uuid::Uuid::new_v4())),
     ));
     let gateway = AgentGateway::new(Arc::clone(&service), Arc::new(OutOfOrderAdapter));
     let created = service
@@ -687,7 +687,7 @@ async fn gateway_rejects_duplicate_active_run_in_same_session() {
 #[tokio::test]
 async fn gateway_allows_active_runs_in_distinct_sessions() {
     let service = Arc::new(SessionService::new(
-        std::env::temp_dir().join(format!("cadastrophe-tauri-test-{}", uuid::Uuid::new_v4())),
+        std::env::temp_dir().join(format!("cadgen-ax-tauri-test-{}", uuid::Uuid::new_v4())),
     ));
     let gateway = AgentGateway::new(Arc::clone(&service), Arc::new(DelayedAdapter));
     let first_session = service
@@ -974,10 +974,10 @@ impl AgentAdapter for ExternalWorkflowAdapter {
         )?;
         Ok(vec![
             AgentAdapterEvent::ToolStarted {
-                name: "cadastrophe-plan-commit".to_string(),
+                name: "cadgen-ax-plan-commit".to_string(),
             },
             AgentAdapterEvent::ToolCompleted {
-                name: "cadastrophe-plan-commit".to_string(),
+                name: "cadgen-ax-plan-commit".to_string(),
             },
         ])
     }

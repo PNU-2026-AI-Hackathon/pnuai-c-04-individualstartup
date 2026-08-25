@@ -120,8 +120,8 @@ async function render(message: RenderRequest) {
   } satisfies OpenscadWorkerResponse);
 
   const namespace = requestNamespace(message);
-  const inputPath = `/cadastrophe-${namespace}.scad`;
-  const outputPath = `/cadastrophe-${namespace}.stl`;
+  const inputPath = `/cadgen-ax-${namespace}.scad`;
+  const outputPath = `/cadgen-ax-${namespace}.stl`;
   try {
     openscad.FS.writeFile(inputPath, appliedSource);
     const exitCode = openscad.callMain([inputPath, "--backend=manifold", "-o", outputPath]);

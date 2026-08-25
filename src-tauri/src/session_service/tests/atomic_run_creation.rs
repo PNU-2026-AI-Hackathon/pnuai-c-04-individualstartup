@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn atomic_run_creation_preserves_title_state_event_and_message_ordering() {
-    let app_data_dir = std::env::temp_dir().join(format!("cadastrophe-atomic-run-test-{}", uuid()));
+    let app_data_dir = std::env::temp_dir().join(format!("cadgen-ax-atomic-run-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
     let service = SessionService::with_repository(
@@ -79,7 +79,7 @@ fn atomic_run_creation_preserves_title_state_event_and_message_ordering() {
 #[test]
 fn atomic_run_creation_rolls_back_sqlite_and_memory_when_message_insert_fails() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-atomic-run-rollback-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-atomic-run-rollback-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
     let service = SessionService::with_repository(

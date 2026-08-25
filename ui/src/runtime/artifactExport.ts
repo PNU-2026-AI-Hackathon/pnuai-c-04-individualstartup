@@ -14,5 +14,5 @@ export function stlExportDefaultFileName(sessionTitle?: string): string {
     .replace(/[. ]+$/g, "")
     .trim()
     .slice(0, 120);
-  return `${baseName || "cadastrophe-model"}.stl`;
+  return `${baseName || "cadgen-ax-model"}.stl`;
 }

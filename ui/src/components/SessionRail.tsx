@@ -101,7 +101,7 @@ export function SessionRail({
         lowerLabel="Revisions"
         maxRatio={72}
         minRatio={28}
-        storageKey="cadastrophe.split.left"
+        storageKey="cadgen-ax.split.left"
         upperLabel="Sessions"
       >
         <section className="session-rail-sessions" aria-label="Session list">
@@ -229,7 +229,7 @@ export function SessionRail({
                         <button
                           role="menuitem"
                           onClick={() => {
-                            console.info("[cadastrophe:delete-session] rail delete clicked", { sessionId: session.id });
+                            console.info("[cadgen-ax:delete-session] rail delete clicked", { sessionId: session.id });
                             setOpenMenuSessionId(null);
                             onDelete(session.id);
                           }}

@@ -1,29 +1,29 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(cadastrophe_structural_anchor LANGUAGES CXX)
+project(cadgen_ax_structural_anchor LANGUAGES CXX)
 
-add_library(cadastrophe-mesh-validator STATIC
+add_library(cadgen-ax-mesh-validator STATIC
     src/mesh_validator.cpp
     src/mesh_intersection_fixed.cpp)
-target_compile_features(cadastrophe-mesh-validator PUBLIC cxx_std_17)
-target_include_directories(cadastrophe-mesh-validator PUBLIC src)
+target_compile_features(cadgen-ax-mesh-validator PUBLIC cxx_std_17)
+target_include_directories(cadgen-ax-mesh-validator PUBLIC src)
 
-add_executable(cadastrophe-structural-anchor src/main.cpp)
-target_compile_features(cadastrophe-structural-anchor PRIVATE cxx_std_17)
-target_link_libraries(cadastrophe-structural-anchor PRIVATE cadastrophe-mesh-validator)
+add_executable(cadgen-ax-structural-anchor src/main.cpp)
+target_compile_features(cadgen-ax-structural-anchor PRIVATE cxx_std_17)
+target_link_libraries(cadgen-ax-structural-anchor PRIVATE cadgen-ax-mesh-validator)
 
 include(CTest)
 if(BUILD_TESTING)
-    add_executable(cadastrophe-mesh-validator-test tests/mesh_validator_test.cpp)
-    target_compile_features(cadastrophe-mesh-validator-test PRIVATE cxx_std_17)
-    target_link_libraries(cadastrophe-mesh-validator-test PRIVATE cadastrophe-mesh-validator)
-    add_test(NAME cadastrophe-mesh-validator-test COMMAND cadastrophe-mesh-validator-test)
+    add_executable(cadgen-ax-mesh-validator-test tests/mesh_validator_test.cpp)
+    target_compile_features(cadgen-ax-mesh-validator-test PRIVATE cxx_std_17)
+    target_link_libraries(cadgen-ax-mesh-validator-test PRIVATE cadgen-ax-mesh-validator)
+    add_test(NAME cadgen-ax-mesh-validator-test COMMAND cadgen-ax-mesh-validator-test)
 
-    add_executable(cadastrophe-mesh-intersection-fixed-test
+    add_executable(cadgen-ax-mesh-intersection-fixed-test
         tests/mesh_intersection_fixed_test.cpp)
-    target_compile_features(cadastrophe-mesh-intersection-fixed-test PRIVATE cxx_std_17)
-    target_link_libraries(cadastrophe-mesh-intersection-fixed-test PRIVATE
-        cadastrophe-mesh-validator)
-    add_test(NAME cadastrophe-mesh-intersection-fixed-test
-        COMMAND cadastrophe-mesh-intersection-fixed-test)
+    target_compile_features(cadgen-ax-mesh-intersection-fixed-test PRIVATE cxx_std_17)
+    target_link_libraries(cadgen-ax-mesh-intersection-fixed-test PRIVATE
+        cadgen-ax-mesh-validator)
+    add_test(NAME cadgen-ax-mesh-intersection-fixed-test
+        COMMAND cadgen-ax-mesh-intersection-fixed-test)
 endif()

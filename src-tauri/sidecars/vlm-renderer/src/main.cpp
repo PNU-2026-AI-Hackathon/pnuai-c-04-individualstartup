@@ -60,10 +60,10 @@ int main(int argc, char** argv) {
         const Json manifest = Json::object({
             {"artifactId", Json::string(get_string(input, "artifactId"))},
             {"bytes", Json::number(static_cast<double>(png.size()))},
-            {"contractType", Json::string("cadastrophe.vlm_render_manifest.v1")},
+            {"contractType", Json::string("cadgen-ax.vlm_render_manifest.v1")},
             {"format", Json::string("png")},
             {"path", Json::string(output_path.string())},
-            {"renderer", Json::string("cadastrophe-vlm-renderer")},
+            {"renderer", Json::string("cadgen-ax-vlm-renderer")},
             {"rendererEngine", Json::string("native-cpp-rasterizer")},
             {"resolution", Json::object({{"width", Json::number(cell_width)}, {"height", Json::number(cell_height)}})},
             {"revisionId", Json::string(get_string(input, "revisionId"))},
@@ -78,7 +78,7 @@ int main(int argc, char** argv) {
         std::cout << dump_json(manifest) << "\n";
         return 0;
     } catch (const std::exception& error) {
-        std::cerr << "cadastrophe-vlm-renderer failed: " << error.what() << "\n";
+        std::cerr << "cadgen-ax-vlm-renderer failed: " << error.what() << "\n";
         return 1;
     }
 }

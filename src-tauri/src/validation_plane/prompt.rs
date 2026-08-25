@@ -54,7 +54,7 @@ pub fn build_validation_thread_start_params(cwd: &Path) -> Result<Value, String>
         "cwd": cwd,
         "personality": "pragmatic",
         "sandbox": "read-only",
-        "serviceName": "cadastrophe-tauri-backend",
+        "serviceName": "cadgen-ax-tauri-backend",
         "sessionStartSource": "startup"
     }))
 }
@@ -67,7 +67,7 @@ pub fn build_validation_turn_start_params(
 ) -> Result<Value, String> {
     require_non_empty("rendered VLM prompt", prompt)?;
     validate_directory("validation working directory", cwd)?;
-    validate_directory("Cadastrophe app-data directory", app_data_dir)?;
+    validate_directory("CADGEN-AX app-data directory", app_data_dir)?;
     validate_rendered_image(image_path)?;
     let image_path = path_text("rendered image path", image_path)?;
 
@@ -198,7 +198,7 @@ mod tests {
     impl TestDirectory {
         fn new() -> Self {
             let path = std::env::temp_dir()
-                .join(format!("cadastrophe-prompt-test-{}", uuid::Uuid::new_v4()));
+                .join(format!("cadgen-ax-prompt-test-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&path).unwrap();
             Self(path)
         }
@@ -216,7 +216,7 @@ mod tests {
 
     fn contract() -> Value {
         json!({
-            "contractType": "cadastrophe.vlm_evaluation_input.v1",
+            "contractType": "cadgen-ax.vlm_evaluation_input.v1",
             "evaluationId": "evaluation-1",
             "sessionId": "session-1",
             "runId": "run-1",
@@ -228,7 +228,7 @@ mod tests {
                 "artifactId": "render-artifact-1",
                 "mediaType": "image/png"
             },
-            "submissionContract": "cadastrophe.vlm_submission.v1"
+            "submissionContract": "cadgen-ax.vlm_submission.v1"
         })
     }
 
@@ -247,11 +247,11 @@ mod tests {
     fn vlm_prompt_contains_only_the_app_evaluation_contract_and_strict_output_rules() {
         let contract = contract();
         let prompt = render_vlm_evaluator_prompt(&context(&contract)).unwrap();
-        assert!(prompt.starts_with("# Cadastrophe app-owned VLM evaluator\n"));
+        assert!(prompt.starts_with("# CADGEN-AX app-owned VLM evaluator\n"));
         assert!(prompt.contains("\"evaluationId\": \"evaluation-1\""));
         assert!(prompt.contains("\"userRequest\": \"Create a wall bracket.\""));
         assert!(prompt.contains("single rendered image attached to this\nturn"));
-        assert!(prompt.contains("cadastrophe-vlm-submit --components <0-3>"));
+        assert!(prompt.contains("cadgen-ax-vlm-submit --components <0-3>"));
         assert!(prompt.contains("The CLI call is the only submission"));
         assert!(prompt.contains("Do not place scores or report JSON in your"));
         assert!(prompt
@@ -294,7 +294,7 @@ mod tests {
                 "cwd": temp.path(),
                 "personality": "pragmatic",
                 "sandbox": "read-only",
-                "serviceName": "cadastrophe-tauri-backend",
+                "serviceName": "cadgen-ax-tauri-backend",
                 "sessionStartSource": "startup"
             })
         );

@@ -1,7 +1,7 @@
 #[test]
 fn layout_places_database_and_artifacts_under_app_data() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-storage-test-{}", uuid::Uuid::new_v4()));
+        std::env::temp_dir().join(format!("cadgen-ax-storage-test-{}", uuid::Uuid::new_v4()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir.clone());
 
     assert_eq!(
@@ -36,7 +36,7 @@ fn layout_places_database_and_artifacts_under_app_data() {
 #[test]
 fn migration_runner_creates_schema_once() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-storage-test-{}", uuid::Uuid::new_v4()));
+        std::env::temp_dir().join(format!("cadgen-ax-storage-test-{}", uuid::Uuid::new_v4()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
 
     initialize_storage(&layout).unwrap();

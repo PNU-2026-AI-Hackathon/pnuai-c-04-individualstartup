@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn serializes_camel_case_state() {
     let service =
-        SessionService::new(std::env::temp_dir().join(format!("cadastrophe-test-{}", uuid())));
+        SessionService::new(std::env::temp_dir().join(format!("cadgen-ax-test-{}", uuid())));
     let created = service
         .create_session(CreateCadSessionInput::default())
         .unwrap();
@@ -18,7 +18,7 @@ fn serializes_camel_case_state() {
 #[test]
 fn render_preview_uses_active_revision_source() {
     let service =
-        SessionService::new(std::env::temp_dir().join(format!("cadastrophe-test-{}", uuid())));
+        SessionService::new(std::env::temp_dir().join(format!("cadgen-ax-test-{}", uuid())));
     let created = service
         .create_session(CreateCadSessionInput::default())
         .unwrap();
@@ -54,7 +54,7 @@ fn render_preview_uses_active_revision_source() {
 #[test]
 fn openscad_wasm_preview_and_export_share_boolean_stl_output_hash() {
     let service =
-        SessionService::new(std::env::temp_dir().join(format!("cadastrophe-test-{}", uuid())));
+        SessionService::new(std::env::temp_dir().join(format!("cadgen-ax-test-{}", uuid())));
     let created = service
         .create_session(CreateCadSessionInput::default())
         .unwrap();
@@ -130,7 +130,7 @@ difference() {
 #[test]
 fn revision_switch_restore_and_parameter_metadata_use_immutable_snapshots() {
     let service =
-        SessionService::new(std::env::temp_dir().join(format!("cadastrophe-test-{}", uuid())));
+        SessionService::new(std::env::temp_dir().join(format!("cadgen-ax-test-{}", uuid())));
     let created = service
         .create_session(CreateCadSessionInput::default())
         .unwrap();
@@ -192,7 +192,7 @@ fn revision_switch_restore_and_parameter_metadata_use_immutable_snapshots() {
 #[test]
 fn export_artifact_uses_session_revision_artifact_layout() {
     let artifact_root = std::env::temp_dir()
-        .join(format!("cadastrophe-test-{}", uuid()))
+        .join(format!("cadgen-ax-test-{}", uuid()))
         .join("artifacts");
     let service = SessionService::new(artifact_root.clone());
     let created = service

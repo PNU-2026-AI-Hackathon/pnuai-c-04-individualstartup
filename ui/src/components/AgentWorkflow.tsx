@@ -446,8 +446,8 @@ function workflowStage(
     return "Structural repair";
   }
   if (latestDfmReport && !latestDfmReport.passed) return "DFM repair";
-  if (hasCompletedCommand(events, "cadastrophe-finalize")) return "Finalized";
-  if (hasCompletedCommand(events, "cadastrophe-source-apply")) return "Source applied";
+  if (hasCompletedCommand(events, "cadgen-ax-finalize")) return "Finalized";
+  if (hasCompletedCommand(events, "cadgen-ax-source-apply")) return "Source applied";
   if (hasPlan) return "Plan committed";
   if (isActiveRunStatus(run.status)) return "Planning";
   return "Plan required";
@@ -497,7 +497,7 @@ function finalizationStatus(
   if (iterations.some((iteration) => iteration.passed)) return "passed";
   if (pendingVlm) return "waiting for VLM";
   if (latestFailure) return "failed";
-  if (hasCompletedCommand(events, "cadastrophe-finalize")) return "structural passed";
+  if (hasCompletedCommand(events, "cadgen-ax-finalize")) return "structural passed";
   if (run.status === "completed") return "completed";
   if (run.status === "failed" || run.status === "cancelled") return run.status;
   return "not finalized";

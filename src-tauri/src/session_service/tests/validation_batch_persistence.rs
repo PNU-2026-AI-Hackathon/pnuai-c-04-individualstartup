@@ -31,7 +31,7 @@ fn batch_create(
 #[test]
 fn soft_delete_preserves_validation_thread_graph() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-validation-delete-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-validation-delete-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
     let service = SessionService::with_repository(
@@ -160,7 +160,7 @@ fn soft_delete_preserves_validation_thread_graph() {
 #[test]
 fn validation_batch_atomic_cas_restart_and_effect_claim_blocks_racing_attempt() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-validation-batch-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-validation-batch-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
     let service = SessionService::with_repository(
@@ -433,7 +433,7 @@ fn validation_batch_atomic_cas_restart_and_effect_claim_blocks_racing_attempt() 
 #[test]
 fn validation_batch_rejects_missing_or_duplicate_kinds() {
     let service = SessionService::new(std::env::temp_dir().join(format!(
-        "cadastrophe-validation-batch-shape-test-{}",
+        "cadgen-ax-validation-batch-shape-test-{}",
         uuid()
     )));
     let created = service

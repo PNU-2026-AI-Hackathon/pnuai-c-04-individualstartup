@@ -21,7 +21,7 @@ fn turn_input_contains_current_modeling_cli_scope_without_developer_instructions
         revision_source_language: Some(CadSourceLanguage::Openscad),
         revision_source: Some("cube([1, 1, 1]);".to_string()),
         latest_workflow_failure_report: Some(json!({
-            "contractType": "cadastrophe.failure_report.v1",
+            "contractType": "cadgen-ax.failure_report.v1",
             "reason": "missing_support_tab",
             "nextAction": "outer_loop_refine_source"
         })),
@@ -31,21 +31,21 @@ fn turn_input_contains_current_modeling_cli_scope_without_developer_instructions
 
     assert!(prompt.contains("--app-data-dir '/tmp/Cad App Data'"));
     assert!(prompt.contains(
-        "cadastrophe-plan-commit --app-data-dir '/tmp/Cad App Data' --session 'session-1' --run 'run-1' --revision 'revision-1' --plan <file>"
+        "cadgen-ax-plan-commit --app-data-dir '/tmp/Cad App Data' --session 'session-1' --run 'run-1' --revision 'revision-1' --plan <file>"
     ));
     assert!(prompt.contains(
-        "cadastrophe-finalize --app-data-dir '/tmp/Cad App Data' --session 'session-1' --run 'run-1' --revision <revision_id_from_source_apply>"
+        "cadgen-ax-finalize --app-data-dir '/tmp/Cad App Data' --session 'session-1' --run 'run-1' --revision <revision_id_from_source_apply>"
     ));
     assert!(prompt.contains(
-        "cadastrophe-source-apply --app-data-dir '/tmp/Cad App Data' --session 'session-1' --run 'run-1' --revision 'revision-1' --source <file>"
+        "cadgen-ax-source-apply --app-data-dir '/tmp/Cad App Data' --session 'session-1' --run 'run-1' --revision 'revision-1' --source <file>"
     ));
     assert!(prompt.contains("--session 'session-1'"));
     assert!(prompt.contains("--run 'run-1'"));
     for scoped_command in [
-        "cadastrophe-session-state --app-data-dir '/tmp/Cad App Data'",
-        "cadastrophe-plan-commit --app-data-dir '/tmp/Cad App Data'",
-        "cadastrophe-source-apply --app-data-dir '/tmp/Cad App Data'",
-        "cadastrophe-finalize --app-data-dir '/tmp/Cad App Data'",
+        "cadgen-ax-session-state --app-data-dir '/tmp/Cad App Data'",
+        "cadgen-ax-plan-commit --app-data-dir '/tmp/Cad App Data'",
+        "cadgen-ax-source-apply --app-data-dir '/tmp/Cad App Data'",
+        "cadgen-ax-finalize --app-data-dir '/tmp/Cad App Data'",
     ] {
         for line in prompt.lines().filter(|line| line.contains(scoped_command)) {
             assert!(line.contains("--session 'session-1'"), "{line}");
@@ -58,14 +58,14 @@ fn turn_input_contains_current_modeling_cli_scope_without_developer_instructions
     assert!(prompt.contains("\"runId\": \"run-1\""));
     assert!(prompt.contains("latestWorkflowFailureReport"));
     assert!(prompt.contains("missing_support_tab"));
-    assert!(!prompt.contains("# Cadastrophe modeling agent"));
+    assert!(!prompt.contains("# CADGEN-AX modeling agent"));
     assert!(!prompt.contains("## Required workflow"));
 }
 
 #[test]
 fn codex_turn_uses_workspace_write_with_app_data_writable_root() {
-    let cwd = PathBuf::from("/Users/example/cadastrophe");
-    let app_data_dir = PathBuf::from("/Users/example/Library/Application Support/Cadastrophe");
+    let cwd = PathBuf::from("/Users/example/cadgen-ax");
+    let app_data_dir = PathBuf::from("/Users/example/Library/Application Support/CADGEN-AX");
 
     let thread = build_thread_start_params(
         &cwd,
@@ -76,17 +76,17 @@ fn codex_turn_uses_workspace_write_with_app_data_writable_root() {
         },
     )
     .unwrap();
-    assert_eq!(thread["cwd"], "/Users/example/cadastrophe");
+    assert_eq!(thread["cwd"], "/Users/example/cadgen-ax");
     assert_eq!(thread["sandbox"], "workspace-write");
     assert_eq!(thread["approvalPolicy"], "never");
     assert!(thread["developerInstructions"]
         .as_str()
         .unwrap()
-        .starts_with("# Cadastrophe modeling agent\n"));
+        .starts_with("# CADGEN-AX modeling agent\n"));
     assert!(thread["developerInstructions"]
         .as_str()
         .unwrap()
-        .contains("Do not call `cadastrophe-preview-render`"));
+        .contains("Do not call `cadgen-ax-preview-render`"));
     assert!(thread["developerInstructions"]
         .as_str()
         .unwrap()
@@ -107,7 +107,7 @@ fn codex_turn_uses_workspace_write_with_app_data_writable_root() {
     let turn = build_turn_start_params("prompt", &cwd, &app_data_dir);
     assert!(turn.get("threadId").is_none());
     assert!(turn.get("developerInstructions").is_none());
-    assert_eq!(turn["cwd"], "/Users/example/cadastrophe");
+    assert_eq!(turn["cwd"], "/Users/example/cadgen-ax");
     assert_eq!(turn["approvalPolicy"], "never");
     assert_eq!(turn["sandboxPolicy"]["type"], "workspaceWrite");
     assert_eq!(
@@ -120,7 +120,7 @@ fn codex_turn_uses_workspace_write_with_app_data_writable_root() {
     );
     assert_eq!(
         turn["sandboxPolicy"]["writableRoots"][0],
-        "/Users/example/Library/Application Support/Cadastrophe"
+        "/Users/example/Library/Application Support/CADGEN-AX"
     );
 }
 
@@ -132,7 +132,7 @@ fn labels_command_execution_array_events() {
         &json!({
             "item": {
                 "type": "commandExecution",
-                "command": ["cadastrophe-plan-commit", "--session", "session-1"]
+                "command": ["cadgen-ax-plan-commit", "--session", "session-1"]
             }
         }),
         &input,
@@ -143,7 +143,7 @@ fn labels_command_execution_array_events() {
     assert!(matches!(
         events.first(),
         Some(AgentAdapterEvent::ToolStarted { name })
-            if name == "cadastrophe-plan-commit --session session-1"
+            if name == "cadgen-ax-plan-commit --session session-1"
     ));
 }
 
@@ -320,7 +320,7 @@ fn duplicate_completed_item_keeps_raw_transport_but_suppresses_normalized_replay
         "method": "item/completed",
         "params": { "item": {
             "type": "commandExecution", "id": "command-1",
-            "command": "cadastrophe-plan-commit", "status": "completed"
+            "command": "cadgen-ax-plan-commit", "status": "completed"
         } }
     });
     for sequence in [1, 2] {
@@ -371,7 +371,7 @@ fn test_input() -> AgentAdapterRunInput {
     AgentAdapterRunInput {
         session_id: "session-1".to_string(),
         run_id: "run-1".to_string(),
-        app_data_dir: PathBuf::from("/tmp/cadastrophe"),
+        app_data_dir: PathBuf::from("/tmp/cadgen-ax"),
         prompt: "Create a cube.".to_string(),
         revision_id: None,
         revision_source_language: None,

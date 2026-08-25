@@ -401,7 +401,7 @@ impl NotificationRouter {
 
 fn log_unobserved_diagnostic(kind: &str, notification: &RoutedNotification) {
     eprintln!(
-        "[cadastrophe:router] unobserved {kind} notification method={:?} transportSequence={} threadId={:?} turnId={:?} itemId={:?}",
+        "[cadgen-ax:router] unobserved {kind} notification method={:?} transportSequence={} threadId={:?} turnId={:?} itemId={:?}",
         notification.method,
         notification.transport_sequence,
         notification.identifiers.thread_id,

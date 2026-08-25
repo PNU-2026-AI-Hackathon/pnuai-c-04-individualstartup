@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <vector>
 
-namespace cadastrophe::mesh {
+namespace cadgen_ax::mesh {
 
 struct Vec3 {
     double x = 0.0;
@@ -51,4 +51,4 @@ private:
     std::vector<Triangle> triangles_;
 };
 
-}  // namespace cadastrophe::mesh
+}  // namespace cadgen_ax::mesh

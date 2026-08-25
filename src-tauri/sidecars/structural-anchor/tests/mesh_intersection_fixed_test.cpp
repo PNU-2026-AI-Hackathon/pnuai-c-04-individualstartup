@@ -11,10 +11,10 @@
 
 namespace {
 
-using cadastrophe::mesh::TriangleMeshValidator;
-using cadastrophe::mesh::Vec3;
-using cadastrophe::mesh::Triangle;
-namespace fixed = cadastrophe::mesh::fixed;
+using cadgen_ax::mesh::TriangleMeshValidator;
+using cadgen_ax::mesh::Vec3;
+using cadgen_ax::mesh::Triangle;
+namespace fixed = cadgen_ax::mesh::fixed;
 
 void require(bool condition, const std::string& message) {
     if (!condition) {

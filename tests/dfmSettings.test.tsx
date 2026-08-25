@@ -66,7 +66,7 @@ test("workflow summary exposes the DFM profile hash, key settings, and G-code ar
     iterations: [],
     validationChecks: [],
     latestDfmReport: {
-      contractType: "cadastrophe.dfm_report.v1",
+      contractType: "cadgen-ax.dfm_report.v1",
       passed: true,
       checks: [{ id: "overhang" }],
       diagnostics: [],

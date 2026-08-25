@@ -1419,7 +1419,7 @@ impl SessionRepository for SqliteSessionRepository {
         }
         transaction.commit().map_err(|error| error.to_string())?;
         eprintln!(
-            "[cadastrophe:delete-session] sqlite delete update finished session_id={} deleted_at={} changed_rows={}",
+            "[cadgen-ax:delete-session] sqlite delete update finished session_id={} deleted_at={} changed_rows={}",
             session_id, deleted_at, changed_rows
         );
         Ok(())

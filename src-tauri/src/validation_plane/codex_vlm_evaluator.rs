@@ -559,7 +559,7 @@ impl StrictValidationCollector {
                         if has_vlm_submit_envelope(item) {
                             if self.submission.is_some() {
                                 return Err(
-                                    "Validation turn executed cadastrophe-vlm-submit more than once."
+                                    "Validation turn executed cadgen-ax-vlm-submit more than once."
                                         .to_string(),
                                 );
                             }
@@ -580,7 +580,7 @@ impl StrictValidationCollector {
                     .ok_or_else(|| "Validation turn/completed omitted turn.status.".to_string())?;
                 match status {
                     "completed" => self.submission.take().map(Some).ok_or_else(|| {
-                        "Validation turn completed without a successful cadastrophe-vlm-submit execution."
+                        "Validation turn completed without a successful cadgen-ax-vlm-submit execution."
                             .to_string()
                     }),
                     "failed" => Err(params
@@ -628,38 +628,38 @@ fn has_vlm_submit_envelope(item: &Value) -> bool {
         .and_then(Value::as_str)
         .and_then(|output| serde_json::from_str::<Value>(output.trim()).ok())
         .map(|output| {
-            output.get("command").and_then(Value::as_str) == Some("cadastrophe-vlm-submit")
+            output.get("command").and_then(Value::as_str) == Some("cadgen-ax-vlm-submit")
         })
         .unwrap_or(false)
 }
 
 fn parse_vlm_submit_execution(item: &Value) -> Result<Value, String> {
     if item.get("status").and_then(Value::as_str) != Some("completed") {
-        return Err("cadastrophe-vlm-submit did not complete successfully.".to_string());
+        return Err("cadgen-ax-vlm-submit did not complete successfully.".to_string());
     }
     if item.get("exitCode").and_then(Value::as_i64) != Some(0) {
         return Err(
-            "cadastrophe-vlm-submit exited with a non-zero or missing exit code.".to_string(),
+            "cadgen-ax-vlm-submit exited with a non-zero or missing exit code.".to_string(),
         );
     }
     let output = item
         .get("aggregatedOutput")
         .and_then(Value::as_str)
-        .ok_or_else(|| "cadastrophe-vlm-submit output was missing.".to_string())?;
+        .ok_or_else(|| "cadgen-ax-vlm-submit output was missing.".to_string())?;
     let envelope: Value = serde_json::from_str(output.trim())
-        .map_err(|error| format!("cadastrophe-vlm-submit output was not valid JSON: {error}"))?;
+        .map_err(|error| format!("cadgen-ax-vlm-submit output was not valid JSON: {error}"))?;
     let object = envelope
         .as_object()
-        .ok_or_else(|| "cadastrophe-vlm-submit output must be a JSON object.".to_string())?;
+        .ok_or_else(|| "cadgen-ax-vlm-submit output must be a JSON object.".to_string())?;
     if object.get("ok").and_then(Value::as_bool) != Some(true)
-        || object.get("command").and_then(Value::as_str) != Some("cadastrophe-vlm-submit")
+        || object.get("command").and_then(Value::as_str) != Some("cadgen-ax-vlm-submit")
     {
-        return Err("cadastrophe-vlm-submit returned an invalid success envelope.".to_string());
+        return Err("cadgen-ax-vlm-submit returned an invalid success envelope.".to_string());
     }
     object
         .get("data")
         .cloned()
-        .ok_or_else(|| "cadastrophe-vlm-submit success envelope omitted data.".to_string())
+        .ok_or_else(|| "cadgen-ax-vlm-submit success envelope omitted data.".to_string())
 }
 
 fn required_item_type<'a>(item: &'a Value, method: &str) -> Result<&'a str, String> {
@@ -737,7 +737,7 @@ fn parse_strict_validation_history(
         }
     }
     submission.ok_or_else(|| {
-        "Recovered validation turn contained no successful cadastrophe-vlm-submit execution."
+        "Recovered validation turn contained no successful cadgen-ax-vlm-submit execution."
             .to_string()
     })
 }
@@ -810,7 +810,7 @@ mod tests {
 
     fn submission() -> Value {
         json!({
-            "contractType": "cadastrophe.vlm_submission.v1",
+            "contractType": "cadgen-ax.vlm_submission.v1",
             "scores": {"structure": 3, "components": 2, "proportions": 3},
             "inconsistencies": ["minor mismatch"],
             "diagnostic": "requested shape is visible"
@@ -820,13 +820,13 @@ mod tests {
     fn submit_item() -> Value {
         let output = json!({
             "ok": true,
-            "command": "cadastrophe-vlm-submit",
+            "command": "cadgen-ax-vlm-submit",
             "data": submission()
         });
         json!({
             "id": "submit-1",
             "type": "commandExecution",
-            "command": "cadastrophe-vlm-submit --components 2 --proportions 3 --structure 3 --inconsistency 'minor mismatch' --diagnostic 'requested shape is visible'",
+            "command": "cadgen-ax-vlm-submit --components 2 --proportions 3 --structure 3 --inconsistency 'minor mismatch' --diagnostic 'requested shape is visible'",
             "status": "completed",
             "exitCode": 0,
             "aggregatedOutput": format!("{output}\n")
@@ -1014,7 +1014,7 @@ mod tests {
 
         let mut shell_wrapped_submit = submit_item();
         shell_wrapped_submit["command"] =
-            json!("zsh -lc 'cadastrophe-vlm-submit --components 2 --proportions 3 --structure 3'");
+            json!("zsh -lc 'cadgen-ax-vlm-submit --components 2 --proportions 3 --structure 3'");
         collector
             .ingest(
                 "thread-1",
@@ -1067,7 +1067,7 @@ mod tests {
                 &notification("turn/completed", json!({"turn":{"status":"completed"}}),),
             )
             .unwrap_err()
-            .contains("without a successful cadastrophe-vlm-submit"));
+            .contains("without a successful cadgen-ax-vlm-submit"));
     }
 
     #[derive(Clone)]
@@ -1193,7 +1193,7 @@ mod tests {
                 evaluator_thread_id: None,
                 external_turn_id: None,
                 input_contract: json!({
-                    "contractType":"cadastrophe.vlm_evaluation_input.v1",
+                    "contractType":"cadgen-ax.vlm_evaluation_input.v1",
                     "evaluationId":evaluation_id,
                     "sessionId":session.session_id,
                     "runId":run.id,
@@ -1202,7 +1202,7 @@ mod tests {
                     "userRequest":"cube",
                     "passThreshold":crate::validation_plane::contract::VLM_PASS_THRESHOLD,
                     "renderedImage":{"artifactId":artifact.id,"mediaType":"image/png"},
-                    "submissionContract":"cadastrophe.vlm_submission.v1"
+                    "submissionContract":"cadgen-ax.vlm_submission.v1"
                 }),
                 report: None,
                 passed: None,

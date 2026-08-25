@@ -1,10 +1,10 @@
 # Structural Anchor Sidecar Packaging
 
-`cadastrophe-structural-anchor` is the native C++ sidecar used by the Track C
+`cadgen-ax-structural-anchor` is the native C++ sidecar used by the Track C
 Rust CLI wrapper. It reads a deterministic JSON input document from stdin or
 `--input`, evaluates one final STL against the committed Plan and artifact
 metadata with the repository-local STL parser, and writes
-`cadastrophe.structural_report.v1` JSON to stdout.
+`cadgen-ax.structural_report.v1` JSON to stdout.
 
 ## Build
 
@@ -15,15 +15,15 @@ npm run build:sidecar
 ```
 
 The npm script builds the sidecar and installs it beside the Rust CLI
-executables at `src-tauri/target/debug/cadastrophe-structural-anchor`, which is
-the default lookup path used by `cadastrophe-finalize`.
+executables at `src-tauri/target/debug/cadgen-ax-structural-anchor`, which is
+the default lookup path used by `cadgen-ax-finalize`.
 
 Equivalent manual CMake build:
 
 ```sh
 cmake -S src-tauri/sidecars/structural-anchor \
-  -B /tmp/cadastrophe-structural-anchor-build
-cmake --build /tmp/cadastrophe-structural-anchor-build
+  -B /tmp/cadgen-ax-structural-anchor-build
+cmake --build /tmp/cadgen-ax-structural-anchor-build
 ```
 
 The native path is deterministic and sufficient for contract tests.
@@ -59,7 +59,7 @@ Relative `*Path` values are resolved from the input file directory when
 For direct development-time mesh debugging without an input JSON document:
 
 ```sh
-src-tauri/target/debug/cadastrophe-structural-anchor \
+src-tauri/target/debug/cadgen-ax-structural-anchor \
   --input-stl path/to/model.stl \
   --pretty
 ```
@@ -75,14 +75,14 @@ macOS:
 - Copy the executable into the Tauri sidecar resources path with executable
   mode preserved.
 - Set install names/rpaths with `@executable_path` or `@loader_path` and verify
-  with `otool -L cadastrophe-structural-anchor`.
+  with `otool -L cadgen-ax-structural-anchor`.
 - Sign the sidecar with the app identity before notarization.
 - Verify Gatekeeper launch from a quarantined packaged `.app`.
 
 Windows:
 
 - Build with the same MSVC runtime family as the Tauri release build.
-- Copy `cadastrophe-structural-anchor.exe` into the sidecar directory.
+- Copy `cadgen-ax-structural-anchor.exe` into the sidecar directory.
 - Verify executable discovery from the packaged app, not only from a developer shell.
 - Sign the `.exe` before installer packaging.
 - Run a fixture evaluation from the installed app directory on a clean VM.
@@ -91,7 +91,7 @@ Linux:
 
 - Build on the oldest supported glibc baseline or ship a compatible runtime
   container.
-- Verify `ldd cadastrophe-structural-anchor` has no unresolved C++ runtime
+- Verify `ldd cadgen-ax-structural-anchor` has no unresolved C++ runtime
   libraries.
 - Keep executable permissions when building AppImage, deb, and rpm artifacts.
 - Run the deterministic fixture evaluation from the installed bundle path.

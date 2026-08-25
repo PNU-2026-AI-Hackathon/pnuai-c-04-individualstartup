@@ -1,5 +1,5 @@
 {
-  "contractType": "cadastrophe.vlm_judge_report.v1",
+  "contractType": "cadgen-ax.vlm_judge_report.v1",
   "scores": {
     "structure": 1,
     "components": 3,
@@ -15,7 +15,7 @@
     }
   ],
   "failureReport": {
-    "contractType": "cadastrophe.failure_report.v1",
+    "contractType": "cadgen-ax.failure_report.v1",
     "reason": "vlm_score_gate_failed",
     "summary": "VLM score gate requires every subscore to be at least 2; structure received 1.",
     "nextAction": "outer_loop_refine_source"

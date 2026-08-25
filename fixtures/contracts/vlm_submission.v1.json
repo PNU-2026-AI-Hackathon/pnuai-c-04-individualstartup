@@ -1,5 +1,5 @@
 {
-  "contractType": "cadastrophe.vlm_submission.v1",
+  "contractType": "cadgen-ax.vlm_submission.v1",
   "scores": {
     "structure": 3,
     "components": 3,

@@ -16,7 +16,7 @@ pub(super) fn build_thread_start_params(
         "developerInstructions": render_modeling_developer_instructions(dfm_context)?,
         "personality": "pragmatic",
         "sandbox": "workspace-write",
-        "serviceName": "cadastrophe-tauri-backend",
+        "serviceName": "cadgen-ax-tauri-backend",
         "sessionStartSource": "startup"
     }))
 }

@@ -568,7 +568,7 @@ function workflowStateWithPendingVlm(): CadSessionState {
     type: "agent.tool.completed",
     sequence: 1,
     createdAt: now,
-    payload: { command: "cadastrophe-finalize", status: "completed" }
+    payload: { command: "cadgen-ax-finalize", status: "completed" }
   }];
   state.workflow = {
     plans: [workflowPlan(state, "run-1", now)],
@@ -577,7 +577,7 @@ function workflowStateWithPendingVlm(): CadSessionState {
       runId: "run-1",
       artifactId: "artifact-1",
       contract: {
-        contractType: "cadastrophe.vlm_judge.v1",
+        contractType: "cadgen-ax.vlm_judge.v1",
         runId: "run-1",
         artifactId: "artifact-1"
       },
@@ -604,11 +604,11 @@ function workflowStateWithAcceptedVlm(): CadSessionState {
     iteration: 1,
     revisionId: state.activeRevision?.id,
     structuralReport: {
-      contractType: "cadastrophe.structural_report.v1",
+      contractType: "cadgen-ax.structural_report.v1",
       passed: true
     },
     vlmReport: {
-      contractType: "cadastrophe.vlm_report.v1",
+      contractType: "cadgen-ax.vlm_report.v1",
       passed: true,
       score: 0.92
     },
@@ -635,8 +635,8 @@ function validationEvaluation(
     kind: "vlm",
     attempt: 2,
     status,
-    inputContract: { contractType: "cadastrophe.vlm_evaluation_input.v1" },
-    report: status === "succeeded" ? { contractType: "cadastrophe.vlm_judge_report.v1" } : undefined,
+    inputContract: { contractType: "cadgen-ax.vlm_evaluation_input.v1" },
+    report: status === "succeeded" ? { contractType: "cadgen-ax.vlm_judge_report.v1" } : undefined,
     passed: status === "succeeded" ? passed : undefined,
     score: status === "succeeded" ? (passed ? 0.92 : 0.4) : undefined,
     passThreshold: 0.8,
@@ -671,11 +671,11 @@ function workflowStateWithValidationBatch(
     status,
     aggregateReport: status === "succeeded"
       ? {
-          contractType: "cadastrophe.finalization_report.v2",
+          contractType: "cadgen-ax.finalization_report.v2",
           passed,
           failureReport: passed === false
             ? {
-                contractType: "cadastrophe.failure_report.v1",
+                contractType: "cadgen-ax.failure_report.v1",
                 reason: "validation_batch_rejected",
                 summary: "wall too thin",
                 nextAction: "outer_loop_refine_source"
@@ -710,9 +710,9 @@ function validationChecksForFixture(
       sessionId: state.session.id,
       kind,
       status,
-      inputContract: { contractType: `cadastrophe.${kind}_input.v1` },
+      inputContract: { contractType: `cadgen-ax.${kind}_input.v1` },
       report: status === "succeeded"
-        ? { contractType: `cadastrophe.${kind}_report.v1`, passed: checkPassed }
+        ? { contractType: `cadgen-ax.${kind}_report.v1`, passed: checkPassed }
         : undefined,
       passed: checkPassed,
       error: status === "failed" ? "slicer crashed" : undefined,

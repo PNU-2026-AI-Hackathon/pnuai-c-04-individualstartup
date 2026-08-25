@@ -23,29 +23,29 @@ use support::*;
 
 pub fn session_current_main() -> i32 {
     run(
-        "cadastrophe-session-current",
+        "cadgen-ax-session-current",
         session_commands::session_current,
     )
 }
 
 pub fn session_state_main() -> i32 {
-    run("cadastrophe-session-state", session_commands::session_state)
+    run("cadgen-ax-session-state", session_commands::session_state)
 }
 
 pub fn plan_commit_main() -> i32 {
-    run("cadastrophe-plan-commit", model_commands::plan_commit)
+    run("cadgen-ax-plan-commit", model_commands::plan_commit)
 }
 
 pub fn source_apply_main() -> i32 {
-    run("cadastrophe-source-apply", model_commands::source_apply)
+    run("cadgen-ax-source-apply", model_commands::source_apply)
 }
 
 pub fn finalize_main() -> i32 {
-    run("cadastrophe-finalize", workflow_commands::finalize)
+    run("cadgen-ax-finalize", workflow_commands::finalize)
 }
 
 pub fn vlm_submit_main() -> i32 {
-    const COMMAND: &str = "cadastrophe-vlm-submit";
+    const COMMAND: &str = "cadgen-ax-vlm-submit";
     let parsed = match parse_args(std::env::args().skip(1)) {
         Ok(parsed) => parsed,
         Err(error) => return emit_error(COMMAND, false, error),
@@ -83,7 +83,7 @@ fn load_service(app_data_dir: PathBuf) -> CliResult<SessionService> {
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).map_err(|error| {
         CliError::storage(format!(
-            "Failed to initialize Cadastrophe storage at {}: {error}",
+            "Failed to initialize CADGEN-AX storage at {}: {error}",
             layout.app_data_dir().display()
         ))
     })?;

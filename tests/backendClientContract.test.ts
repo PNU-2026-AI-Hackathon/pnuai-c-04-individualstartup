@@ -106,9 +106,9 @@ function assertSessionResultShape(result: CreateCadSessionResult) {
   assert.equal(typeof result.state.session.revisions[0]?.sourceHash, "string");
   assert.ok(Array.isArray(result.state.session.revisions[0]?.runLinks));
   assert.equal(result.state.workflow.plans[0]?.plan.mainComponent.name, "contract_bracket");
-  assert.equal(result.state.workflow.pendingVlm[0]?.contract.contractType, "cadastrophe.vlm_judge.v1");
+  assert.equal(result.state.workflow.pendingVlm[0]?.contract.contractType, "cadgen-ax.vlm_judge.v1");
   assert.equal(result.state.validationEvaluations[0]?.status, "queued");
-  assert.equal(result.state.validationEvaluations[0]?.inputContract.contractType, "cadastrophe.vlm_evaluation_input.v1");
+  assert.equal(result.state.validationEvaluations[0]?.inputContract.contractType, "cadgen-ax.vlm_evaluation_input.v1");
   assert.equal(result.state.validationBatches[0]?.status, "queued");
   assert.equal(result.state.validationChecks.length, 3);
   assert.deepEqual(result.state.validationChecks.map((check) => check.kind), ["structural", "dfm", "vlm"]);
@@ -390,14 +390,14 @@ class ContractBackendClient implements CadBackendClient {
   async openArtifact() {
     return {
       artifact: this.requireState().activeRevision!.artifacts[0],
-      path: "/tmp/cadastrophe-artifact.stl"
+      path: "/tmp/cadgen-ax-artifact.stl"
     };
   }
 
   async revealArtifact() {
     return {
       artifact: this.requireState().activeRevision!.artifacts[0],
-      path: "/tmp/cadastrophe-artifact.stl",
+      path: "/tmp/cadgen-ax-artifact.stl",
       revealed: false
     };
   }
@@ -544,7 +544,7 @@ function sampleState(title: string): CadSessionState {
         attempt: 1,
         status: "queued",
         inputContract: {
-          contractType: "cadastrophe.vlm_evaluation_input.v1"
+          contractType: "cadgen-ax.vlm_evaluation_input.v1"
         },
         passThreshold: 0.8,
         createdAt: now
@@ -566,7 +566,7 @@ function sampleState(title: string): CadSessionState {
       sessionId: "session-1",
       kind,
       status: "queued",
-      inputContract: { contractType: `cadastrophe.${kind}_input.v1` },
+      inputContract: { contractType: `cadgen-ax.${kind}_input.v1` },
       createdAt: now
     })),
     workflow: {
@@ -600,11 +600,11 @@ function sampleState(title: string): CadSessionState {
           iteration: 1,
           revisionId: "revision-1",
           structuralReport: {
-            contractType: "cadastrophe.structural_report.v1",
+            contractType: "cadgen-ax.structural_report.v1",
             passed: false
           },
           failureReport: {
-            contractType: "cadastrophe.failure_report.v1",
+            contractType: "cadgen-ax.failure_report.v1",
             reason: "structural_anchor_failed",
             summary: "Fixture structural failure."
           },
@@ -617,7 +617,7 @@ function sampleState(title: string): CadSessionState {
           runId: "workflow-run-1",
           artifactId: "artifact-1",
           contract: {
-            contractType: "cadastrophe.vlm_judge.v1",
+            contractType: "cadgen-ax.vlm_judge.v1",
             runId: "workflow-run-1",
             artifactId: "artifact-1"
           },

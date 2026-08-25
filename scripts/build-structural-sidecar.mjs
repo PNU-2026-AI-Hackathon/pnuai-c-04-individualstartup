@@ -11,11 +11,11 @@ const targetTriple = args.targetTriple ?? inferTargetTriple();
 const sidecars = [
   {
     name: "structural-anchor",
-    executable: "cadastrophe-structural-anchor"
+    executable: "cadgen-ax-structural-anchor"
   },
   {
     name: "vlm-renderer",
-    executable: "cadastrophe-vlm-renderer"
+    executable: "cadgen-ax-vlm-renderer"
   }
 ];
 

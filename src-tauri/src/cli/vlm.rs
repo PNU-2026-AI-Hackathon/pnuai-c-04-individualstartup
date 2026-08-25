@@ -132,7 +132,7 @@ pub(crate) fn render_vlm_images_for_artifact(
         ));
     }
     let metadata = json!({
-        "renderer": manifest.get("renderer").cloned().unwrap_or_else(|| json!("cadastrophe-vlm-renderer")),
+        "renderer": manifest.get("renderer").cloned().unwrap_or_else(|| json!("cadgen-ax-vlm-renderer")),
         "rendererEngine": manifest.get("rendererEngine").cloned().unwrap_or_else(|| json!("unknown")),
         "viewMode": manifest.get("viewMode").cloned().unwrap_or_else(|| json!("9-view")),
         "views": manifest.get("views").cloned().unwrap_or_else(|| json!([])),
@@ -166,7 +166,7 @@ fn invoke_vlm_renderer_sidecar(input: &Value, renderer_override: Option<&str>) -
     if let Some(path) = renderer_override.map(PathBuf::from) {
         if !path.exists() {
             return Err(CliError::runtime(
-                "cadastrophe-vlm-renderer sidecar is not available.",
+                "cadgen-ax-vlm-renderer sidecar is not available.",
             ));
         }
     }
@@ -177,7 +177,7 @@ fn invoke_vlm_renderer_sidecar(input: &Value, renderer_override: Option<&str>) -
         .spawn()
         .map_err(|error| {
             CliError::runtime(format!(
-                "Failed to start cadastrophe-vlm-renderer {}: {error}",
+                "Failed to start cadgen-ax-vlm-renderer {}: {error}",
                 sidecar.display()
             ))
         })?;
@@ -185,7 +185,7 @@ fn invoke_vlm_renderer_sidecar(input: &Value, renderer_override: Option<&str>) -
         let mut stdin = child
             .stdin
             .take()
-            .ok_or_else(|| CliError::runtime("Failed to open cadastrophe-vlm-renderer stdin."))?;
+            .ok_or_else(|| CliError::runtime("Failed to open cadgen-ax-vlm-renderer stdin."))?;
         stdin
             .write_all(
                 serde_json::to_string(input)
@@ -199,14 +199,14 @@ fn invoke_vlm_renderer_sidecar(input: &Value, renderer_override: Option<&str>) -
         .map_err(|error| CliError::runtime(error.to_string()))?;
     if !output.status.success() {
         return Err(CliError::runtime(format!(
-            "cadastrophe-vlm-renderer exited with status {}: {}",
+            "cadgen-ax-vlm-renderer exited with status {}: {}",
             output.status,
             String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
     serde_json::from_slice(&output.stdout).map_err(|error| {
         CliError::runtime(format!(
-            "cadastrophe-vlm-renderer emitted invalid JSON: {error}"
+            "cadgen-ax-vlm-renderer emitted invalid JSON: {error}"
         ))
     })
 }
@@ -215,13 +215,13 @@ fn resolve_vlm_renderer_sidecar(renderer_override: Option<&str>) -> PathBuf {
     if let Some(path) = renderer_override {
         return PathBuf::from(path);
     }
-    if let Ok(path) = std::env::var("CADASTROPHE_VLM_RENDERER_PATH") {
+    if let Ok(path) = std::env::var("CADGEN_AX_VLM_RENDERER_PATH") {
         return PathBuf::from(path);
     }
     let executable = if cfg!(target_os = "windows") {
-        "cadastrophe-vlm-renderer.exe"
+        "cadgen-ax-vlm-renderer.exe"
     } else {
-        "cadastrophe-vlm-renderer"
+        "cadgen-ax-vlm-renderer"
     };
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(parent) = current_exe.parent() {
@@ -241,7 +241,7 @@ fn validate_vlm_renderer_manifest(
 ) -> CliResult<()> {
     require_contract_type(
         manifest,
-        "cadastrophe.vlm_render_manifest.v1",
+        "cadgen-ax.vlm_render_manifest.v1",
         "VLM render manifest",
     )?;
     if manifest.get("revisionId").and_then(Value::as_str) != Some(revision_id) {
@@ -309,7 +309,7 @@ pub(crate) fn build_vlm_contract(rendered_image: &CadArtifact) -> CliResult<Valu
             CliError::invalid_input("Rendered image artifact metadata is missing path.")
         })?;
     Ok(json!({
-        "contractType": "cadastrophe.vlm_judge.v1",
+        "contractType": "cadgen-ax.vlm_judge.v1",
         "handoff": "VLM Judge Handoff needed.",
         "renderedImages": {
             "available": true,

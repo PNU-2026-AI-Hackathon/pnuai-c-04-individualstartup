@@ -145,7 +145,7 @@ impl SessionService {
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| "STL export path must contain a valid UTF-8 file name.".to_string())?;
-        let temporary = parent.join(format!(".{file_name}.cadastrophe-{}.tmp", uuid()));
+        let temporary = parent.join(format!(".{file_name}.cadgen-ax-{}.tmp", uuid()));
         let write_result = (|| -> Result<(), String> {
             let mut file = fs::OpenOptions::new()
                 .create_new(true)
@@ -677,11 +677,11 @@ mod tests {
     #[test]
     fn rename_reports_when_verified_temporary_export_disappears() {
         let export_dir = std::env::temp_dir().join(format!(
-            "cadastrophe-missing-temporary-export-test-{}",
+            "cadgen-ax-missing-temporary-export-test-{}",
             uuid()
         ));
         fs::create_dir_all(&export_dir).unwrap();
-        let temporary = export_dir.join(".model.stl.cadastrophe-test.tmp");
+        let temporary = export_dir.join(".model.stl.cadgen-ax-test.tmp");
         let destination = export_dir.join("model.stl");
 
         let error = rename_verified_export(&temporary, &destination)

@@ -80,7 +80,7 @@ fn invoke_structural_sidecar(input: &Value, sidecar_override: Option<&str>) -> C
     if let Some(path) = sidecar_override.map(PathBuf::from) {
         if !path.exists() {
             return Err(CliError::runtime(
-                "cadastrophe-structural-anchor sidecar is not available.",
+                "cadgen-ax-structural-anchor sidecar is not available.",
             ));
         }
     }
@@ -93,18 +93,18 @@ fn invoke_structural_sidecar(input: &Value, sidecar_override: Option<&str>) -> C
         Ok(child) => child,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(CliError::runtime(
-                "cadastrophe-structural-anchor sidecar is not available.",
+                "cadgen-ax-structural-anchor sidecar is not available.",
             ));
         }
         Err(error) => {
             return Err(CliError::runtime(format!(
-                "Failed to start cadastrophe-structural-anchor: {error}"
+                "Failed to start cadgen-ax-structural-anchor: {error}"
             )));
         }
     };
     {
         let mut stdin = child.stdin.take().ok_or_else(|| {
-            CliError::storage("Failed to open cadastrophe-structural-anchor stdin.")
+            CliError::storage("Failed to open cadgen-ax-structural-anchor stdin.")
         })?;
         stdin
             .write_all(
@@ -120,14 +120,14 @@ fn invoke_structural_sidecar(input: &Value, sidecar_override: Option<&str>) -> C
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(CliError::runtime(format!(
-            "cadastrophe-structural-anchor exited with status {}: {}",
+            "cadgen-ax-structural-anchor exited with status {}: {}",
             output.status,
             stderr.trim()
         )));
     }
     serde_json::from_slice(&output.stdout).map_err(|error| {
         CliError::invalid_input(format!(
-            "cadastrophe-structural-anchor emitted invalid JSON: {error}"
+            "cadgen-ax-structural-anchor emitted invalid JSON: {error}"
         ))
     })
 }
@@ -136,13 +136,13 @@ fn resolve_structural_sidecar(sidecar_override: Option<&str>) -> PathBuf {
     if let Some(path) = sidecar_override {
         return PathBuf::from(path);
     }
-    if let Ok(path) = std::env::var("CADASTROPHE_STRUCTURAL_ANCHOR_PATH") {
+    if let Ok(path) = std::env::var("CADGEN_AX_STRUCTURAL_ANCHOR_PATH") {
         return PathBuf::from(path);
     }
     let executable = if cfg!(target_os = "windows") {
-        "cadastrophe-structural-anchor.exe"
+        "cadgen-ax-structural-anchor.exe"
     } else {
-        "cadastrophe-structural-anchor"
+        "cadgen-ax-structural-anchor"
     };
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(parent) = current_exe.parent() {
@@ -162,7 +162,7 @@ pub(crate) fn validate_structural_report(
 ) -> CliResult<()> {
     require_contract_type(
         report,
-        "cadastrophe.structural_report.v1",
+        "cadgen-ax.structural_report.v1",
         "structural report",
     )?;
     if report.get("runId").and_then(Value::as_str).unwrap_or("") != run_id {
@@ -201,7 +201,7 @@ pub(super) fn structural_failure_report(report: &Value) -> CliResult<Value> {
         })?;
     require_contract_type(
         &Value::Object(failure_report.clone()),
-        "cadastrophe.failure_report.v1",
+        "cadgen-ax.failure_report.v1",
         "structural failure report",
     )?;
     if failure_report

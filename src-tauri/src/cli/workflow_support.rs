@@ -15,7 +15,7 @@ pub(super) fn committed_plan_for_run(
         .find(|plan| plan.run_id == run_id)
         .ok_or_else(|| {
             CliError::precondition_failed(format!(
-                "Run {run_id} has no committed CadModelPlan. Call cadastrophe-plan-commit first."
+                "Run {run_id} has no committed CadModelPlan. Call cadgen-ax-plan-commit first."
             ))
         })
 }
@@ -117,7 +117,7 @@ pub(super) fn require_committed_plan(
         .any(|plan| plan.run_id == run_id)
     {
         return Err(CliError::precondition_failed(format!(
-            "Run {run_id} has no committed CadModelPlan. Call cadastrophe-plan-commit first."
+            "Run {run_id} has no committed CadModelPlan. Call cadgen-ax-plan-commit first."
         )));
     }
     Ok(())

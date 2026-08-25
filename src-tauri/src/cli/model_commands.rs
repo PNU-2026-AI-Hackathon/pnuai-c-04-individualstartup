@@ -28,7 +28,7 @@ pub(super) fn plan_commit(
 
     with_tool_events(
         service,
-        "cadastrophe-plan-commit",
+        "cadgen-ax-plan-commit",
         &session_id,
         Some(&run_id),
         active_revision_id.clone(),
@@ -83,7 +83,7 @@ pub(super) fn source_apply(
     let language = resolve_source_language(args, service, &session_id)?;
     if language != CadSourceLanguage::Openscad {
         return Err(CliError::invalid_input(
-            "cadastrophe-source-apply currently supports openscad source only.",
+            "cadgen-ax-source-apply currently supports openscad source only.",
         ));
     }
     let parent_revision_id = service
@@ -102,7 +102,7 @@ pub(super) fn source_apply(
 
     with_tool_events(
         service,
-        "cadastrophe-source-apply",
+        "cadgen-ax-source-apply",
         &session_id,
         Some(&run_id),
         parent_revision_id.clone(),

@@ -519,7 +519,7 @@ export function App() {
 
   async function createNewSession() {
     await runBusy(async () => {
-      const created = await backend.createSession({ title: "Cadastrophe review" });
+      const created = await backend.createSession({ title: "CADGEN-AX review" });
       applySessionSnapshot(created.state, { forceSource: true });
       await backend.markSessionViewed(created.sessionId);
       setOpenedArtifactPath(null);
@@ -568,31 +568,31 @@ export function App() {
     if (!pendingDeleteSessionId) return;
     const sessionId = pendingDeleteSessionId;
     setPendingDeleteSessionId(null);
-    console.info("[cadastrophe:delete-session] handler entered", { sessionId });
+    console.info("[cadgen-ax:delete-session] handler entered", { sessionId });
     markSessionLocallyDeleted(sessionId);
-    console.info("[cadastrophe:delete-session] marked locally deleted", { sessionId });
+    console.info("[cadgen-ax:delete-session] marked locally deleted", { sessionId });
     setSessionList((sessions) => sessions.filter((session) => session.id !== sessionId));
-    console.info("[cadastrophe:delete-session] filtered session list optimistically", { sessionId });
+    console.info("[cadgen-ax:delete-session] filtered session list optimistically", { sessionId });
     await runBusy(async () => {
-      console.info("[cadastrophe:delete-session] invoking backend delete", { sessionId });
+      console.info("[cadgen-ax:delete-session] invoking backend delete", { sessionId });
       const deleted = await backend.deleteSession(sessionId).catch(async (caught) => {
-        console.error("[cadastrophe:delete-session] backend delete failed", { sessionId, error: caught });
+        console.error("[cadgen-ax:delete-session] backend delete failed", { sessionId, error: caught });
         restoreLocallyDeletedSession(sessionId);
-        console.warn("[cadastrophe:delete-session] restored local delete marker after backend failure", { sessionId });
+        console.warn("[cadgen-ax:delete-session] restored local delete marker after backend failure", { sessionId });
         await refreshSessionList().catch((refreshError) => {
-          console.error("[cadastrophe:delete-session] refresh after delete failure also failed", {
+          console.error("[cadgen-ax:delete-session] refresh after delete failure also failed", {
             sessionId,
             error: refreshError
           });
         });
         throw caught;
       });
-      console.info("[cadastrophe:delete-session] backend delete succeeded", { sessionId, deleted });
+      console.info("[cadgen-ax:delete-session] backend delete succeeded", { sessionId, deleted });
       setOpenedArtifactPath(null);
       await refreshSessionList();
-      console.info("[cadastrophe:delete-session] refreshed session list after delete", { sessionId });
+      console.info("[cadgen-ax:delete-session] refreshed session list after delete", { sessionId });
       if (state?.session.id !== sessionId) {
-        console.info("[cadastrophe:delete-session] deleted session was not active session", {
+        console.info("[cadgen-ax:delete-session] deleted session was not active session", {
           sessionId,
           activeSessionId: state?.session.id
         });
@@ -601,23 +601,23 @@ export function App() {
       const nextSessionId =
         deleted.currentSessionId ??
         filterLocallyDeletedSessions((await backend.listSessions({ includeArchived: false })).sessions)[0]?.id;
-      console.info("[cadastrophe:delete-session] resolved replacement session", { sessionId, nextSessionId });
+      console.info("[cadgen-ax:delete-session] resolved replacement session", { sessionId, nextSessionId });
       if (nextSessionId) {
         const nextState = await loadSession(nextSessionId, { forceSource: true });
         await backend.markSessionViewed(nextSessionId);
         navigateTo(view, nextState.session.id);
-        console.info("[cadastrophe:delete-session] navigated to replacement session", {
+        console.info("[cadgen-ax:delete-session] navigated to replacement session", {
           sessionId,
           nextSessionId
         });
         return;
       }
-      const created = await backend.createSession({ title: "Cadastrophe review" });
+      const created = await backend.createSession({ title: "CADGEN-AX review" });
       applySessionSnapshot(created.state, { forceSource: true });
       await backend.markSessionViewed(created.sessionId);
       await refreshSessionList();
       navigateTo(view, created.sessionId);
-      console.info("[cadastrophe:delete-session] created replacement session", {
+      console.info("[cadgen-ax:delete-session] created replacement session", {
         sessionId,
         createdSessionId: created.sessionId
       });
@@ -858,7 +858,7 @@ export function App() {
     return (
       <main className="loading">
         <div>
-          <p>Loading Cadastrophe session</p>
+          <p>Loading CADGEN-AX session</p>
           {error ? <div className="error">{error}</div> : null}
         </div>
       </main>
@@ -1059,7 +1059,7 @@ export function App() {
   );
 }
 
-const STARTER_OVERLAY_KEY = "cadastrophe.hiddenStarterOverlaySessions";
+const STARTER_OVERLAY_KEY = "cadgen-ax.hiddenStarterOverlaySessions";
 const EMPTY_DRAFT_REVISION_ID = "__empty-draft__";
 const STARTER_PREVIEW_REVISION_ID = "__starter-preview__";
 const STARTER_SAMPLE_SOURCE = `width = 32; // @param min=8 max=80 step=1 label=Width
@@ -1091,7 +1091,7 @@ function isStarterSessionHeuristic(state: CadSessionState): boolean {
     state.agentRuns.length === 0 &&
     state.session.revisions.length <= 1 &&
     Boolean(state.activeRevision?.source.trim()) &&
-    (state.session.title === "Cadastrophe review" || !state.session.title)
+    (state.session.title === "CADGEN-AX review" || !state.session.title)
   );
 }
 

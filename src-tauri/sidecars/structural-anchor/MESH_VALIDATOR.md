@@ -1,6 +1,6 @@
 # Independent mesh validator
 
-`cadastrophe-mesh-validator` is a minimal C++17 implementation of the mesh
+`cadgen-ax-mesh-validator` is a minimal C++17 implementation of the mesh
 validation behavior used by Open3D 0.19.0's legacy `TriangleMesh`. Production
 code neither includes nor links Open3D.
 

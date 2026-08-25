@@ -1,5 +1,5 @@
 {
-  "contractType": "cadastrophe.dfm_report.v1",
+  "contractType": "cadgen-ax.dfm_report.v1",
   "runId": "run-fixture-1",
   "revisionId": "revision-fixture-1",
   "artifactId": "artifact-fixture-stl",

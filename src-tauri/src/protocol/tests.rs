@@ -34,7 +34,7 @@ fn workflow_state_fixture_matches_rust_schema() {
             .as_ref()
             .and_then(|report| report.get("contractType"))
             .and_then(Value::as_str),
-        Some("cadastrophe.dfm_report.v1")
+        Some("cadgen-ax.dfm_report.v1")
     );
     let serialized = serde_json::to_value(&workflow).unwrap();
     assert_eq!(
@@ -47,14 +47,14 @@ fn workflow_state_fixture_matches_rust_schema() {
             .as_ref()
             .and_then(|report| report.get("contractType"))
             .and_then(Value::as_str),
-        Some("cadastrophe.failure_report.v1")
+        Some("cadgen-ax.failure_report.v1")
     );
     assert_eq!(
         workflow.pending_vlm[0]
             .contract
             .get("contractType")
             .and_then(Value::as_str),
-        Some("cadastrophe.vlm_judge.v1")
+        Some("cadgen-ax.vlm_judge.v1")
     );
 }
 
@@ -63,23 +63,23 @@ fn report_contract_fixtures_keep_expected_discriminators() {
     for (fixture, contract_type) in [
         (
             include_str!("../../../fixtures/contracts/structural_report.v1.json"),
-            "cadastrophe.structural_report.v1",
+            "cadgen-ax.structural_report.v1",
         ),
         (
             include_str!("../../../fixtures/contracts/dfm_report.v1.json"),
-            "cadastrophe.dfm_report.v1",
+            "cadgen-ax.dfm_report.v1",
         ),
         (
             include_str!("../../../fixtures/contracts/vlm_judge_contract.v1.json"),
-            "cadastrophe.vlm_judge.v1",
+            "cadgen-ax.vlm_judge.v1",
         ),
         (
             include_str!("../../../fixtures/contracts/vlm_submission.v1.json"),
-            "cadastrophe.vlm_submission.v1",
+            "cadgen-ax.vlm_submission.v1",
         ),
         (
             include_str!("../../../fixtures/contracts/vlm_judge_report.v1.json"),
-            "cadastrophe.vlm_judge_report.v1",
+            "cadgen-ax.vlm_judge_report.v1",
         ),
     ] {
         let value: Value = serde_json::from_str(fixture).unwrap();

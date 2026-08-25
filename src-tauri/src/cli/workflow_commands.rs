@@ -26,7 +26,7 @@ pub(super) fn finalize(
 
     with_tool_events(
         service,
-        "cadastrophe-finalize",
+        "cadgen-ax-finalize",
         &session_id,
         Some(&run_id),
         Some(revision_id.clone()),
@@ -79,14 +79,14 @@ pub(super) fn finalize(
 
             let structural_sidecar = resolve_frozen_executable(
                 args.optional("sidecar"),
-                "CADASTROPHE_STRUCTURAL_ANCHOR_PATH",
-                "cadastrophe-structural-anchor",
+                "CADGEN_AX_STRUCTURAL_ANCHOR_PATH",
+                "cadgen-ax-structural-anchor",
                 "Structural sidecar",
             )?;
             let renderer_sidecar = resolve_frozen_executable(
                 args.optional("renderer-sidecar"),
-                "CADASTROPHE_VLM_RENDERER_PATH",
-                "cadastrophe-vlm-renderer",
+                "CADGEN_AX_VLM_RENDERER_PATH",
+                "cadgen-ax-vlm-renderer",
                 "VLM renderer sidecar",
             )?;
             let dfm_inputs = crate::dfm::prepare_evaluation_inputs(
@@ -110,7 +110,7 @@ pub(super) fn finalize(
             });
             let structural_input = extend_contract(
                 &common,
-                "cadastrophe.structural_check_input.v1",
+                "cadgen-ax.structural_check_input.v1",
                 json!({
                     "sidecarPath": structural_sidecar,
                     "sidecarSha256": executable_sha256(&structural_sidecar)?,
@@ -118,12 +118,12 @@ pub(super) fn finalize(
             )?;
             let dfm_input = extend_contract(
                 &common,
-                "cadastrophe.dfm_check_input.v1",
+                "cadgen-ax.dfm_check_input.v1",
                 json!({"prepared": dfm_inputs}),
             )?;
             let vlm_input = extend_contract(
                 &common,
-                "cadastrophe.vlm_check_input.v1",
+                "cadgen-ax.vlm_check_input.v1",
                 json!({
                     "userRequest": run.prompt,
                     "passThreshold": pass_threshold,
@@ -171,7 +171,7 @@ pub(super) fn finalize(
                     "nextAction": "validation_queued"
                 }),
                 data: json!({
-                    "contractType": "cadastrophe.finalization.v2",
+                    "contractType": "cadgen-ax.finalization.v2",
                     "runId": run_id,
                     "revisionId": revision_id,
                     "artifactId": final_artifact.id,

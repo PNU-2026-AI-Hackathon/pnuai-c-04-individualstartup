@@ -1,5 +1,5 @@
-using cadastrophe::mesh::TriangleMeshValidator;
-using cadastrophe::mesh::Vec3;
+using cadgen_ax::mesh::TriangleMeshValidator;
+using cadgen_ax::mesh::Vec3;
 
 struct TriangleFacet {
     Vec3 a;
@@ -47,7 +47,7 @@ struct Vec3Less {
 
 TriangleMeshValidator index_triangle_soup(const std::vector<TriangleFacet>& facets) {
     std::vector<Vec3> vertices;
-    std::vector<cadastrophe::mesh::Triangle> triangles;
+    std::vector<cadgen_ax::mesh::Triangle> triangles;
     std::map<Vec3, std::size_t, Vec3Less> vertex_indices;
     vertices.reserve(facets.size() * 3);
     triangles.reserve(facets.size());

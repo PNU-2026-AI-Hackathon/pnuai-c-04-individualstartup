@@ -141,7 +141,7 @@ export function SessionBrowser({
                 </button>
                 <button
                   onClick={() => {
-                    console.info("[cadastrophe:delete-session] browser delete clicked", { sessionId: session.id });
+                    console.info("[cadgen-ax:delete-session] browser delete clicked", { sessionId: session.id });
                     onDelete(session.id);
                   }}
                   disabled={busy}

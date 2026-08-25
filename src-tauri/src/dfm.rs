@@ -523,7 +523,7 @@ pub(crate) fn evaluate_prepared(
     let diagnostics = parse_diagnostics(&stdout, &stderr);
     let passed = !diagnostics.iter().any(|item| item["severity"] == "error");
     let mut gcode_metadata = json!({
-        "contractType": "cadastrophe.gcode_artifact.v1",
+        "contractType": "cadgen-ax.gcode_artifact.v1",
         "runId": run_id,
         "revisionId": revision_id,
         "sourceArtifactId": stl_artifact.id,
@@ -560,7 +560,7 @@ pub(crate) fn evaluate_prepared(
         json!({"name":"slicer_diagnostics","passed":passed,"severity":if passed {"info"} else {"error"},"message":if passed {"No error diagnostics were emitted."} else {"PrusaSlicer emitted error diagnostics."}}),
     ];
     let report = json!({
-        "contractType": "cadastrophe.dfm_report.v1",
+        "contractType": "cadgen-ax.dfm_report.v1",
         "runId": run_id,
         "revisionId": revision_id,
         "artifactId": stl_artifact.id,
@@ -589,7 +589,7 @@ pub(crate) fn evaluate_prepared(
                 items: Vec::new(),
             },
             metadata: object(json!({
-                "contractType": "cadastrophe.dfm_report_artifact.v1",
+                "contractType": "cadgen-ax.dfm_report_artifact.v1",
                 "runId": run_id,
                 "sourceArtifactId": stl_artifact.id,
                 "gcodeArtifactId": gcode_artifact.id,
@@ -606,8 +606,8 @@ pub(crate) fn validate_report(
     run_id: &str,
     revision_id: &str,
 ) -> Result<(), String> {
-    if report.get("contractType").and_then(Value::as_str) != Some("cadastrophe.dfm_report.v1") {
-        return Err("DFM report contractType must be cadastrophe.dfm_report.v1.".to_string());
+    if report.get("contractType").and_then(Value::as_str) != Some("cadgen-ax.dfm_report.v1") {
+        return Err("DFM report contractType must be cadgen-ax.dfm_report.v1.".to_string());
     }
     if report.get("runId").and_then(Value::as_str) != Some(run_id)
         || report.get("revisionId").and_then(Value::as_str) != Some(revision_id)

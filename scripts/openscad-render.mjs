@@ -19,8 +19,8 @@ try {
     printErr: (text) => stderr.push(String(text))
   });
   const openscad = api.getInstance();
-  const inputPath = "/cadastrophe-input.scad";
-  const outputPath = "/cadastrophe-output.stl";
+  const inputPath = "/cadgen-ax-input.scad";
+  const outputPath = "/cadgen-ax-output.stl";
   openscad.FS.writeFile(inputPath, source);
   const exitCode = openscad.callMain([inputPath, "--backend=manifold", "-o", outputPath]);
   if (exitCode !== 0) {

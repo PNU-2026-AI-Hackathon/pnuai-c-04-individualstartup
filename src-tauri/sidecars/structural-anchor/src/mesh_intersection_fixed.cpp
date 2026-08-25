@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-namespace cadastrophe::mesh::fixed {
+namespace cadgen_ax::mesh::fixed {
 namespace {
 
 enum class SliceKind {
@@ -437,4 +437,4 @@ bool IsSelfIntersecting(const std::vector<Vec3>& vertices,
     return false;
 }
 
-}  // namespace cadastrophe::mesh::fixed
+}  // namespace cadgen_ax::mesh::fixed

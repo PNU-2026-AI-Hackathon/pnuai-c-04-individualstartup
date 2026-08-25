@@ -11,8 +11,8 @@ docs/
 src-tauri/target/
 src-tauri/gen/schemas/
 
-# Local Cadastrophe workspace state
-.cadastrophe/
+# Local CADGEN-AX workspace state
+.cadgen-ax/
 
 # Environment files
 .env

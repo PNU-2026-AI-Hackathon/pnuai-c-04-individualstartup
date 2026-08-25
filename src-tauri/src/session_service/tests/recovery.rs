@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn create_agent_run_rejects_a_second_nonterminal_run_in_the_same_session() {
     let service = SessionService::new(
-        std::env::temp_dir().join(format!("cadastrophe-active-run-test-{}", uuid())),
+        std::env::temp_dir().join(format!("cadgen-ax-active-run-test-{}", uuid())),
     );
     let created = service
         .create_session(CreateCadSessionInput::default())
@@ -56,7 +56,7 @@ fn create_agent_run_rejects_a_second_nonterminal_run_in_the_same_session() {
 #[test]
 fn sqlite_restart_restores_session_revision_artifacts_conversation_and_runs_together() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-restart-integrity-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-restart-integrity-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
 
@@ -173,7 +173,7 @@ fn sqlite_restart_restores_session_revision_artifacts_conversation_and_runs_toge
 
 #[test]
 fn sqlite_repository_recovers_interrupted_missing_corrupt_and_unknown_persistence_state() {
-    let app_data_dir = std::env::temp_dir().join(format!("cadastrophe-recovery-test-{}", uuid()));
+    let app_data_dir = std::env::temp_dir().join(format!("cadgen-ax-recovery-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
 

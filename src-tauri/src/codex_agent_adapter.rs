@@ -42,7 +42,7 @@ impl CodexAgentAdapter {
             .map_err(|error| error.to_string())?,
             process_client: client,
             app_data_dir,
-            turn_timeout: duration_from_env("CADASTROPHE_CODEX_TURN_TIMEOUT_SECS", 900),
+            turn_timeout: duration_from_env("CADGEN_AX_CODEX_TURN_TIMEOUT_SECS", 900),
         })
     }
 
@@ -83,7 +83,7 @@ impl AgentAdapter for CodexAgentAdapter {
         let dfm_context = crate::dfm::load_design_context(&input.app_data_dir)?;
         let thread_start_params = build_thread_start_params(&cwd, &dfm_context)?;
         let replacement_context = format!(
-            "The previous Codex thread could not be loaded. Continue this Cadastrophe session using the immutable scope --session '{}' --run '{}'. Re-read the persisted session/revision/workflow state before making changes.",
+            "The previous Codex thread could not be loaded. Continue this CADGEN-AX session using the immutable scope --session '{}' --run '{}'. Re-read the persisted session/revision/workflow state before making changes.",
             input.session_id, input.run_id
         );
         let mut turn = self
@@ -295,9 +295,9 @@ fn terminal_result(
 }
 
 pub(crate) fn codex_cwd() -> Result<PathBuf, String> {
-    if let Ok(value) = std::env::var("CADASTROPHE_CODEX_CWD") {
+    if let Ok(value) = std::env::var("CADGEN_AX_CODEX_CWD") {
         if value.trim().is_empty() {
-            return Err("CADASTROPHE_CODEX_CWD cannot be empty when set.".to_string());
+            return Err("CADGEN_AX_CODEX_CWD cannot be empty when set.".to_string());
         }
         return Ok(PathBuf::from(value));
     }

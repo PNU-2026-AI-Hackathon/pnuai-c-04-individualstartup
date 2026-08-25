@@ -12,7 +12,7 @@ fn evaluation_create(
         revision_id: revision_id.to_string(),
         artifact_id: artifact_id.to_string(),
         kind: CadValidationEvaluationKind::Vlm,
-        input_contract: json!({"contractType":"cadastrophe.vlm_judge.v1"}),
+        input_contract: json!({"contractType":"cadgen-ax.vlm_judge.v1"}),
         pass_threshold: 0.8,
     }
 }
@@ -20,7 +20,7 @@ fn evaluation_create(
 #[test]
 fn validation_evaluation_and_raw_events_survive_restart() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-validation-repo-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-validation-repo-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
     let service = SessionService::with_repository(
@@ -158,7 +158,7 @@ fn validation_evaluation_and_raw_events_survive_restart() {
 #[test]
 fn validation_attempts_reject_graph_mismatch_duplicates_and_immutable_changes() {
     let service = SessionService::new(
-        std::env::temp_dir().join(format!("cadastrophe-validation-service-test-{}", uuid())),
+        std::env::temp_dir().join(format!("cadgen-ax-validation-service-test-{}", uuid())),
     );
     let created = service
         .create_session(CreateCadSessionInput::default())
@@ -209,7 +209,7 @@ fn validation_attempts_reject_graph_mismatch_duplicates_and_immutable_changes() 
 #[test]
 fn create_next_validation_evaluation_allocates_new_immutable_attempt_rows() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-validation-attempt-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-validation-attempt-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
     let service = SessionService::with_repository(
@@ -248,7 +248,7 @@ fn create_next_validation_evaluation_allocates_new_immutable_attempt_rows() {
         revision_id,
         artifact_id: artifact.id,
         kind: CadValidationEvaluationKind::Vlm,
-        input_contract: json!({"contractType":"cadastrophe.vlm_judge.v1"}),
+        input_contract: json!({"contractType":"cadgen-ax.vlm_judge.v1"}),
         pass_threshold: 0.8,
     };
     let first = service
@@ -276,7 +276,7 @@ fn create_next_validation_evaluation_allocates_new_immutable_attempt_rows() {
         artifact_id: second.artifact_id,
         kind: CadValidationEvaluationKind::Vlm,
         input_contract: json!({
-            "contractType":"cadastrophe.vlm_judge.v1",
+            "contractType":"cadgen-ax.vlm_judge.v1",
             "evaluationId":"caller-must-not-predict-id"
         }),
         pass_threshold: 0.8,

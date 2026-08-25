@@ -10,7 +10,7 @@ mod tests;
 
 pub use migrations::run_migrations;
 
-pub const DATABASE_FILE_NAME: &str = "cadastrophe.sqlite3";
+pub const DATABASE_FILE_NAME: &str = "cadgen-ax.sqlite3";
 pub const ARTIFACT_DIR_NAME: &str = "artifacts";
 
 pub type StorageResult<T> = Result<T, Box<dyn Error + Send + Sync>>;

@@ -9,5 +9,5 @@ test("STL export default name preserves a useful session name", () => {
 
 test("STL export default name removes path and platform-reserved characters", () => {
   assert.equal(stlExportDefaultFileName("../drive/gear:*?"), "..-drive-gear---.stl");
-  assert.equal(stlExportDefaultFileName("  ...  "), "cadastrophe-model.stl");
+  assert.equal(stlExportDefaultFileName("  ...  "), "cadgen-ax-model.stl");
 });

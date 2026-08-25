@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const APP_IDENTIFIER: &str = "dev.cadastrophe.desktop";
+const APP_IDENTIFIER: &str = "dev.cadgen-ax.desktop";
 const PLAN_SCHEMA_VERSION: &str = "cad_model_plan.v1";
 const PLAN_FORBIDDEN_FEATURES: &[&str] = &["external_file_include"];
 const PLAN_DEFAULT_REQUIRED_FEATURE: &str = "main_component_annotation";
@@ -28,7 +28,7 @@ impl ParsedArgs {
         self.optional("app-data-dir")
             .map(PathBuf::from)
             .or_else(|| {
-                std::env::var("CADASTROPHE_APP_DATA_DIR")
+                std::env::var("CADGEN_AX_APP_DATA_DIR")
                     .ok()
                     .map(PathBuf::from)
             })
@@ -79,7 +79,7 @@ pub(super) fn resolve_session_id(args: &ParsedArgs, service: &SessionService) ->
         .session_id
         .ok_or_else(|| {
             CliError::precondition_failed(
-                "No current Cadastrophe session is selected. Open a session in the app or pass --session.",
+                "No current CADGEN-AX session is selected. Open a session in the app or pass --session.",
             )
         })
 }
@@ -450,7 +450,7 @@ pub(super) fn parse_plan_draft_json(plan_json: &str, label: &str) -> CliResult<C
         .collect::<Vec<_>>();
     if !system_owned_fields.is_empty() {
         return Err(CliError::invalid_input(format!(
-            "Plan draft must not define system-owned runtime policy fields: {}. cadastrophe-plan-commit owns schemaVersion, sourceLanguage, and runtimeConstraints.",
+            "Plan draft must not define system-owned runtime policy fields: {}. cadgen-ax-plan-commit owns schemaVersion, sourceLanguage, and runtimeConstraints.",
             system_owned_fields.join(", ")
         )));
     }
@@ -555,7 +555,7 @@ pub(super) fn parse_source_language(value: &str) -> CliResult<CadSourceLanguage>
         "openscad" => Ok(CadSourceLanguage::Openscad),
         "cadquery" => Ok(CadSourceLanguage::Cadquery),
         "freecad-python" | "freecad_python" => Ok(CadSourceLanguage::FreecadPython),
-        "cadastrophe-ir" | "cadastrophe_ir" => Ok(CadSourceLanguage::CadastropheIr),
+        "cadgen-ax-ir" | "cadgen_ax_ir" => Ok(CadSourceLanguage::CadgenAxIr),
         other => Err(CliError::invalid_input(format!(
             "Unsupported source language {other:?}."
         ))),

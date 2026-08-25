@@ -1,3 +1,3 @@
 fn main() {
-    cadastrophe_lib::run();
+    cadgen_ax_lib::run();
 }

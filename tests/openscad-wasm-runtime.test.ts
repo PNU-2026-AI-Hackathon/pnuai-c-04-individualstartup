@@ -9,7 +9,7 @@ import test from "node:test";
 const execFileAsync = promisify(execFile);
 
 test("openscad-wasm helper renders boolean, rotate, and fn source to STL and mesh", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "cadastrophe-openscad-wasm-"));
+  const dir = await mkdtemp(join(tmpdir(), "cadgen-ax-openscad-wasm-"));
   const sourcePath = join(dir, "fixture.scad");
   await writeFile(
     sourcePath,

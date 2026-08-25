@@ -198,7 +198,7 @@ test("progress details retain expandable live commentary while workflow summary 
       type: "agent.tool.completed",
       sequence: 1,
       createdAt: now,
-      payload: { command: "cadastrophe-finalize --session session-a", status: "completed" }
+      payload: { command: "cadgen-ax-finalize --session session-a", status: "completed" }
     }],
     workflow: { plans: [], outerIterations: [], pendingVlm: [] },
     validationEvaluations: [],
@@ -219,8 +219,8 @@ test("progress details retain expandable live commentary while workflow summary 
   assert.match(html, /data-testid="agent-progress-commentary"/);
   assert.match(html, /<summary><span>Live commentary<\/span>/);
   assert.match(html, /I checked the wall thickness\./);
-  assert.match(html, /cadastrophe-finalize --session session-a/);
-  assert.doesNotMatch(workflowSummaryMarkup(html), /cadastrophe-finalize --session session-a/);
+  assert.match(html, /cadgen-ax-finalize --session session-a/);
+  assert.doesNotMatch(workflowSummaryMarkup(html), /cadgen-ax-finalize --session session-a/);
   assert.doesNotMatch(html, /data-testid="validation-report-details"/);
   assert.doesNotMatch(html, /agent\.tool\.completed/);
   assert.doesNotMatch(html, /data-testid="streaming-commentary"/);
@@ -255,7 +255,7 @@ test("validation report disclosure exposes the combined report and every batch r
       attempt: 1,
       status: "succeeded",
       aggregateReport: {
-        contractType: "cadastrophe.finalization_report.v2",
+        contractType: "cadgen-ax.finalization_report.v2",
         passed: false,
         summary: "Combined validation rejected the model."
       },
@@ -268,9 +268,9 @@ test("validation report disclosure exposes the combined report and every batch r
       sessionId: "session-a",
       kind,
       status: "succeeded" as const,
-      inputContract: { contractType: `cadastrophe.${kind}_input.v1` },
+      inputContract: { contractType: `cadgen-ax.${kind}_input.v1` },
       report: {
-        contractType: `cadastrophe.${kind}_report.v1`,
+        contractType: `cadgen-ax.${kind}_report.v1`,
         passed: kind !== "dfm",
         summary: `${kind} result`
       },

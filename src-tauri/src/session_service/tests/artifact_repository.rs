@@ -14,9 +14,9 @@ endsolid triangle
 #[test]
 fn stl_artifact_exports_to_a_named_external_path_and_reopens_byte_for_byte() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-external-stl-source-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-external-stl-source-test-{}", uuid()));
     let export_dir =
-        std::env::temp_dir().join(format!("cadastrophe-external-stl-target-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-external-stl-target-test-{}", uuid()));
     fs::create_dir_all(&export_dir).unwrap();
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
@@ -58,9 +58,9 @@ fn stl_artifact_exports_to_a_named_external_path_and_reopens_byte_for_byte() {
 #[test]
 fn stl_file_export_rejects_invalid_destinations_and_corrupt_artifacts() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-external-stl-errors-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-external-stl-errors-test-{}", uuid()));
     let export_dir =
-        std::env::temp_dir().join(format!("cadastrophe-external-stl-errors-target-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-external-stl-errors-target-{}", uuid()));
     fs::create_dir_all(&export_dir).unwrap();
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
@@ -122,7 +122,7 @@ fn stl_file_export_rejects_invalid_destinations_and_corrupt_artifacts() {
 #[test]
 fn sqlite_repository_restores_artifact_manifest_after_restart() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-artifact-repo-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-artifact-repo-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
 
@@ -233,7 +233,7 @@ fn sqlite_repository_restores_artifact_manifest_after_restart() {
 #[test]
 fn sqlite_repository_restores_gcode_lineage_from_profile_metadata() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-gcode-lineage-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-gcode-lineage-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
     let service = SessionService::with_repository(
@@ -287,7 +287,7 @@ fn sqlite_repository_restores_gcode_lineage_from_profile_metadata() {
 #[test]
 fn sqlite_repository_marks_missing_artifacts_on_startup_and_verify() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-artifact-missing-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-artifact-missing-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
 

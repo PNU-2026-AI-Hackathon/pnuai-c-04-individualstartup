@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn sqlite_repository_restores_conversation_runs_and_run_events_after_restart() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-run-log-repo-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-run-log-repo-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
 
@@ -144,7 +144,7 @@ fn sqlite_repository_restores_conversation_runs_and_run_events_after_restart() {
 #[test]
 fn sqlite_repository_restores_workflow_state_after_restart() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-workflow-repo-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-workflow-repo-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
 
@@ -201,7 +201,7 @@ fn sqlite_repository_restores_workflow_state_after_restart() {
                 ))
                 .unwrap(),
                 dfm_report: Some(json!({
-                    "contractType": "cadastrophe.dfm_report.v1",
+                    "contractType": "cadgen-ax.dfm_report.v1",
                     "revisionId": updated.revision_id,
                     "profileHash": "a".repeat(64),
                     "passed": true
@@ -213,7 +213,7 @@ fn sqlite_repository_restores_workflow_state_after_restart() {
                     .unwrap(),
                 ),
                 failure_report: Some(json!({
-                    "contractType": "cadastrophe.failure_report.v1",
+                    "contractType": "cadgen-ax.failure_report.v1",
                     "reason": "missing_support_tab",
                     "nextAction": "outer_loop_refine_source"
                 })),
@@ -254,13 +254,13 @@ fn sqlite_repository_restores_workflow_state_after_restart() {
                 .unwrap(),
                 pass_threshold: 0.8,
                 structural_report: Some(json!({
-                    "contractType": "cadastrophe.structural_report.v1",
+                    "contractType": "cadgen-ax.structural_report.v1",
                     "runId": run.id,
                     "artifactId": artifact.id,
                     "passed": true
                 })),
                 dfm_report: Some(json!({
-                    "contractType": "cadastrophe.dfm_report.v1",
+                    "contractType": "cadgen-ax.dfm_report.v1",
                     "runId": run.id,
                     "revisionId": updated.revision_id,
                     "artifactId": artifact.id,
@@ -298,7 +298,7 @@ fn sqlite_repository_restores_workflow_state_after_restart() {
             .as_ref()
             .and_then(|report| report.get("contractType"))
             .and_then(Value::as_str),
-        Some("cadastrophe.dfm_report.v1")
+        Some("cadgen-ax.dfm_report.v1")
     );
     assert_eq!(
         state.workflow.outer_iterations[0]
@@ -306,7 +306,7 @@ fn sqlite_repository_restores_workflow_state_after_restart() {
             .as_ref()
             .and_then(|report| report.get("contractType"))
             .and_then(Value::as_str),
-        Some("cadastrophe.failure_report.v1")
+        Some("cadgen-ax.failure_report.v1")
     );
     assert_eq!(state.workflow.pending_vlm.len(), 1);
     assert_eq!(state.workflow.pending_vlm[0].artifact_id, artifact.id);
@@ -317,14 +317,14 @@ fn sqlite_repository_restores_workflow_state_after_restart() {
             .as_ref()
             .and_then(|report| report.get("contractType"))
             .and_then(Value::as_str),
-        Some("cadastrophe.dfm_report.v1")
+        Some("cadgen-ax.dfm_report.v1")
     );
 }
 
 #[test]
 fn sqlite_repository_assigns_agent_event_sequence_from_database() {
     let app_data_dir = std::env::temp_dir().join(format!(
-        "cadastrophe-run-event-sequence-race-test-{}",
+        "cadgen-ax-run-event-sequence-race-test-{}",
         uuid()
     ));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
@@ -359,10 +359,10 @@ fn sqlite_repository_assigns_agent_event_sequence_from_database() {
             &created.session_id,
             &run.id,
             None,
-            Some(Some("cadastrophe-plan-commit".to_string())),
+            Some(Some("cadgen-ax-plan-commit".to_string())),
             None,
             Some(CadBridgeEventType::AgentToolStarted),
-            Some(json!({"tool": "cadastrophe-plan-commit"})),
+            Some(json!({"tool": "cadgen-ax-plan-commit"})),
         )
         .unwrap();
     let cli_event = stale_cli_service
@@ -371,7 +371,7 @@ fn sqlite_repository_assigns_agent_event_sequence_from_database() {
             &run.id,
             None,
             CadAgentRunEventType::AgentToolStarted,
-            json!({"command": "cadastrophe-plan-commit", "status": "started"}),
+            json!({"command": "cadgen-ax-plan-commit", "status": "started"}),
         )
         .unwrap();
 
@@ -398,7 +398,7 @@ fn sqlite_repository_assigns_agent_event_sequence_from_database() {
 #[test]
 fn stale_runtime_update_preserves_externally_linked_output_revision() {
     let app_data_dir = std::env::temp_dir().join(format!(
-        "cadastrophe-run-output-revision-race-test-{}",
+        "cadgen-ax-run-output-revision-race-test-{}",
         uuid()
     ));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
@@ -467,7 +467,7 @@ fn stale_runtime_update_preserves_externally_linked_output_revision() {
 #[test]
 fn refresh_session_from_repository_merges_external_workflow_state() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-workflow-refresh-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-workflow-refresh-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
 
@@ -541,7 +541,7 @@ fn refresh_session_from_repository_merges_external_workflow_state() {
             artifact_id: artifact.id,
             kind: CadValidationEvaluationKind::Vlm,
             input_contract: json!({
-                "contractType": "cadastrophe.vlm_evaluation_input.v1"
+                "contractType": "cadgen-ax.vlm_evaluation_input.v1"
             }),
             pass_threshold: 0.8,
         })
@@ -579,7 +579,7 @@ fn refresh_session_from_repository_merges_external_workflow_state() {
 #[test]
 fn workflow_service_rejects_cross_session_and_missing_references() {
     let app_data_dir =
-        std::env::temp_dir().join(format!("cadastrophe-workflow-integrity-test-{}", uuid()));
+        std::env::temp_dir().join(format!("cadgen-ax-workflow-integrity-test-{}", uuid()));
     let layout = StorageLayout::from_app_data_dir(app_data_dir);
     storage::initialize_storage(&layout).unwrap();
 
@@ -630,7 +630,7 @@ fn workflow_service_rejects_cross_session_and_missing_references() {
                 run_id: run.id,
                 artifact_id: "missing-artifact".to_string(),
                 revision_id: None,
-                contract: json!({"contractType": "cadastrophe.vlm_judge.v1"}),
+                contract: json!({"contractType": "cadgen-ax.vlm_judge.v1"}),
                 pass_threshold: 0.8,
                 structural_report: None,
                 dfm_report: None,

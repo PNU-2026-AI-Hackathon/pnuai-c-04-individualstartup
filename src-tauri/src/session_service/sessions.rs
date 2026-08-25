@@ -283,7 +283,7 @@ impl SessionService {
     pub fn delete_session(&self, session_id: &str) -> Result<DeleteCadSessionResult, String> {
         let deleted_at = timestamp();
         eprintln!(
-            "[cadastrophe:delete-session] service delete started session_id={} deleted_at={}",
+            "[cadgen-ax:delete-session] service delete started session_id={} deleted_at={}",
             session_id, deleted_at
         );
         let current_session_id = {
@@ -301,7 +301,7 @@ impl SessionService {
                 ));
             }
             eprintln!(
-                "[cadastrophe:delete-session] service session found session_id={}",
+                "[cadgen-ax:delete-session] service session found session_id={}",
                 session_id
             );
             self.repository.delete_session(session_id, &deleted_at)?;
@@ -333,7 +333,7 @@ impl SessionService {
                 .map(|revision| revision.id.clone())
                 .collect();
             eprintln!(
-                "[cadastrophe:delete-session] service removing related state session_id={} run_count={} revision_count={}",
+                "[cadgen-ax:delete-session] service removing related state session_id={} run_count={} revision_count={}",
                 session_id,
                 run_ids.len(),
                 revision_ids.len()
@@ -354,7 +354,7 @@ impl SessionService {
             state.current_interactive_session_id.clone()
         };
         eprintln!(
-            "[cadastrophe:delete-session] service delete persisted session_id={} current_session_id={:?}",
+            "[cadgen-ax:delete-session] service delete persisted session_id={} current_session_id={:?}",
             session_id, current_session_id
         );
         Ok(DeleteCadSessionResult {

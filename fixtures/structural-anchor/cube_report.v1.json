@@ -67,7 +67,7 @@
       "severity": "info"
     }
   ],
-  "contractType": "cadastrophe.structural_report.v1",
+  "contractType": "cadgen-ax.structural_report.v1",
   "mainComponent": "unit_cube",
   "passed": true,
   "revisionId": "revision-structural-fixture-1",

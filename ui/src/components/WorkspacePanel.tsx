@@ -107,7 +107,7 @@ export function WorkspacePanel({
           lowerLabel="OpenSCAD Source"
           maxRatio={72}
           minRatio={42}
-          storageKey="cadastrophe.split.center"
+          storageKey="cadgen-ax.split.center"
           upperLabel="Preview"
         >
           <div className="preview-pane" role="region" aria-label="Preview">
@@ -197,7 +197,7 @@ export function WorkspacePanel({
           lowerLabel="Parameters"
           maxRatio={72}
           minRatio={35}
-          storageKey="cadastrophe.split.right"
+          storageKey="cadgen-ax.split.right"
           upperLabel="Agent"
         >
           <div className="inspector-section inspector-agent" aria-label="Agent">
@@ -290,7 +290,7 @@ class SourceEditorErrorBoundary extends Component<
   }
 
   componentDidCatch(error: unknown, info: ErrorInfo) {
-    console.error("[cadastrophe] Source editor render failed", {
+    console.error("[cadgen-ax] Source editor render failed", {
       error,
       componentStack: info.componentStack
     });
@@ -334,7 +334,7 @@ function SourceEditor({
   }, [sessionId, revisionId]);
 
   const handleEditorError = (phase: "focus" | "change", error: unknown) => {
-    console.error("[cadastrophe] Source editor event failed", {
+    console.error("[cadgen-ax] Source editor event failed", {
       phase,
       sessionId,
       revisionId,
