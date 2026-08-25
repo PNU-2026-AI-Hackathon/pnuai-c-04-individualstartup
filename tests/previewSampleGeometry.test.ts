@@ -9,6 +9,8 @@ import {
   getStlPreviewGeometryStats
 } from "../ui/src/stlPreviewGeometry";
 
+const NORMAL_EPSILON = 1e-3;
+
 test("representative curved and sharp-edge STL samples retain readable normal transitions", async () => {
   const samples = ["shaft", "pulley", "bracket"];
 
@@ -26,23 +28,23 @@ test("representative curved and sharp-edge STL samples retain readable normal tr
     assert.equal(normals.count, positions.count, sample);
     for (let index = 0; index < normals.count; index += 1) {
       const normal = new THREE.Vector3().fromBufferAttribute(normals, index);
-      assert.ok(normal.length() > 0.999 && normal.length() < 1.001, `${sample} normal ${index}`);
+      assert.ok(isApproximately(normal.length(), 1, NORMAL_EPSILON), `${sample} normal ${index}`);
     }
 
-    const transitions = countNormalTransitions(mesh.normals, positions, normals);
-    assert.ok(transitions.smoothed > 0, `${sample} must smooth at least one faceted join`);
-    assert.ok(transitions.sharp > 0, `${sample} must preserve at least one sharp edge`);
+    const transitions = findNormalTransitions(mesh.normals, positions, normals);
+    assert.equal(transitions.hasSmoothed, true, `${sample} must smooth at least one faceted join`);
+    assert.equal(transitions.hasSharp, true, `${sample} must preserve at least one sharp edge`);
     assert.ok(geometry.boundingBox && !geometry.boundingBox.isEmpty(), sample);
     assert.ok((geometry.boundingSphere?.radius ?? 0) > 0, sample);
     geometry.dispose();
   }
 });
 
-function countNormalTransitions(
+function findNormalTransitions(
   sourceNormals: number[],
   positions: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
   derivedNormals: THREE.BufferAttribute | THREE.InterleavedBufferAttribute
-): { smoothed: number; sharp: number } {
+): { hasSmoothed: boolean; hasSharp: boolean } {
   const cornersByPosition = new Map<string, number[]>();
   for (let index = 0; index < positions.count; index += 1) {
     const key = `${positions.getX(index)},${positions.getY(index)},${positions.getZ(index)}`;
@@ -52,8 +54,8 @@ function countNormalTransitions(
   }
 
   const creaseDot = Math.cos(STL_CREASE_ANGLE_RADIANS);
-  let smoothed = 0;
-  let sharp = 0;
+  let hasSmoothed = false;
+  let hasSharp = false;
   for (const corners of cornersByPosition.values()) {
     for (let left = 0; left < corners.length; left += 1) {
       for (let right = left + 1; right < corners.length; right += 1) {
@@ -63,12 +65,22 @@ function countNormalTransitions(
         const derivedDot = new THREE.Vector3()
           .fromBufferAttribute(derivedNormals, leftIndex)
           .dot(new THREE.Vector3().fromBufferAttribute(derivedNormals, rightIndex));
-        if (sourceDot < 0.999 && derivedDot > 0.999) smoothed += 1;
-        if (derivedDot <= creaseDot) sharp += 1;
+        if (
+          !isApproximately(sourceDot, 1, NORMAL_EPSILON)
+          && isApproximately(derivedDot, 1, NORMAL_EPSILON)
+        ) {
+          hasSmoothed = true;
+        }
+        if (derivedDot <= creaseDot) hasSharp = true;
+        if (hasSmoothed && hasSharp) return { hasSmoothed, hasSharp };
       }
     }
   }
-  return { smoothed, sharp };
+  return { hasSmoothed, hasSharp };
+}
+
+function isApproximately(value: number, expected: number, epsilon: number): boolean {
+  return Math.abs(value - expected) <= epsilon;
 }
 
 function dotArrayNormals(normals: number[], left: number, right: number): number {

@@ -209,6 +209,8 @@ export function mountPreview({
     bedGrid = mode === "gcode" && bedBounds ? createBedGrid(bedBounds) : null;
     if (bedGrid) scene.add(bedGrid);
 
+    // Build and validate the model before allocating WebGL/DOM resources so
+    // invalid preview data cannot leave a renderer or controls behind.
     if (mode === "stl") {
       if (!activeMesh) throw new Error("STL preview mesh is unavailable.");
       if (!matcap) throw new Error("Cold-metal Matcap texture is unavailable.");

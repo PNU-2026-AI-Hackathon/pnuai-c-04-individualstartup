@@ -88,6 +88,7 @@ test("new G-code content receives an immediate frame with bed-aware framing", ()
   browserWindow.document.body.appendChild(domContainer);
   const container = domContainer as unknown as HTMLDivElement;
   setElementSize(container, 300, 180);
+  // DPR 1 covers the uncapped path; the STL lifecycle test above covers capping.
   const harness = createPreviewRuntimeHarness(browserWindow, 1);
   const gcodeObject = parseRenderableGCode("G90\nG1 X0 Y0 Z0\nG1 X10 Y10 Z1 E1");
 
@@ -114,7 +115,15 @@ test("new G-code content receives an immediate frame with bed-aware framing", ()
   assert.equal(harness.controls.listenerCount, 0);
   assert.equal(harness.observerDisconnected, true);
   gcodeResources.assertDisposed();
+  browserWindow.close();
+});
 
+test("returning to STL creates a mesh, reframes it, and disposes its Matcap", () => {
+  const browserWindow = new Window({ url: "http://127.0.0.1:5173" });
+  const domContainer = browserWindow.document.createElement("div");
+  browserWindow.document.body.appendChild(domContainer);
+  const container = domContainer as unknown as HTMLDivElement;
+  setElementSize(container, 300, 180);
   const restoredHarness = createPreviewRuntimeHarness(browserWindow, 1.5);
   const restoredTexture = new THREE.Texture();
   let restoredTextureDisposed = false;
@@ -144,7 +153,42 @@ test("new G-code content receives an immediate frame with bed-aware framing", ()
   browserWindow.close();
 });
 
-function createPreviewRuntimeHarness(browserWindow: Window, devicePixelRatio: number) {
+test("initialization failure releases renderer, controls, observer, DOM, and model resources", () => {
+  const browserWindow = new Window({ url: "http://127.0.0.1:5173" });
+  const domContainer = browserWindow.document.createElement("div");
+  browserWindow.document.body.appendChild(domContainer);
+  const container = domContainer as unknown as HTMLDivElement;
+  setElementSize(container, 320, 240);
+  const observerFailure = new Error("Resize observer failed during initialization.");
+  const harness = createPreviewRuntimeHarness(browserWindow, 1, observerFailure);
+  const texture = new THREE.Texture();
+  let textureDisposed = false;
+  texture.addEventListener("dispose", () => { textureDisposed = true; });
+
+  assert.throws(() => mountPreview({
+    activeMesh: triangleMesh,
+    bedBounds: null,
+    container,
+    gcodeObject: null,
+    matcap: texture,
+    mode: "stl"
+  }, harness.runtime), observerFailure);
+
+  assert.equal(harness.animationFrames.pendingCount(), 0);
+  assert.equal(harness.observerDisconnected, true);
+  assert.equal(harness.controls.listenerCount, 0);
+  assert.equal(harness.controls.disposed, true);
+  assert.equal(harness.rendererDisposed, true);
+  assert.equal(textureDisposed, true);
+  assert.equal(container.querySelector("canvas"), null);
+  browserWindow.close();
+});
+
+function createPreviewRuntimeHarness(
+  browserWindow: Window,
+  devicePixelRatio: number,
+  observeFailure?: Error
+) {
   const animationFrames = createAnimationFrameHarness();
   const canvas = browserWindow.document.createElement("canvas") as unknown as HTMLCanvasElement;
   const pixelRatios: number[] = [];
@@ -212,7 +256,9 @@ function createPreviewRuntimeHarness(browserWindow: Window, devicePixelRatio: nu
     createResizeObserver: (callback) => {
       resizeCallback = callback;
       return {
-        observe() {},
+        observe() {
+          if (observeFailure) throw observeFailure;
+        },
         disconnect() { observerDisconnected = true; }
       };
     },

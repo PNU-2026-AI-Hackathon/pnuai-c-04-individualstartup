@@ -89,17 +89,15 @@ test("Matcap preview scene does not create Ambient or Directional lights", () =>
   assert.equal(scene.children.some((child) => child instanceof THREE.Light), false);
 });
 
-test("Matcap load failures are shown by the Preview error boundary", async () => {
+test("Matcap load failures are shown by the Preview error boundary", async (t) => {
   const browserWindow = installDom();
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
-  const originalLoadAsync = THREE.TextureLoader.prototype.loadAsync;
-  const originalConsoleError = console.error;
-  THREE.TextureLoader.prototype.loadAsync = async () => {
+  t.mock.method(THREE.TextureLoader.prototype, "loadAsync", async () => {
     throw new Error("WebP decode failed");
-  };
-  console.error = () => undefined;
+  });
+  t.mock.method(console, "error", () => undefined);
 
   try {
     await act(async () => {
@@ -117,8 +115,7 @@ test("Matcap load failures are shown by the Preview error boundary", async () =>
     assert.match(boundary.textContent ?? "", /Cold-metal Matcap texture failed to load or decode/);
     assert.equal(container.querySelector("canvas"), null);
   } finally {
-    THREE.TextureLoader.prototype.loadAsync = originalLoadAsync;
-    console.error = originalConsoleError;
+    t.mock.restoreAll();
     act(() => root.unmount());
     browserWindow.close();
   }
@@ -135,7 +132,7 @@ test("Matcap loader rejects instead of substituting a fallback material", async 
   );
 });
 
-test("invalid STL geometry is shown by the Preview error boundary", async () => {
+test("invalid STL geometry is shown by the Preview error boundary", async (t) => {
   const browserWindow = installDom();
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -147,11 +144,9 @@ test("invalid STL geometry is shown by the Preview error boundary", async () => 
   };
   const texture = new THREE.Texture();
   let textureDisposed = false;
-  const originalLoadAsync = THREE.TextureLoader.prototype.loadAsync;
-  const originalConsoleError = console.error;
-  THREE.TextureLoader.prototype.loadAsync = async () => texture;
+  t.mock.method(THREE.TextureLoader.prototype, "loadAsync", async () => texture);
   texture.addEventListener("dispose", () => { textureDisposed = true; });
-  console.error = () => undefined;
+  t.mock.method(console, "error", () => undefined);
 
   try {
     await act(async () => {
@@ -170,14 +165,13 @@ test("invalid STL geometry is shown by the Preview error boundary", async () => 
     assert.equal(textureDisposed, true);
     assert.equal(container.querySelector("canvas"), null);
   } finally {
-    THREE.TextureLoader.prototype.loadAsync = originalLoadAsync;
-    console.error = originalConsoleError;
+    t.mock.restoreAll();
     act(() => root.unmount());
     browserWindow.close();
   }
 });
 
-test("an in-flight Matcap texture is disposed when the Preview unmounts", async () => {
+test("an in-flight Matcap texture is disposed when the Preview unmounts", async (t) => {
   const browserWindow = installDom();
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -185,10 +179,9 @@ test("an in-flight Matcap texture is disposed when the Preview unmounts", async 
   const texture = new THREE.Texture();
   let textureDisposed = false;
   let resolveTexture: ((texture: THREE.Texture) => void) | null = null;
-  const originalLoadAsync = THREE.TextureLoader.prototype.loadAsync;
-  THREE.TextureLoader.prototype.loadAsync = () => new Promise<THREE.Texture>((resolve) => {
+  t.mock.method(THREE.TextureLoader.prototype, "loadAsync", () => new Promise<THREE.Texture>((resolve) => {
     resolveTexture = resolve;
-  });
+  }));
   texture.addEventListener("dispose", () => { textureDisposed = true; });
 
   try {
@@ -203,7 +196,7 @@ test("an in-flight Matcap texture is disposed when the Preview unmounts", async 
     });
     assert.equal(textureDisposed, true);
   } finally {
-    THREE.TextureLoader.prototype.loadAsync = originalLoadAsync;
+    t.mock.restoreAll();
     browserWindow.close();
   }
 });
