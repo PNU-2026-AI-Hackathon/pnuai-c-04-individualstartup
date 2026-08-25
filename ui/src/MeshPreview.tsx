@@ -9,6 +9,7 @@ import {
   type DemandRenderScheduler
 } from "./previewRenderScheduler";
 
+// 1.5 keeps diagonal edges crisp while limiting fragment work on high-DPR displays.
 export const PREVIEW_PIXEL_RATIO_LIMIT = 1.5;
 
 type PreviewRenderer = Pick<
@@ -222,10 +223,15 @@ export function mountPreview({
     };
     controls.addEventListener("change", handleControlsChange);
 
+    let renderedWidth = width;
+    let renderedHeight = height;
     const resize = () => {
       if (disposed || !renderer) return;
       const nextWidth = Math.max(container.clientWidth, 1);
       const nextHeight = Math.max(container.clientHeight, 1);
+      if (nextWidth === renderedWidth && nextHeight === renderedHeight) return;
+      renderedWidth = nextWidth;
+      renderedHeight = nextHeight;
       camera.aspect = nextWidth / nextHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(nextWidth, nextHeight, false);

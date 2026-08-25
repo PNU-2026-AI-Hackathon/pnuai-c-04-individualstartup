@@ -53,6 +53,11 @@ test("preview renders initial STL, controls, and resize only on demand", () => {
   assert.equal(harness.rendered.length, 4);
   assert.equal(harness.animationFrames.pendingCount(), 0);
 
+  const sizeCountBeforeUnchangedResize = harness.sizes.length;
+  harness.resize();
+  assert.equal(harness.sizes.length, sizeCountBeforeUnchangedResize);
+  assert.equal(harness.animationFrames.pendingCount(), 0);
+
   setElementSize(container, 200, 120);
   harness.resize();
   assert.deepEqual(harness.sizes.at(-1), [200, 120]);
