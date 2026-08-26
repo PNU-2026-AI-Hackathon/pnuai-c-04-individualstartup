@@ -12,7 +12,12 @@ import type {
 } from "../ui/src/backendClient";
 import { DfmSettings, type DfmSettingsDialog } from "../ui/src/components/DfmSettings";
 import { WorkflowRunSummary, type WorkflowRunView } from "../ui/src/components/AgentWorkflow";
-import { macAppExecutablePath, parseDfmProfile, updateDfmProfileValue } from "../ui/src/dfmProfile";
+import {
+  formatBedShapeDimensions,
+  macAppExecutablePath,
+  parseDfmProfile,
+  updateDfmProfileValue
+} from "../ui/src/dfmProfile";
 import type { CadAgentRun } from "../ui/src/protocol";
 
 const VALID_PROFILE = `# DFM profile
@@ -21,6 +26,7 @@ nozzle_diameter = 0.4
 filament_diameter = 1.75
 layer_height = 0.2
 gcode_flavor = reprap
+bed_shape = 0x0,200x0,200x200,0x200
 support_material = 1
 fill_density = 20%
 machine_max_acceleration_x = 9000,1000
@@ -36,6 +42,10 @@ test("profile parser classifies typed values and refuses missing required settin
   assert.equal(parsed.entries.find((entry) => entry.key === "machine_max_acceleration_x")?.valueType, "multi");
   assert.equal(parsed.entries.find((entry) => entry.key === "fill_pattern")?.valueType, "enum");
   assert.equal(parsed.entries.find((entry) => entry.key === "perimeter_speed")?.category, "Speed");
+  assert.equal(formatBedShapeDimensions("0x0,200x0,200x200,0x200"), "200x200");
+  assert.equal(formatBedShapeDimensions("-100x-75,100x-75,100x75,-100x75"), "200x150");
+  assert.throws(() => formatBedShapeDimensions("0x0,200xnope,0x200"), /Invalid bed_shape coordinate/);
+  assert.ok(parseDfmProfile(VALID_PROFILE.replace("200x200", "200xnope")).errors.some((error) => error.includes("bed_shape")));
 
   const missing = parseDfmProfile("printer_technology = FFF\n");
   assert.ok(missing.errors.some((error) => error.includes("nozzle_diameter")));
@@ -105,6 +115,8 @@ test("DFM settings persist executable and profile changes and recover them after
     assert.ok(container.querySelector<HTMLSelectElement>("select[aria-label='support_material']"));
     assert.ok(container.querySelector<HTMLInputElement>("input[aria-label='fill_density']"));
     assert.ok(container.querySelector<HTMLSelectElement>("select[aria-label='fill_pattern']"));
+    assert.equal(requiredElement<HTMLInputElement>(container, "input[aria-label='bed_shape']").value, "200x200");
+    assert.doesNotMatch(container.textContent ?? "", /0x0,200x0,200x200,0x200/);
 
     const executableInput = requiredElement<HTMLInputElement>(container, "input[aria-label='PrusaSlicer executable path']");
     await changeInput(executableInput, "/opt/PrusaSlicer/bin/prusa-slicer");
@@ -223,7 +235,12 @@ class MemoryDialog implements DfmSettingsDialog {
 }
 
 function keySettings(): Record<string, string> {
-  return { layer_height: "0.2 mm", nozzle_diameter: "0.4 mm", fill_density: "20%" };
+  return {
+    bed_shape: "0x0,200x0,200x200,0x200",
+    layer_height: "0.2 mm",
+    nozzle_diameter: "0.4 mm",
+    fill_density: "20%"
+  };
 }
 
 async function changeInput(input: HTMLInputElement, value: string) {

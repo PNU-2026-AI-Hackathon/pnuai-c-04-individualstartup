@@ -290,9 +290,14 @@ button.primary:disabled {
   align-items: center;
 }
 
-.multi-value-input {
+.multi-value-input,
+.bed-shape-value {
   display: grid;
   gap: 3px;
+}
+
+.bed-shape-value input {
+  background: #eef2f5;
 }
 
 .multi-value-input textarea {

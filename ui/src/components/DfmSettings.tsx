@@ -8,6 +8,7 @@ import type {
 } from "../backendClient";
 import {
   DFM_PROFILE_CATEGORIES,
+  formatBedShapeDimensions,
   macAppExecutablePath,
   parseDfmProfile,
   updateDfmProfileValue,
@@ -266,7 +267,7 @@ export function DfmSettings({
         <div className="profile-summary" aria-label="Active DFM profile summary">
           <div><span>Profile hash</span><code>{profileValidation?.hash ?? "Not validated"}</code></div>
           {Object.entries(profileValidation?.keySettings ?? {}).map(([key, value]) => (
-            <div key={key}><span>{humanizeKey(key)}</span><strong>{value}</strong></div>
+            <div key={key}><span>{humanizeKey(key)}</span><strong>{displayProfileValue(key, value)}</strong></div>
           ))}
         </div>
 
@@ -341,7 +342,14 @@ export function DfmSettings({
 
 function ProfileEntryInput({ entry, onChange }: { entry: DfmProfileEntry; onChange: (value: string) => void }) {
   let input;
-  if (entry.valueType === "boolean") {
+  if (entry.key === "bed_shape") {
+    input = (
+      <div className="bed-shape-value">
+        <input aria-label={entry.key} readOnly value={formatBedShapeDimensions(entry.value)} />
+        <small>Edit bed coordinates in Advanced key/value mode</small>
+      </div>
+    );
+  } else if (entry.valueType === "boolean") {
     input = (
       <select aria-label={entry.key} onChange={(event) => onChange(event.target.value)} value={entry.value}>
         <option value="1">True</option>
@@ -378,7 +386,7 @@ function ProfileEntryInput({ entry, onChange }: { entry: DfmProfileEntry; onChan
   return (
     <label className="profile-entry">
       <span><strong>{humanizeKey(entry.key)}</strong><code>{entry.key}</code></span>
-      <small>{entry.category} · {entry.valueType === "multi" ? "multiple values" : entry.valueType}</small>
+      <small>{entry.category} · {entry.key === "bed_shape" ? "dimensions" : entry.valueType === "multi" ? "multiple values" : entry.valueType}</small>
       {input}
     </label>
   );
@@ -413,6 +421,10 @@ function requireValidLocalProfile(contents: string) {
 
 function humanizeKey(key: string): string {
   return key.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function displayProfileValue(key: string, value: string): string {
+  return key === "bed_shape" ? formatBedShapeDimensions(value) : value;
 }
 
 function errorMessage(error: unknown): string {

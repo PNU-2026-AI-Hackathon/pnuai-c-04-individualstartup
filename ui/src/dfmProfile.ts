@@ -104,6 +104,15 @@ export function parseDfmProfile(contents: string): DfmProfileSyntaxResult {
       return;
     }
     seen.add(key);
+    if (key === "bed_shape") {
+      try {
+        formatBedShapeDimensions(value);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push(`Line ${index + 1}: ${message}`);
+        return;
+      }
+    }
     const options = ENUM_OPTIONS[key];
     entries.push({
       key,
@@ -121,6 +130,28 @@ export function parseDfmProfile(contents: string): DfmProfileSyntaxResult {
   }
 
   return { entries, errors };
+}
+
+export function formatBedShapeDimensions(value: string): string {
+  const numberPattern = "[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?";
+  const coordinatePattern = new RegExp(`^(${numberPattern})x(${numberPattern})$`);
+  const points = value.split(",").map((point) => {
+    const match = coordinatePattern.exec(point.trim());
+    if (!match) throw new Error(`Invalid bed_shape coordinate “${point.trim()}”.`);
+    const x = Number(match[1]);
+    const y = Number(match[2]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      throw new Error("bed_shape coordinates must be finite numbers.");
+    }
+    return { x, y };
+  });
+  if (points.length < 3) throw new Error("bed_shape must contain at least three coordinates.");
+
+  const xCoordinates = points.map(({ x }) => x);
+  const yCoordinates = points.map(({ y }) => y);
+  const width = Math.max(...xCoordinates) - Math.min(...xCoordinates);
+  const height = Math.max(...yCoordinates) - Math.min(...yCoordinates);
+  return `${width}x${height}`;
 }
 
 export function updateDfmProfileValue(contents: string, key: string, value: string): string {
