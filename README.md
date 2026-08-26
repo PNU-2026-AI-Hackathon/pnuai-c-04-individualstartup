@@ -412,7 +412,7 @@ CADGen-AX는 창업 아이디어와 핵심 기술 흐름을 검증하기 위한 
 - 코드와 파라미터가 남는 결과물을 통한 생성형 AI 결과의 설명 가능성과 수정 가능성 강화
 - 교육용 가이드와 예제 모델을 활용한 설계 학습 기회 확대
 
-## 8. 소개 및 시연 영상
+## 8. 소개 및 시연 영상 ( 클릭 시 이동 )
 
 [![CADGen-AX 소개 및 시연 영상](docs/images/demo-thumbnail.png)](https://youtu.be/THNZbOqVQsM?si=MKESyMzIVFIMEyv2)
 
