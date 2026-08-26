@@ -1,0 +1,9 @@
+Third-party notices
+
+The independent mesh validator reproduces behavior from Open3D's legacy
+`geometry::TriangleMesh`, Copyright (c) 2018-2024 www.open3d.org, distributed
+under the MIT License.
+
+Its triangle/triangle intersection routine implements Tomas Möller's
+“A Fast Triangle-Triangle Intersection Test.” The reference implementation
+used by Open3D is public domain.

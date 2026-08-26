@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "cad_model_plan.v1",
+  "summary": "Parametric wall bracket with a back plate, two screw holes, and a forward support tab.",
+  "mainComponent": {
+    "name": "wall_bracket",
+    "purpose": "single printable bracket body",
+    "requiredFeatures": ["back_plate", "screw_holes", "support_tab"]
+  },
+  "supportingComponents": [
+    {
+      "name": "screw_holes",
+      "purpose": "mounting clearance holes through the back plate",
+      "requiredFeatures": ["two_aligned_holes"]
+    },
+    {
+      "name": "support_tab",
+      "purpose": "horizontal tab for carrying a small load",
+      "requiredFeatures": ["rounded_outer_edge"]
+    }
+  ],
+  "expectedAspectRatio": {
+    "x": 3.0,
+    "y": 1.0,
+    "z": 2.0,
+    "tolerance": 0.25
+  },
+  "sourceLanguage": "openscad",
+  "runtimeConstraints": {
+    "runtime": "openscad-wasm",
+    "requiredFeatures": ["difference", "union", "cylinder", "cube"],
+    "forbiddenFeatures": ["external_file_include"],
+    "mainComponentAnnotation": "// @main_component wall_bracket"
+  }
+}

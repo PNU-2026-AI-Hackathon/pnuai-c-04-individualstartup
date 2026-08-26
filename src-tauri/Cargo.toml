@@ -1,0 +1,49 @@
+[package]
+name = "cadgen-ax"
+version = "0.2.2"
+description = "CADGEN-AX desktop backend"
+edition = "2021"
+default-run = "cadgen-ax"
+
+[lib]
+name = "cadgen_ax_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+async-trait = "0.1"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2.11.5", features = [] }
+tauri-plugin-dialog = "2.7.0"
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+sha2 = "0.11.0"
+
+[[bin]]
+name = "cadgen-ax-session-current"
+path = "src/bin/cadgen_ax_session_current.rs"
+
+[[bin]]
+name = "cadgen-ax-session-state"
+path = "src/bin/cadgen_ax_session_state.rs"
+
+[[bin]]
+name = "cadgen-ax-plan-commit"
+path = "src/bin/cadgen_ax_plan_commit.rs"
+
+[[bin]]
+name = "cadgen-ax-source-apply"
+path = "src/bin/cadgen_ax_source_apply.rs"
+
+[[bin]]
+name = "cadgen-ax-finalize"
+path = "src/bin/cadgen_ax_finalize.rs"
+
+[[bin]]
+name = "cadgen-ax-vlm-submit"
+path = "src/bin/cadgen_ax_vlm_submit.rs"

@@ -1,0 +1,82 @@
+name: Build Tauri
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-22.04
+          - windows-2022
+          - macos-15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Set up Rust
+        id: rust-toolchain
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-deps-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: Cache Rust and sidecar build outputs
+        uses: actions/cache@v6
+        with:
+          path: |
+            src-tauri/target/
+            !src-tauri/target/release/bundle/
+          key: ${{ runner.os }}-${{ runner.arch }}-build-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml', 'src-tauri/build.rs', 'src-tauri/src/**/*.rs', 'src-tauri/sidecars/**/*.cpp', 'src-tauri/sidecars/**/*.h', 'src-tauri/sidecars/**/CMakeLists.txt', 'src-tauri/tauri.conf.json', 'scripts/**/*.mjs', 'profile.ini') }}
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential \
+            cmake \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Build Tauri bundles
+        run: npm run build:tauri
+        env:
+          CI: "true"
+
+      - name: Upload Tauri bundles
+        uses: actions/upload-artifact@v7
+        with:
+          name: tauri-${{ runner.os }}-${{ runner.arch }}
+          path: src-tauri/target/release/bundle/**
+          if-no-files-found: error
