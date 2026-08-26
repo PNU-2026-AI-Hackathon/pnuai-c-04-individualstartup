@@ -349,7 +349,17 @@ flowchart LR
 
 ## 5. 설치 및 사용 방법
 
-### 5.1. 사전 요구사항
+### 5.1. 릴리스 설치 파일로 설치
+
+[GitHub Releases](https://github.com/PNU-2026-AI-Hackathon/pnuai-c-04-individualstartup/releases/latest)에서 운영체제에 맞는 최신 설치 파일을 내려받아 설치할 수 있습니다.
+
+- Windows: `.exe` 또는 `.msi`
+- macOS: `.dmg`
+- Linux: `.deb` 또는 `.AppImage`
+
+릴리스 페이지에서 함께 제공하는 `SHA256SUMS`로 내려받은 파일의 무결성을 확인할 수 있습니다. 앱 사용 전에는 PrusaSlicer 2.x와 설치·인증이 완료된 Codex CLI가 필요합니다.
+
+### 5.2. 소스에서 실행하기 위한 사전 요구사항
 
 - Node.js 20 계열은 20.19 이상, 또는 Node.js 22.12 이상 및 npm
 - Rust stable toolchain
@@ -358,7 +368,7 @@ flowchart LR
 - 설치·인증이 완료되어 `codex app-server`를 실행할 수 있는 Codex CLI
 - 운영체제별 [Tauri 2 시스템 의존성](https://v2.tauri.app/start/prerequisites/)
 
-### 5.2. 설치와 실행
+### 5.3. 소스에서 설치와 실행
 
 ```sh
 git clone https://github.com/PNU-2026-AI-Hackathon/pnuai-c-04-individualstartup.git
@@ -369,7 +379,7 @@ npm run dev:tauri
 
 `npm run dev:tauri`는 Rust CLI 도구와 구조 검사·VLM 렌더 Sidecar를 debug 프로필로 빌드한 후 Tauri 개발 서버를 시작합니다.
 
-### 5.3. 첫 실행 순서
+### 5.4. 첫 실행 순서
 
 1. Settings에서 PrusaSlicer 실행 파일의 절대 경로를 선택하고 검증·저장합니다.
 2. 기본 DFM 프로필을 검토하거나 INI 프로필을 가져옵니다.
@@ -378,7 +388,7 @@ npm run dev:tauri
 5. 검증이 끝나면 Structural·DFM·VLM·Combined 보고서와 G-code를 확인합니다.
 6. Artifacts에서 STL 또는 G-code를 내보내고 세션 산출물을 관리합니다.
 
-### 5.4. 검증과 빌드
+### 5.5. 검증과 빌드
 
 각 명령은 검사 또는 빌드 실패 시 0이 아닌 종료 코드로 중단됩니다.
 
