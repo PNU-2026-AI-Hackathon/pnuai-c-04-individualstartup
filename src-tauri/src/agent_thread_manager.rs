@@ -1087,7 +1087,7 @@ impl AgentThreadManager {
             .transport
             .request(
                 "thread/resume",
-                json!({"threadId": thread.external_thread_id, "excludeTurns": true}),
+                json!({"threadId": thread.external_thread_id}),
             )
             .await
         {
@@ -2118,6 +2118,8 @@ mod tests {
             .unwrap();
         assert_eq!(second.activation, ManagedThreadActivation::Resumed);
         assert_eq!(transport.methods()[2..], ["thread/resume", "turn/start"]);
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests[2].1, json!({"threadId": "thread-1"}));
     }
 
     #[tokio::test]
