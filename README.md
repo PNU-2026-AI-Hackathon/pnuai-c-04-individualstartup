@@ -126,6 +126,22 @@ flowchart TD
 
 ## 3. 개발 결과
 
+### 3.0. 사용 기술
+
+| 기술 | 버전 |
+| --- | --- |
+| Tauri | 2.11.x |
+| React | 19.x |
+| TypeScript | 5.8.x |
+| Vite | 7.x |
+| Three.js | 0.178.x |
+| OpenSCAD WASM | 0.0.4 |
+| Rust | stable (Edition 2021) |
+| Tokio | 1.x |
+| SQLite (`rusqlite`) | 3.x (`0.40.1`) |
+| PrusaSlicer | 2.x |
+| OpenAI Codex | CLI |
+
 ### 3.1. 구현 범위
 
 | 구분 | 구현 결과 |
