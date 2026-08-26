@@ -176,7 +176,9 @@ impl CodexProcessClient {
                     "title": "CADGEN-AX",
                     "version": env!("CARGO_PKG_VERSION")
                 },
-                "capabilities": {}
+                "capabilities": {
+                    "experimentalApi": true
+                }
             }),
         )
         .await
@@ -635,7 +637,14 @@ while IFS= read -r line; do
     *\"method\":\"initialize\"*)
       printf '%s\n' initialize >> "$marker"
       id=$(printf '%s\n' "$line" | sed -n 's/.*\"id\":\([0-9][0-9]*\).*/\1/p')
-      printf '{{\"id\":%s,\"result\":{{}}}}\n' "$id"
+      case "$line" in
+        *\"capabilities\":{{\"experimentalApi\":true}}*)
+          printf '{{\"id\":%s,\"result\":{{}}}}\n' "$id"
+          ;;
+        *)
+          printf '{{\"id\":%s,\"error\":{{\"code\":-32600,\"message\":\"missing experimentalApi capability\"}}}}\n' "$id"
+          ;;
+      esac
       ;;
     *\"method\":\"initialized\"*)
       printf '%s\n' initialized >> "$marker"

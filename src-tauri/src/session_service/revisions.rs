@@ -81,6 +81,7 @@ impl SessionService {
         Ok(snapshot)
     }
 
+    // Deprecated: Retained while the Restore revision UI control is hidden for submission.
     pub fn restore_revision(
         &self,
         input: RestoreRevisionInput,

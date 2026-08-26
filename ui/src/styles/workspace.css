@@ -155,6 +155,7 @@
   font-size: 11.5px;
 }
 
+/* Deprecated: Retained for restoring the hidden Show archived control after submission. */
 .archive-toggle {
   display: flex;
   align-items: center;
@@ -807,6 +808,7 @@ h2 {
   white-space: pre-wrap;
 }
 
+/* Deprecated: Retained for reference after direct export replaced the format popover. */
 .export-toolbar-control {
   position: relative;
 }

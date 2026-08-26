@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { GitCompare, RotateCcw, SquareMousePointer } from "lucide-react";
+import { GitCompare, SquareMousePointer } from "lucide-react";
 import type { CadRevisionSummary, CadSessionState } from "../protocol";
 
 export function Parameters(props: {
@@ -57,6 +57,7 @@ export function Timeline({
   readOnly: boolean;
   sourceDirty: boolean;
   onActivate: (revisionId: string) => void;
+  // Deprecated: Revision restore remains available in the service while its UI control is hidden.
   onRestore: (revisionId: string) => void;
 }) {
   const [diffRevisionId, setDiffRevisionId] = useState<string | null>(null);
@@ -88,14 +89,7 @@ export function Timeline({
               >
                 <SquareMousePointer size={14} />
               </button>
-              <button
-                aria-label={`Restore revision ${revision.id.slice(0, 8)}`}
-                disabled={busy || readOnly}
-                onClick={() => onRestore(revision.id)}
-                title="Restore revision"
-              >
-                <RotateCcw size={14} />
-              </button>
+              {/* Deprecated: Restore revision is hidden to avoid creating accidental revision copies. */}
               <button
                 aria-label={`Compare revision ${revision.id.slice(0, 8)}`}
                 disabled={!activeRevision || revision.id === activeRevision.id}

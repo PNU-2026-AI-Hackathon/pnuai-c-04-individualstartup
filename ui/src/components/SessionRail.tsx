@@ -47,6 +47,7 @@ export function SessionRail({
   sessions: CadSessionListItem[];
   activeSessionId: string;
   query: string;
+  // Deprecated: Archived-session visibility is fixed off while its rail control is hidden.
   showArchived: boolean;
   busy: boolean;
   open: boolean;
@@ -55,6 +56,7 @@ export function SessionRail({
   revisionsReadOnly?: boolean;
   sourceDirty?: boolean;
   onQueryChange: (query: string) => void;
+  // Deprecated: Retained for restoring the hidden Show archived control after submission.
   onShowArchivedChange: (showArchived: boolean) => void;
   onCreateSession: () => void;
   onOpenSession: (sessionId: string) => void;
@@ -120,14 +122,7 @@ export function SessionRail({
               placeholder="Search"
             />
           </label>
-          <label className="archive-toggle">
-            <input
-              type="checkbox"
-              checked={showArchived}
-              onChange={(event) => onShowArchivedChange(event.target.checked)}
-            />
-            <span>Show archived</span>
-          </label>
+          {/* Deprecated: The Show archived control is hidden for submission. */}
           <ol className="session-rail-list">
         {visibleSessions.map((session) => {
           const isEditing = editingSessionId === session.id;

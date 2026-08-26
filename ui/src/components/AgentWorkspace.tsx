@@ -1,4 +1,4 @@
-import { MessageSquarePlus, RefreshCcw, ScrollText, Send, X } from "lucide-react";
+import { RefreshCcw, Send, X } from "lucide-react";
 import type {
   CadAgentRun,
   CadAgentRunEvent,
@@ -36,9 +36,11 @@ export function AgentWorkspace(props: {
   streams?: CadAgentStreamingItem[];
   onPromptChange: (value: string) => void;
   onStartRun: () => void;
+  // Deprecated: New conversation remains implemented while its Agent-tab button is hidden.
   onStartNewConversation: () => void;
   onRetryRun: (run: CadAgentRun) => void;
   onCancelRun: (runId: string) => void;
+  // Deprecated: The agent debug history entry point is hidden from the submission UI.
   onOpenFullHistory: () => void;
 }) {
   const latestRun = props.runs.at(-1);
@@ -67,15 +69,7 @@ export function AgentWorkspace(props: {
     <section className="panel agent-workspace">
       <div className="panel-heading">
         <h2>Codex Agent</h2>
-        <details className="agent-debug-menu">
-          <summary>Debug</summary>
-          <div className="agent-debug-popover">
-            <AgentDiagnostics threads={props.threads} runs={props.runs} />
-            <button onClick={props.onOpenFullHistory} title="Open full session history">
-              <ScrollText size={15} /> Full history
-            </button>
-          </div>
-        </details>
+        {/* Deprecated: The Debug popover and details.agent-debug-menu are hidden for submission. */}
       </div>
       {props.activeRun?.activeStep ? (
         <div className="active-step" data-testid="active-step">
@@ -144,14 +138,7 @@ export function AgentWorkspace(props: {
         >
           <X size={16} /> Cancel
         </button>
-        <button
-          data-testid="start-new-agent-conversation"
-          onClick={props.onStartNewConversation}
-          disabled={props.busy || props.readOnly || Boolean(props.activeRun)}
-          title="Archive this Codex thread and start a new conversation"
-        >
-          <MessageSquarePlus size={16} /> New conversation
-        </button>
+        {/* Deprecated: The New conversation button is hidden for submission. */}
       </div>
       {(latestRun?.status === "failed" || latestRun?.status === "cancelled") && !latestWorkflow?.latestFailure ? (
         <button
@@ -167,6 +154,7 @@ export function AgentWorkspace(props: {
   );
 }
 
+// Deprecated: Retained for restoring diagnostics in the hidden agent debug popover.
 export function agentDiagnosticRows(threads: CadAgentThread[], runs: CadAgentRun[]) {
   const threadRows = threads.map((thread) => ({
     key: `thread-${thread.id}`,
@@ -186,6 +174,7 @@ export function agentDiagnosticRows(threads: CadAgentThread[], runs: CadAgentRun
   return [...threadRows, ...runRows];
 }
 
+// Deprecated: Retained for restoring the hidden agent debug popover after submission.
 function AgentDiagnostics({ threads, runs }: { threads: CadAgentThread[]; runs: CadAgentRun[] }) {
   const rows = agentDiagnosticRows(threads, runs);
   return (
