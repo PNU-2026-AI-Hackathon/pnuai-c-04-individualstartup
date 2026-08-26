@@ -169,7 +169,7 @@ test("legacy validation evaluations remain compatible when no validation batch e
   harness.cleanup();
 });
 
-test("latest validation batch drives parallel checks, pass, rejection, and operational failure", async () => {
+test("latest validation batch drives workflow state and reports without a batch status callout", async () => {
   const running = workflowStateWithValidationBatch("running", {
     structural: "running",
     dfm: "queued",
@@ -185,9 +185,10 @@ test("latest validation batch drives parallel checks, pass, rejection, and opera
     assert.ok(workflowStep(harness.container, label).classList.contains("workflow-step-active"));
   }
   assert.ok(workflowStep(harness.container, "Complete").classList.contains("workflow-step-pending"));
-  assert.match(harness.container.textContent ?? "", /Validation batch running/);
-  assert.match(harness.container.textContent ?? "", /Structural: running/);
-  assert.match(harness.container.textContent ?? "", /DFM: queued/);
+  assert.match(harness.container.textContent ?? "", /Parallel validation running/);
+  assert.match(validationReportText(harness.container, "structural"), /Structural report.*running/);
+  assert.match(validationReportText(harness.container, "dfm"), /DFM report.*queued/);
+  assert.equal(harness.container.querySelector("[data-testid='validation-batch-summary']"), null);
 
   const passed = workflowStateWithValidationBatch("succeeded", {
     structural: "succeeded",
@@ -203,7 +204,8 @@ test("latest validation batch drives parallel checks, pass, rejection, and opera
   for (const label of ["Structural", "DFM", "VLM", "Complete"]) {
     assert.ok(workflowStep(harness.container, label).classList.contains("workflow-step-pass"));
   }
-  assert.match(harness.container.textContent ?? "", /Validation batch passed/);
+  assert.match(harness.container.textContent ?? "", /Validation accepted/);
+  assert.doesNotMatch(harness.container.textContent ?? "", /Validation batch passed/);
 
   const rejected = workflowStateWithValidationBatch("succeeded", {
     structural: "succeeded",
@@ -219,7 +221,8 @@ test("latest validation batch drives parallel checks, pass, rejection, and opera
   assert.ok(workflowStep(harness.container, "Structural").classList.contains("workflow-step-fail"));
   assert.ok(workflowStep(harness.container, "DFM").classList.contains("workflow-step-pass"));
   assert.ok(workflowStep(harness.container, "Complete").classList.contains("workflow-step-fail"));
-  assert.match(harness.container.textContent ?? "", /Validation batch rejected/);
+  assert.match(harness.container.textContent ?? "", /Validation repair/);
+  assert.doesNotMatch(harness.container.textContent ?? "", /Validation batch rejected/);
   assert.match(harness.container.textContent ?? "", /wall too thin/);
 
   const failed = workflowStateWithValidationBatch("failed", {
@@ -236,7 +239,8 @@ test("latest validation batch drives parallel checks, pass, rejection, and opera
   assert.ok(workflowStep(harness.container, "Structural").classList.contains("workflow-step-pass"));
   assert.ok(workflowStep(harness.container, "DFM").classList.contains("workflow-step-fail"));
   assert.ok(workflowStep(harness.container, "Complete").classList.contains("workflow-step-fail"));
-  assert.match(harness.container.textContent ?? "", /Validation batch operational failure/);
+  assert.match(harness.container.textContent ?? "", /Validation operational failure/);
+  assert.doesNotMatch(harness.container.textContent ?? "", /Validation batch operational failure/);
   assert.match(harness.container.textContent ?? "", /slicer crashed/);
   harness.cleanup();
 });
@@ -268,12 +272,19 @@ test("validation batch selection ignores stale revisions and older attempts", as
     runtimeState: "completed",
     state
   });
-  assert.match(harness.container.textContent ?? "", /Validation batch queued/);
+  assert.match(harness.container.textContent ?? "", /Validation queued/);
+  assert.doesNotMatch(harness.container.textContent ?? "", /Validation batch queued/);
   assert.doesNotMatch(harness.container.textContent ?? "", /operational failure/);
   assert.ok(workflowStep(harness.container, "Structural").classList.contains("workflow-step-active"));
   assert.ok(workflowStep(harness.container, "Complete").classList.contains("workflow-step-pending"));
   harness.cleanup();
 });
+
+function validationReportText(container: HTMLElement, kind: "structural" | "dfm" | "vlm"): string {
+  const report = container.querySelector(`[data-testid='validation-report-${kind}']`);
+  if (!(report instanceof HTMLElement)) throw new Error(`Validation report not found: ${kind}`);
+  return report.textContent ?? "";
+}
 
 test("validation batch check graph fails fast instead of inventing missing state", () => {
   const state = workflowStateWithValidationBatch("queued", {

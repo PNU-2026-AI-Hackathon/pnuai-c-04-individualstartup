@@ -54,10 +54,12 @@ type WorkspacePanelProps = {
   onDismissStarterOverlay: () => void;
   onPromptChange: (value: string) => void;
   onStartRun: () => void | Promise<void>;
+  // Deprecated: Retained while the Agent-tab New conversation button is hidden.
   onStartNewConversation: () => void | Promise<void>;
   onRetryRun: (run: CadAgentRun) => void | Promise<void>;
   onCancelRun: (runId: string) => void | Promise<void>;
-  onExport: (format: "stl" | "metadata", revisionId?: string) => void | Promise<void>;
+  onExport: (format: "stl" | "gcode" | "metadata", revisionId?: string) => void | Promise<void>;
+  // Deprecated: Full-history navigation is retained while its Debug UI entry point is hidden.
   onOpenFullHistory: () => void;
 };
 
@@ -89,8 +91,6 @@ export function WorkspacePanel({
   onExport,
   onOpenFullHistory
 }: WorkspacePanelProps) {
-  const [exportSelectorOpen, setExportSelectorOpen] = useState(false);
-  const [selectedExportFormat, setSelectedExportFormat] = useState<ExportFormat>("stl");
   const [previewMode, setPreviewMode] = useState<PreviewMode>("stl");
   const activePreviewMode = previewMode === "gcode" && !gcode ? "stl" : previewMode;
 
@@ -119,32 +119,25 @@ export function WorkspacePanel({
                   gcodeAvailable={Boolean(gcode)}
                   onChange={setPreviewMode}
                 />
-                <div className="export-toolbar-control">
-                  <button
-                    className="preview-export-button"
-                    aria-label="Export current model"
-                    onClick={() => setExportSelectorOpen((open) => !open)}
-                    disabled={busy || sessionArchived || sourceDirty || !activeRevision?.id}
-                    title={sourceDirty ? "Save the source revision before exporting" : "Export current model"}
-                    aria-expanded={exportSelectorOpen}
-                    aria-haspopup="dialog"
-                  >
-                    <Download aria-hidden="true" size={15} />
-                  </button>
-                  {exportSelectorOpen ? (
-                    <ExportFormatSelector
-                      selectedFormat={selectedExportFormat}
-                      busy={busy}
-                      readOnly={sessionArchived || sourceDirty}
-                      revisionId={activeRevision?.id}
-                      onSelectFormat={setSelectedExportFormat}
-                      onExport={async () => {
-                        await onExport(selectedExportFormat, activeRevision?.id);
-                        setExportSelectorOpen(false);
-                      }}
-                    />
-                  ) : null}
-                </div>
+                <button
+                  className="preview-export-button"
+                  aria-label="Export current model"
+                  onClick={() => onExport(activePreviewMode, activeRevision?.id)}
+                  disabled={
+                    busy ||
+                    sessionArchived ||
+                    sourceDirty ||
+                    !activeRevision?.id ||
+                    (activePreviewMode === "gcode" && !gcodeArtifactId)
+                  }
+                  title={
+                    sourceDirty
+                      ? "Save the source revision before exporting"
+                      : `Export current ${activePreviewMode === "gcode" ? "G-code" : "STL"}`
+                  }
+                >
+                  <Download aria-hidden="true" size={15} />
+                </button>
               </div>
             </div>
             <UiErrorBoundary
@@ -201,6 +194,7 @@ export function WorkspacePanel({
           upperLabel="Agent"
         >
           <div className="inspector-section inspector-agent" aria-label="Agent">
+            {/* Deprecated: Full-history navigation is retained while its Debug UI entry point is hidden. */}
             <AgentWorkspace
               conversation={state.conversation}
               runs={state.agentRuns}
@@ -656,6 +650,7 @@ function stringField(value: Record<string, unknown>, key: string): string | unde
   return typeof field === "string" && field.trim() ? field : undefined;
 }
 
+// Deprecated: Retained for reference after direct preview-mode export replaced the format popover.
 function ExportFormatSelector({
   selectedFormat,
   busy,
@@ -674,6 +669,7 @@ function ExportFormatSelector({
   return (
     <div className="export-format-popover" role="dialog" aria-label="Export format">
       <div className="export-format-options" role="radiogroup" aria-label="Format">
+        {/* Deprecated: STEP and 3MF controls are hidden until those export formats are implemented. */}
         <button
           className={selectedFormat === "stl" ? "active" : ""}
           onClick={() => onSelectFormat("stl")}
@@ -683,12 +679,6 @@ function ExportFormatSelector({
         >
           {selectedFormat === "stl" ? <Check size={14} /> : null}
           STL
-        </button>
-        <button disabled title="STEP export is not available yet" type="button">
-          STEP
-        </button>
-        <button disabled title="3MF export is not available yet" type="button">
-          3MF
         </button>
       </div>
       <button

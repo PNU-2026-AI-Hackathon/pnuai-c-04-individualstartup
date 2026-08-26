@@ -11,6 +11,8 @@ const MINIMAL_ASCII_STL: &[u8] = br#"solid triangle
 endsolid triangle
 "#;
 
+const MINIMAL_GCODE: &[u8] = b"G90\nG1 X0 Y0 Z0\nG1 X10 Y10 Z1 E1\n";
+
 #[test]
 fn stl_artifact_exports_to_a_named_external_path_and_reopens_byte_for_byte() {
     let app_data_dir =
@@ -53,6 +55,57 @@ fn stl_artifact_exports_to_a_named_external_path_and_reopens_byte_for_byte() {
     assert_eq!(result.bytes, MINIMAL_ASCII_STL.len() as u64);
     assert_eq!(result.sha256, storage::sha256_hex(MINIMAL_ASCII_STL));
     assert_eq!(fs::read(&destination).unwrap(), MINIMAL_ASCII_STL);
+}
+
+#[test]
+fn gcode_artifact_exports_to_a_named_external_path_and_reopens_byte_for_byte() {
+    let app_data_dir =
+        std::env::temp_dir().join(format!("cadgen-ax-external-gcode-source-test-{}", uuid()));
+    let export_dir =
+        std::env::temp_dir().join(format!("cadgen-ax-external-gcode-target-test-{}", uuid()));
+    fs::create_dir_all(&export_dir).unwrap();
+    let layout = StorageLayout::from_app_data_dir(app_data_dir);
+    storage::initialize_storage(&layout).unwrap();
+    let service = SessionService::with_repository(
+        layout.clone(),
+        Arc::new(SqliteSessionRepository::new(layout)),
+    )
+    .unwrap();
+    let created = service
+        .create_session(CreateCadSessionInput::default())
+        .unwrap();
+    let revision_id = create_test_revision(&service, &created.session_id, "cube([1, 1, 1]);");
+    let artifact = service
+        .write_artifact_bytes(
+            &revision_id,
+            CadArtifactKind::Gcode,
+            "gcode",
+            MINIMAL_GCODE,
+            None,
+        )
+        .unwrap();
+    let destination = export_dir.join("custom-toolpath.gcode");
+
+    let result = service
+        .export_artifact_file(ExportArtifactFileInput {
+            artifact_id: artifact.id.clone(),
+            path: destination.to_string_lossy().to_string(),
+        })
+        .unwrap();
+
+    assert_eq!(result.artifact.id, artifact.id);
+    assert_eq!(result.path, destination.to_string_lossy());
+    assert_eq!(result.bytes, MINIMAL_GCODE.len() as u64);
+    assert_eq!(result.sha256, storage::sha256_hex(MINIMAL_GCODE));
+    assert_eq!(fs::read(&destination).unwrap(), MINIMAL_GCODE);
+
+    let extension_error = service
+        .export_artifact_file(ExportArtifactFileInput {
+            artifact_id: artifact.id,
+            path: export_dir.join("wrong.stl").to_string_lossy().to_string(),
+        })
+        .expect_err("non-G-code extension must fail");
+    assert!(extension_error.contains(".gcode extension"));
 }
 
 #[test]

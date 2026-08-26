@@ -177,11 +177,7 @@ function ValidationReportDisclosure({
       </summary>
       {report ? (
         <div className="validation-report-content">
-          <div className="validation-report-meta">
-            {contractType(report) ? <code>{contractType(report)}</code> : null}
-            <span>{failureSummary(report)}</span>
-          </div>
-          <pre><code>{formatPayload(report)}</code></pre>
+          <ValidationDecisionReport outcome={outcome} report={report} />
         </div>
       ) : error ? (
         <p className="validation-report-error">{error}</p>
@@ -190,6 +186,228 @@ function ValidationReportDisclosure({
       )}
     </details>
   );
+}
+
+interface ValidationDecisionMetric {
+  key: string;
+  label: string;
+  value: string;
+}
+
+interface ValidationDecisionMessage {
+  key: string;
+  label: string;
+  message?: string;
+  outcome?: string;
+}
+
+interface ValidationDecisionView {
+  verdict: string;
+  metrics: ValidationDecisionMetric[];
+  failureReason?: string;
+  failureSummary?: string;
+  nextAction?: string;
+  messages: ValidationDecisionMessage[];
+}
+
+function ValidationDecisionReport({
+  outcome,
+  report
+}: {
+  outcome: string;
+  report: Record<string, unknown>;
+}) {
+  const decision = validationDecisionView(report, outcome);
+  return (
+    <div className="validation-decision" data-testid="validation-decision">
+      <dl className="validation-decision-fields">
+        <div>
+          <dt>Decision</dt>
+          <dd>{decision.verdict}</dd>
+        </div>
+        {decision.metrics.map((metric) => (
+          <div key={metric.key}>
+            <dt>{metric.label}</dt>
+            <dd>{metric.value}</dd>
+          </div>
+        ))}
+      </dl>
+      {decision.failureReason || decision.failureSummary || decision.nextAction ? (
+        <section className="validation-decision-reason">
+          <strong>Decision reason</strong>
+          {decision.failureReason ? <p>{humanizeField(decision.failureReason)}</p> : null}
+          {decision.failureSummary ? <p>{decision.failureSummary}</p> : null}
+          {decision.nextAction ? <p>Next action: {humanizeField(decision.nextAction)}</p> : null}
+        </section>
+      ) : null}
+      {decision.messages.length ? (
+        <section className="validation-decision-messages">
+          <strong>Judgment details</strong>
+          <ul>
+            {decision.messages.map((item) => (
+              <li key={item.key}>
+                <div>
+                  <span>{item.label}</span>
+                  {item.outcome ? <small>{item.outcome}</small> : null}
+                </div>
+                {item.message ? <p>{item.message}</p> : null}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+export function validationDecisionView(
+  report: Record<string, unknown>,
+  fallbackOutcome = "recorded"
+): ValidationDecisionView {
+  const metrics: ValidationDecisionMetric[] = [];
+  addNumberMetric(metrics, report, "composite", "Composite score");
+  addNumberMetric(metrics, report, "score", "Normalized score");
+  const scores = recordField(report, "scores");
+  if (scores) {
+    addNumberMetric(metrics, scores, "structure", "Structure");
+    addNumberMetric(metrics, scores, "components", "Components");
+    addNumberMetric(metrics, scores, "proportions", "Proportions");
+  }
+
+  const failure = recordField(report, "failureReport") ?? recordField(report, "failure_report");
+  const failureReason = failure
+    ? stringField(failure, "reason") ?? stringField(failure, "code")
+    : stringField(report, "reason") ?? stringField(report, "code");
+  const failureSummaryText = failure
+    ? stringField(failure, "summary") ?? stringField(failure, "message")
+    : undefined;
+  const nextAction = failure
+    ? stringField(failure, "nextAction") ?? stringField(failure, "next_action")
+    : stringField(report, "nextAction") ?? stringField(report, "next_action");
+
+  const messages: ValidationDecisionMessage[] = [];
+  addTopLevelDecisionMessage(messages, report, "summary", "Summary");
+  addTopLevelDecisionMessage(messages, report, "message", "Message");
+  addTopLevelDecisionMessage(messages, report, "diagnostic", "Agent diagnostic");
+  for (const field of ["checks", "diagnostics", "findings", "issues", "inconsistencies"] as const) {
+    addDecisionCollection(messages, report[field], field);
+  }
+  if (failure) addDecisionCollection(messages, failure.issues, "failure issues");
+
+  const passed = report.passed;
+  return {
+    verdict: typeof passed === "boolean" ? (passed ? "Passed" : "Rejected") : humanizeField(fallbackOutcome),
+    metrics,
+    failureReason,
+    failureSummary: failureSummaryText,
+    nextAction,
+    messages: deduplicateDecisionMessages(messages)
+  };
+}
+
+function addNumberMetric(
+  metrics: ValidationDecisionMetric[],
+  source: Record<string, unknown>,
+  key: string,
+  label: string
+) {
+  const value = source[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) return;
+  metrics.push({ key: `${label}-${key}`, label, value: Number.isInteger(value) ? String(value) : value.toFixed(3) });
+}
+
+function addTopLevelDecisionMessage(
+  messages: ValidationDecisionMessage[],
+  report: Record<string, unknown>,
+  key: string,
+  label: string
+) {
+  const message = stringField(report, key);
+  if (message) messages.push({ key: `${key}-${messages.length}`, label, message });
+}
+
+function addDecisionCollection(
+  messages: ValidationDecisionMessage[],
+  value: unknown,
+  collectionLabel: string
+) {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      if (typeof item === "string" && item.trim()) {
+        messages.push({
+          key: `${collectionLabel}-${index}`,
+          label: humanizeField(collectionLabel),
+          message: item
+        });
+        return;
+      }
+      if (!item || typeof item !== "object" || Array.isArray(item)) return;
+      messages.push(decisionMessageFromRecord(
+        item as Record<string, unknown>,
+        collectionLabel,
+        `${collectionLabel}-${index}`
+      ));
+    });
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const [key, item] of Object.entries(value)) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const record = item as Record<string, unknown>;
+    const nestedReport = recordField(record, "report");
+    const message = nestedReport
+      ? stringField(nestedReport, "summary")
+        ?? stringField(nestedReport, "message")
+        ?? stringField(nestedReport, "diagnostic")
+      : undefined;
+    messages.push({
+      key: `${collectionLabel}-${key}`,
+      label: humanizeField(key),
+      message,
+      outcome: booleanOutcome(record.passed ?? nestedReport?.passed)
+    });
+  }
+}
+
+function decisionMessageFromRecord(
+  item: Record<string, unknown>,
+  collectionLabel: string,
+  key: string
+): ValidationDecisionMessage {
+  const label = stringField(item, "name")
+    ?? stringField(item, "code")
+    ?? stringField(item, "source")
+    ?? stringField(item, "severity")
+    ?? collectionLabel;
+  const message = stringField(item, "message")
+    ?? stringField(item, "summary")
+    ?? stringField(item, "diagnostic")
+    ?? stringField(item, "observed");
+  const severity = stringField(item, "severity");
+  return {
+    key,
+    label: humanizeField(label),
+    message,
+    outcome: booleanOutcome(item.passed ?? item.ok) ?? (severity ? humanizeField(severity) : undefined)
+  };
+}
+
+function booleanOutcome(value: unknown): string | undefined {
+  return typeof value === "boolean" ? (value ? "Passed" : "Rejected") : undefined;
+}
+
+function deduplicateDecisionMessages(messages: ValidationDecisionMessage[]): ValidationDecisionMessage[] {
+  const seen = new Set<string>();
+  return messages.filter((item) => {
+    const identity = `${item.label}\u0000${item.outcome ?? ""}\u0000${item.message ?? ""}`;
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
+}
+
+function humanizeField(value: string): string {
+  return value.replaceAll("_", " ").replaceAll("-", " ");
 }
 
 function validationReportEntries(view: WorkflowRunView): ValidationReportEntry[] {
@@ -299,9 +517,7 @@ export function WorkflowRunSummary({
       {view.validationEvaluation ? (
         <ValidationEvaluationSummary evaluation={view.validationEvaluation} />
       ) : null}
-      {view.validationBatch ? (
-        <ValidationBatchSummary batch={view.validationBatch} checks={view.validationChecks} />
-      ) : null}
+      {/* Deprecated: Validation batch status callouts are hidden from the Agent tab. */}
       {view.latestDfmReport ? <DfmReportSummary report={view.latestDfmReport} compact={compact} /> : null}
       {view.latestFailure ? (
         <div className="workflow-callout workflow-failure">
@@ -503,6 +719,7 @@ function finalizationStatus(
   return "not finalized";
 }
 
+// Deprecated: Retained for restoring the hidden Validation batch status callout.
 function ValidationBatchSummary({
   batch,
   checks

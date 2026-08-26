@@ -9,6 +9,7 @@ import {
   buildRunCommentary,
   splitAgentStreams
 } from "../ui/src/components/AgentWorkspace";
+import { validationDecisionView } from "../ui/src/components/AgentWorkflow";
 import type {
   CadAgentMessagePhase,
   CadAgentStreamEvent,
@@ -224,6 +225,10 @@ test("progress details retain expandable live commentary while workflow summary 
   assert.doesNotMatch(html, /data-testid="validation-report-details"/);
   assert.doesNotMatch(html, /agent\.tool\.completed/);
   assert.doesNotMatch(html, /data-testid="streaming-commentary"/);
+  assert.doesNotMatch(html, /agent-debug-menu/);
+  assert.doesNotMatch(html, /Full history/);
+  assert.doesNotMatch(html, /start-new-agent-conversation/);
+  assert.doesNotMatch(html, /New conversation/);
 });
 
 test("validation report disclosure exposes the combined report and every batch result", () => {
@@ -272,7 +277,24 @@ test("validation report disclosure exposes the combined report and every batch r
       report: {
         contractType: `cadgen-ax.${kind}_report.v1`,
         passed: kind !== "dfm",
-        summary: `${kind} result`
+        summary: `${kind} result`,
+        ...(kind === "structural" ? {
+          checks: [{ name: "topology", passed: true, message: "Mesh is watertight." }]
+        } : {}),
+        ...(kind === "dfm" ? {
+          diagnostics: [{ severity: "error", code: "bridge", message: "Unsupported bridge detected." }],
+          failureReport: {
+            reason: "dfm_gate_failed",
+            summary: "DFM diagnostics rejected the model.",
+            nextAction: "refine_source"
+          }
+        } : {}),
+        ...(kind === "vlm" ? {
+          scores: { structure: 3, components: 3, proportions: 3 },
+          composite: 9,
+          score: 1,
+          diagnostic: "All requested components are visible."
+        } : {})
       },
       passed: kind !== "dfm",
       createdAt: now,
@@ -297,11 +319,53 @@ test("validation report disclosure exposes the combined report and every batch r
     assert.match(html, new RegExp(`${kind} result`));
   }
   assert.match(html, /4 reports/);
+  assert.match(html, /Decision/);
+  assert.match(html, /Unsupported bridge detected\./);
+  assert.match(html, /All requested components are visible\./);
+  assert.match(html, /Structure/);
+  assert.match(html, /Next action: refine source/);
+  assert.doesNotMatch(html, /data-testid="validation-batch-summary"/);
+  assert.doesNotMatch(html, /Validation batch rejected/);
+  assert.doesNotMatch(html, /<pre>/);
+  assert.doesNotMatch(html, /cadgen-ax\.dfm_report\.v1/);
   const workflowIndex = html.indexOf('data-testid="workflow-summary"');
   const reportIndex = html.indexOf('data-testid="validation-report-details"');
   const progressIndex = html.indexOf('data-testid="agent-progress-details"');
   assert.ok(workflowIndex >= 0 && workflowIndex < reportIndex);
   assert.ok(reportIndex < progressIndex);
+});
+
+test("validation decision view keeps verdict fields and agent diagnostics while dropping raw metadata", () => {
+  const decision = validationDecisionView({
+    contractType: "cadgen-ax.vlm_judge_report.v1",
+    artifactId: "artifact-secret",
+    passed: false,
+    scores: { structure: 1, components: 3, proportions: 3 },
+    composite: 7,
+    score: 7 / 9,
+    diagnostic: "The support tab is not visible.",
+    findings: [{ severity: "error", message: "A requested component is missing." }],
+    failureReport: {
+      reason: "vlm_score_gate_failed",
+      summary: "Every VLM subscore must be at least two.",
+      nextAction: "outer_loop_refine_source"
+    },
+    process: { stdout: "raw process output", stderr: "raw process error" }
+  });
+
+  assert.equal(decision.verdict, "Rejected");
+  assert.deepEqual(decision.metrics.map((metric) => metric.label), [
+    "Composite score",
+    "Normalized score",
+    "Structure",
+    "Components",
+    "Proportions"
+  ]);
+  assert.equal(decision.failureReason, "vlm_score_gate_failed");
+  assert.equal(decision.nextAction, "outer_loop_refine_source");
+  assert.match(decision.messages.map((item) => item.message).join(" "), /support tab/);
+  assert.match(decision.messages.map((item) => item.message).join(" "), /requested component/);
+  assert.doesNotMatch(JSON.stringify(decision), /artifact-secret|raw process output|raw process error|contractType/);
 });
 
 function workflowSummaryMarkup(html: string): string {

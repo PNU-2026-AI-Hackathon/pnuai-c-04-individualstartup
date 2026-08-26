@@ -44,6 +44,7 @@ test("session rail exposes inline management without top-level Logs navigation",
 
     assert.doesNotMatch(container.textContent ?? "", /\bLogs\b/);
     assert.doesNotMatch(container.textContent ?? "", /\bManage\b/);
+    assert.doesNotMatch(container.textContent ?? "", /Show archived/);
 
     const menuButton = container.querySelector<HTMLButtonElement>("[aria-label='Session actions for other-session']");
     assert.ok(menuButton);
@@ -105,6 +106,7 @@ test("session rail combines revisions with accessible icon-only navigation and k
 
     assert.ok(container.querySelector(".session-rail-sessions"));
     assert.ok(container.querySelector(".session-rail-revisions .timeline"));
+    assert.equal(container.querySelectorAll("[aria-label^='Restore revision']").length, 0);
     for (const label of ["Model", "Files", "Settings"]) {
       const button = container.querySelector<HTMLButtonElement>(`.session-rail-nav [aria-label='${label}']`);
       assert.ok(button);
@@ -273,7 +275,7 @@ test("session rail keeps a deleted session out of the DOM after a stale refresh"
   }
 });
 
-test("workspace preview toolbar export selector does not add result actions under preview", async () => {
+test("workspace preview toolbar exports the active STL or G-code mode without a format popover", async () => {
   const browserWindow = installDom();
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -297,15 +299,24 @@ test("workspace preview toolbar export selector does not add result actions unde
     assert.ok(exportButton);
     assert.equal(exportButton.textContent, "");
     await act(async () => exportButton.click());
-
-    assert.ok(container.textContent?.includes("STL"));
-    assert.ok(container.textContent?.includes("STEP"));
-    assert.ok(container.textContent?.includes("3MF"));
-
-    const confirmButton = container.querySelector<HTMLButtonElement>(".export-confirm");
-    assert.ok(confirmButton);
-    await act(async () => confirmButton.click());
     assert.deepEqual(exports, ["stl:revision-1"]);
+    assert.equal(container.querySelector("[aria-label='Export format']"), null);
+
+    await act(async () => {
+      root.render(React.createElement(WorkspacePanel, {
+        ...workspaceProps(state, exports),
+        gcode: "G90\nG1 X10 Y10 Z1 E1",
+        gcodeArtifactId: "gcode-artifact-1"
+      }));
+    });
+    const gcodeButtonAfterLoad = buttonByText(
+      container.querySelector("[aria-label='Preview type']") as HTMLElement,
+      "G-code"
+    );
+    await act(async () => gcodeButtonAfterLoad.click());
+    assert.equal(exportButton.title, "Export current G-code");
+    await act(async () => exportButton.click());
+    assert.deepEqual(exports, ["stl:revision-1", "gcode:revision-1"]);
 
     assert.doesNotMatch(container.textContent ?? "", /Open file/);
     assert.doesNotMatch(container.textContent ?? "", /Show in Finder/);
@@ -504,7 +515,7 @@ function workspaceProps(state: CadSessionState, exports: string[]) {
     onCancelRun: () => undefined,
     onActivateRevision: () => undefined,
     onRestoreRevision: () => undefined,
-    onExport: (format: "stl" | "metadata", revisionId?: string) => {
+    onExport: (format: "stl" | "gcode" | "metadata", revisionId?: string) => {
       exports.push(`${format}:${revisionId ?? "none"}`);
     },
     onOpenFullHistory: () => undefined,

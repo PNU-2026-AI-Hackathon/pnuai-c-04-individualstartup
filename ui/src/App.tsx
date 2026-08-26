@@ -51,7 +51,12 @@ import {
   type OpenscadRuntimeState
 } from "./runtime/openscadRuntime";
 import { parameterHashInput } from "./runtime/parameterMetadata";
-import { chooseStlExportPath, stlExportDefaultFileName } from "./runtime/artifactExport";
+import {
+  chooseGcodeExportPath,
+  chooseStlExportPath,
+  gcodeExportDefaultFileName,
+  stlExportDefaultFileName
+} from "./runtime/artifactExport";
 import {
   createAgentStreamState,
   reconcileAgentStreamSnapshot,
@@ -87,6 +92,7 @@ export function App() {
     workspaceViewFromUrl(window.location.href, window.location.href)
   );
   const [sessionSearch, setSessionSearch] = useState("");
+  // Deprecated: Retained while the Session rail's Show archived control is hidden.
   const [showArchivedSessions, setShowArchivedSessions] = useState(false);
   const [sessionRailOpen, setSessionRailOpen] = useState(false);
   const [sessionList, setSessionList] = useState<CadSessionListItem[]>([]);
@@ -330,6 +336,7 @@ export function App() {
     });
   }
 
+  // Deprecated: Retained while the Agent-tab New conversation button is hidden.
   async function startNewAgentConversation() {
     if (!state || sessionArchived || activeAgentRun) return;
     await runBusy(async () => {
@@ -348,7 +355,10 @@ export function App() {
     });
   }
 
-  async function exportArtifact(format: "stl" | "metadata", revisionId = state?.session.activeRevisionId) {
+  async function exportArtifact(
+    format: "stl" | "gcode" | "metadata",
+    revisionId = state?.session.activeRevisionId
+  ) {
     if (!state || sessionArchived) return;
     await runBusy(async () => {
       await resyncIfDisconnected();
@@ -379,6 +389,31 @@ export function App() {
         }
         setOpenedArtifactPath(exported.path);
         applySessionSnapshot(persisted.state);
+        return;
+      }
+      if (format === "gcode") {
+        const revision = requireRevisionForExport(revisionId);
+        const artifact = latestRenderableGcodeArtifact(revision);
+        if (!artifact) throw new Error("No exportable G-code artifact is available for the active revision.");
+        const destination = await chooseGcodeExportPath(gcodeExportDefaultFileName(state.session.title));
+        if (destination === null) return;
+        const exported = await backend.exportArtifactFile({ artifactId: artifact.id, path: destination });
+        const expectedBytes = artifact.bytes;
+        if (typeof expectedBytes !== "number") {
+          throw new Error(`G-code artifact ${artifact.id} is missing its byte count.`);
+        }
+        const expectedSha256 = artifact.metadata?.sha256;
+        if (typeof expectedSha256 !== "string") {
+          throw new Error(`G-code artifact ${artifact.id} is missing its SHA-256 hash.`);
+        }
+        if (exported.bytes !== expectedBytes || exported.sha256 !== expectedSha256) {
+          throw new Error(
+            `Exported G-code verification mismatch for ${exported.path}. ` +
+            `Expected ${expectedBytes} bytes and SHA-256 ${expectedSha256}, ` +
+            `received ${exported.bytes} bytes and SHA-256 ${exported.sha256}.`
+          );
+        }
+        setOpenedArtifactPath(exported.path);
         return;
       }
       const result = await backend.exportArtifact({ sessionId: state.session.id, revisionId, format });
@@ -489,6 +524,7 @@ export function App() {
     });
   }
 
+  // Deprecated: Retained while the Restore revision control is hidden from the submission UI.
   async function restoreRevision(revisionId: string) {
     if (!state || sessionArchived) return;
     await runBusy(async () => {

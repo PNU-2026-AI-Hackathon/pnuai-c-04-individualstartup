@@ -2,6 +2,7 @@
   border-color: #9fb4bb;
 }
 
+/* Deprecated: Retained for restoring the hidden agent Debug popover after submission. */
 .agent-debug-menu {
   position: relative;
   font-size: 12px;
@@ -245,6 +246,7 @@
   color: #216a6b;
 }
 
+/* Deprecated: Raw JSON report blocks were replaced by decision-focused report text. */
 .validation-report-content pre {
   max-height: 280px;
   margin: 0;
@@ -255,6 +257,75 @@
   background: #f4f7f9;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.validation-decision {
+  display: grid;
+  gap: 9px;
+}
+
+.validation-decision-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 6px;
+  margin: 0;
+}
+
+.validation-decision-fields div {
+  border: 1px solid #e3e8ed;
+  border-radius: 5px;
+  padding: 6px;
+  background: #f7fafc;
+}
+
+.validation-decision-fields dt {
+  color: #667789;
+}
+
+.validation-decision-fields dd {
+  margin: 2px 0 0;
+  font-weight: 700;
+}
+
+.validation-decision-reason,
+.validation-decision-messages {
+  display: grid;
+  gap: 5px;
+}
+
+.validation-decision-reason {
+  border-left: 3px solid #a33a38;
+  padding: 6px 8px;
+  background: #fff7f6;
+}
+
+.validation-decision-reason p,
+.validation-decision-messages p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.validation-decision-messages ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.validation-decision-messages li {
+  border-top: 1px solid #e3e8ed;
+  padding-top: 5px;
+}
+
+.validation-decision-messages li > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.validation-decision-messages span {
+  font-weight: 700;
 }
 
 .validation-report-empty,
